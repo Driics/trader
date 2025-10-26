@@ -6,17 +6,14 @@ import org.springframework.stereotype.Service
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.model.MarketState
 import java.time.Instant
-import java.util.concurrent.atomic.AtomicLong
 
 @Service
 class PromptSchedulerService(
-    private val okxApiService: OkxApiService,
+    private val okxMarketDataService: OkxMarketDataService,
     private val promptBuilderService: PromptBuilderService,
     private val tradingProperties: TradingProperties
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
-
-
 
     @Scheduled(fixedDelay = 180000, initialDelay = 5000)
     fun updatePrompt() {
@@ -38,39 +35,33 @@ class PromptSchedulerService(
         return try {
             val currencies = tradingProperties.getCurrenciesList()
 
-            // Validate currencies list
             if (currencies.isEmpty()) {
                 return "Error: No currencies configured for trading"
             }
 
-            // Fetch market data with partial failure tolerance
-            val marketData = okxApiService.fetchMarketData(currencies)
+            val marketData = okxMarketDataService.fetchMarketData(currencies)
             if (marketData.isEmpty()) {
                 log.warn("No market data fetched, but continuing...")
             }
 
-            // Fetch account info and positions
-            val accountInfo = okxApiService.fetchAccountInfo()
-            val positions = okxApiService.fetchPositions()
+            val accountInfo = okxMarketDataService.fetchAccountInfo()
+            val positions = okxMarketDataService.fetchPositions()
 
-            // Build market state
             val marketState = MarketState(
                 timestamp = Instant.now().toEpochMilli(),
-                minutesSinceStart = (Instant.now().toEpochMilli() - okxApiService.getSessionStartTime()) / 60000,
-                invocationCount = okxApiService.getInvocationCount(),
+                minutesSinceStart = (Instant.now().toEpochMilli() - okxMarketDataService.getSessionStartTime()) / 60000,
+                invocationCount = okxMarketDataService.getInvocationCount(),
                 currencies = marketData,
                 account = accountInfo,
                 positions = positions
             )
 
-            // Build and output prompt
             val prompt = promptBuilderService.buildPrompt(
                 marketState,
-                okxApiService.getSessionStartTime(),
-                okxApiService.getInvocationCount()
+                okxMarketDataService.getSessionStartTime(),
+                okxMarketDataService.getInvocationCount()
             )
 
-            // Write to file and console
             val writeSuccess = promptBuilderService.writePromptToFile(prompt)
             if (!writeSuccess) {
                 log.warn("Failed to write prompt to file, but continuing...")
