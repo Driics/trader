@@ -15,64 +15,41 @@ class PromptSchedulerService(
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
-    /**
-     * Executes every 3 minutes to fetch market data and generate prompt
-     */
-    @Scheduled(fixedDelay = 180000, initialDelay = 5000) // 3 minutes = 180000 ms
+    @Scheduled(fixedDelay = 180000, initialDelay = 5000)
     fun updatePrompt() {
         log.info("=== Starting scheduled prompt update ===")
-        try {
-            val currencies = tradingProperties.getCurrenciesList()
-            
-            // Fetch market data
-            val marketData = okxApiService.fetchMarketData(currencies)
-            
-            // Fetch account info and positions
-            val accountInfo = okxApiService.fetchAccountInfo()
-            val positions = okxApiService.fetchPositions()
-            
-            // Build market state
-            val marketState = MarketState(
-                timestamp = Instant.now().toEpochMilli(),
-                minutesSinceStart = (Instant.now().toEpochMilli() - okxApiService.getSessionStartTime()) / 60000,
-                invocationCount = okxApiService.getInvocationCount(),
-                currencies = marketData,
-                account = accountInfo,
-                positions = positions
-            )
-            
-            // Build and output prompt
-            val prompt = promptBuilderService.buildPrompt(
-                marketState,
-                okxApiService.getSessionStartTime(),
-                okxApiService.getInvocationCount()
-            )
-            
-            // Write to file and console
-            promptBuilderService.writePromptToFile(prompt)
-            promptBuilderService.printPromptToConsole(prompt)
-            
+        val result = executePromptUpdate()
+        if (result.startsWith("Error")) {
+            log.error("Scheduled prompt update failed: $result")
+        } else {
             log.info("=== Prompt update completed successfully ===")
-        } catch (e: Exception) {
-            log.error("Error during scheduled prompt update", e)
         }
     }
 
-    /**
-     * Manual trigger via method call (can be exposed via REST endpoint if needed)
-     */
     fun triggerPromptUpdate(): String {
         log.info("Manual prompt update triggered")
-        try {
+        return executePromptUpdate()
+    }
+
+    private fun executePromptUpdate(): String {
+        return try {
             val currencies = tradingProperties.getCurrenciesList()
-            
-            // Fetch market data
+
+            // Validate currencies list
+            if (currencies.isEmpty()) {
+                return "Error: No currencies configured for trading"
+            }
+
+            // Fetch market data with partial failure tolerance
             val marketData = okxApiService.fetchMarketData(currencies)
-            
+            if (marketData.isEmpty()) {
+                log.warn("No market data fetched, but continuing...")
+            }
+
             // Fetch account info and positions
             val accountInfo = okxApiService.fetchAccountInfo()
             val positions = okxApiService.fetchPositions()
-            
+
             // Build market state
             val marketState = MarketState(
                 timestamp = Instant.now().toEpochMilli(),
@@ -82,22 +59,26 @@ class PromptSchedulerService(
                 account = accountInfo,
                 positions = positions
             )
-            
+
             // Build and output prompt
             val prompt = promptBuilderService.buildPrompt(
                 marketState,
                 okxApiService.getSessionStartTime(),
                 okxApiService.getInvocationCount()
             )
-            
+
             // Write to file and console
-            promptBuilderService.writePromptToFile(prompt)
+            val writeSuccess = promptBuilderService.writePromptToFile(prompt)
+            if (!writeSuccess) {
+                log.warn("Failed to write prompt to file, but continuing...")
+            }
+
             promptBuilderService.printPromptToConsole(prompt)
-            
-            return "Prompt updated successfully"
+
+            "Prompt updated successfully"
         } catch (e: Exception) {
-            log.error("Error during manual prompt update", e)
-            return "Error: ${e.message}"
+            log.error("Error during prompt update", e)
+            "Error: ${e.message}"
         }
     }
 }

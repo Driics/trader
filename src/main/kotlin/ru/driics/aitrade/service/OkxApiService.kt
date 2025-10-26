@@ -13,6 +13,8 @@ import ru.driics.aitrade.config.OkxProperties
 import ru.driics.aitrade.model.*
 import java.math.BigDecimal
 import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -62,11 +64,18 @@ class OkxApiService(
         val candles = fetchCandles(instId, "3m", 50)
         val prices = candles.mapNotNull { it.close.toBigDecimalOrNull() }
 
-        // Calculate technical indicators
+        // Calculate indicators once
         val ema20 = calculateEMA(prices, 20)
         val macd = calculateMACD(prices)
         val rsi7 = calculateRSI(prices, 7)
         val rsi14 = calculateRSI(prices, 14)
+
+        // Efficiently calculate intraday series using progressive calculation
+        val intradayEma20 = calculateProgressiveEMA(prices, 20)
+        val intradayMacd = calculateProgressiveMACD(prices)
+        val intradayRsi7 = calculateProgressiveRSI(prices, 7)
+        val intradayRsi14 = calculateProgressiveRSI(prices, 14)
+
 
         // Fetch 4-hour data
         val candles4h = fetchCandles(instId, "4h", 10)
@@ -331,16 +340,10 @@ class OkxApiService(
     }
     
     private fun createAuthHeaders(method: String, requestPath: String, body: String): HttpHeaders {
-        // Format timestamp in ISO 8601 with 3 decimal places for milliseconds
-        val instant = Instant.now()
-        val timestamp = instant.toString().replace("Z", "").let { 
-            val parts = it.split(".")
-            if (parts.size == 2) {
-                "${parts[0]}.${parts[1].take(3)}Z"
-            } else {
-                "$it.000Z"
-            }
-        }
+
+        val timestamp = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+            .withZone(ZoneOffset.UTC)
+            .format(Instant.now())
         
         val message = "$timestamp$method$requestPath$body"
         
@@ -370,7 +373,7 @@ class OkxApiService(
         var ema = prices.take(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
 
         for (i in period until prices.size) {
-            ema = prices[i].multiply(k).add(ema.multiply(BigDecimal.ONE - k))
+            ema = prices[i].multiply(k).add(ema.multiply(BigDecimal.ONE.subtract(k)))
         }
 
         return ema
@@ -389,39 +392,127 @@ class OkxApiService(
 
         val changes = prices.zipWithNext { a, b -> b - a }
         val gains = changes.map { if (it > BigDecimal.ZERO) it else BigDecimal.ZERO }
-        val losses = changes.map { if (it < BigDecimal.ZERO) -it else BigDecimal.ZERO }
+        val losses = changes.map { if (it < BigDecimal.ZERO) it.abs() else BigDecimal.ZERO }
 
-        val avgGain = gains.takeLast(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
-        val avgLoss = losses.takeLast(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
+        if (gains.size < period) return BigDecimal.ZERO
 
-        // Use compareTo instead of == for BigDecimal comparison to handle scale differences
+        var avgGain = gains.take(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
+        var avgLoss = losses.take(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
+
+        for (i in period until gains.size) {
+            avgGain = (avgGain.multiply(BigDecimal(period - 1)).add(gains[i])) / BigDecimal(period)
+            avgLoss = (avgLoss.multiply(BigDecimal(period - 1)).add(losses[i])) / BigDecimal(period)
+        }
+
         return if (avgLoss.compareTo(BigDecimal.ZERO) == 0) {
             BigDecimal(100)
         } else {
-            val rs = avgGain / avgLoss
-            BigDecimal(100) - (BigDecimal(100) / (BigDecimal.ONE.add(rs)))
+            val rs = avgGain.divide(avgLoss, 10, java.math.RoundingMode.HALF_UP)
+            BigDecimal(100).subtract(BigDecimal(100).divide(BigDecimal.ONE.add(rs), 10, java.math.RoundingMode.HALF_UP))
         }
     }
 
     private fun calculateATR(candles: List<OkxCandleResponse>, period: Int): BigDecimal {
-        if (candles.isEmpty() || period <= 0) return BigDecimal.ZERO
+        if (candles.size < 2 || period <= 0) return BigDecimal.ZERO
 
-        val trues = candles.mapNotNull { candle ->
-            val high = candle.high.toBigDecimalOrNull() ?: return@mapNotNull null
-            val low = candle.low.toBigDecimalOrNull() ?: return@mapNotNull null
-            val close = candle.close.toBigDecimalOrNull() ?: return@mapNotNull null
-            
-            maxOf(
+        val trueRanges = mutableListOf<BigDecimal>()
+
+        for (i in 1 until candles.size) {
+            val high = candles[i].high.toBigDecimalOrNull() ?: continue
+            val low = candles[i].low.toBigDecimalOrNull() ?: continue
+            val prevClose = candles[i-1].close.toBigDecimalOrNull() ?: continue
+
+            val tr = maxOf(
                 high - low,
-                (high - close).abs(),
-                (low - close).abs()
+                (high - prevClose).abs(),
+                (low - prevClose).abs()
             )
+            trueRanges.add(tr)
         }
 
-        return if (trues.size < period) {
-            if (trues.isNotEmpty()) trues.fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(trues.size) else BigDecimal.ZERO
+        if (trueRanges.isEmpty()) return BigDecimal.ZERO
+
+        return if (trueRanges.size < period) {
+            trueRanges.fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(trueRanges.size)
         } else {
-            trues.takeLast(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
+            // Use Wilder's smoothing for ATR
+            var atr = trueRanges.take(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
+            for (i in period until trueRanges.size) {
+                atr = (atr.multiply(BigDecimal(period - 1)).add(trueRanges[i])) / BigDecimal(period)
+            }
+            atr
         }
+    }
+
+    private fun calculateProgressiveEMA(prices: List<BigDecimal>, period: Int): List<BigDecimal> {
+        if (prices.size < period) return prices.map { BigDecimal.ZERO }
+
+        val result = mutableListOf<BigDecimal>()
+        val k = BigDecimal(2).divide(BigDecimal(period + 1), 10, java.math.RoundingMode.HALF_UP)
+
+        // Initial SMA
+        var ema = prices.take(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
+
+        // Add zeros for initial period
+        repeat(period - 1) { result.add(BigDecimal.ZERO) }
+        result.add(ema)
+
+        // Progressive EMA calculation
+        for (i in period until prices.size) {
+            ema = prices[i].multiply(k).add(ema.multiply(BigDecimal.ONE.subtract(k)))
+            result.add(ema)
+        }
+
+        return result
+    }
+
+    private fun calculateProgressiveMACD(prices: List<BigDecimal>): List<BigDecimal> {
+        if (prices.size < 26) return prices.map { BigDecimal.ZERO }
+
+        val ema12List = calculateProgressiveEMA(prices, 12)
+        val ema26List = calculateProgressiveEMA(prices, 26)
+
+        return ema12List.zip(ema26List) { ema12, ema26 -> ema12 - ema26 }
+    }
+
+    private fun calculateProgressiveRSI(prices: List<BigDecimal>, period: Int): List<BigDecimal> {
+        if (prices.size < period + 1) return prices.map { BigDecimal.ZERO }
+
+        val result = mutableListOf<BigDecimal>()
+        val changes = prices.zipWithNext { a, b -> b - a }
+
+        // Add zeros for initial period
+        repeat(period) { result.add(BigDecimal.ZERO) }
+
+        val gains = changes.map { if (it > BigDecimal.ZERO) it else BigDecimal.ZERO }
+        val losses = changes.map { if (it < BigDecimal.ZERO) it.abs() else BigDecimal.ZERO }
+
+        var avgGain = gains.take(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
+        var avgLoss = losses.take(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
+
+        // Calculate first RSI
+        val firstRsi = if (avgLoss.compareTo(BigDecimal.ZERO) == 0) {
+            BigDecimal(100)
+        } else {
+            val rs = avgGain.divide(avgLoss, 10, java.math.RoundingMode.HALF_UP)
+            BigDecimal(100).subtract(BigDecimal(100).divide(BigDecimal.ONE.add(rs), 10, java.math.RoundingMode.HALF_UP))
+        }
+        result.add(firstRsi)
+
+        // Progressive RSI
+        for (i in period until gains.size) {
+            avgGain = (avgGain.multiply(BigDecimal(period - 1)).add(gains[i])) / BigDecimal(period)
+            avgLoss = (avgLoss.multiply(BigDecimal(period - 1)).add(losses[i])) / BigDecimal(period)
+
+            val rsi = if (avgLoss.compareTo(BigDecimal.ZERO) == 0) {
+                BigDecimal(100)
+            } else {
+                val rs = avgGain.divide(avgLoss, 10, java.math.RoundingMode.HALF_UP)
+                BigDecimal(100).subtract(BigDecimal(100).divide(BigDecimal.ONE.add(rs), 10, java.math.RoundingMode.HALF_UP))
+            }
+            result.add(rsi)
+        }
+
+        return result
     }
 }

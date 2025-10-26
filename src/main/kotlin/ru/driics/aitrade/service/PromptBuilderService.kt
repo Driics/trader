@@ -1,9 +1,11 @@
 package ru.driics.aitrade.service
 
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import ru.driics.aitrade.config.PromptProperties
-import ru.driics.aitrade.model.*
+import ru.driics.aitrade.model.MarketState
+import ru.driics.aitrade.model.Position
 import java.math.BigDecimal
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -15,6 +17,7 @@ class PromptBuilderService(
     private val promptProperties: PromptProperties
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
+    private val objectMapper = jacksonObjectMapper()
 
     fun buildPrompt(
         marketState: MarketState,
@@ -91,7 +94,13 @@ class PromptBuilderService(
                 }
 
                 if (data.volume4h != null && data.avgVolume4h != null) {
-                    builder.append("Current Volume: ${formatNumber(data.volume4h)} vs. Average Volume: ${formatNumber(data.avgVolume4h)}\n")
+                    builder.append(
+                        "Current Volume: ${formatNumber(data.volume4h)} vs. Average Volume: ${
+                            formatNumber(
+                                data.avgVolume4h
+                            )
+                        }\n"
+                    )
                 }
 
                 if (data.macd4h.isNotEmpty()) {
@@ -131,7 +140,12 @@ class PromptBuilderService(
         return try {
             val file = java.io.File(promptProperties.outputPath)
             file.parentFile?.mkdirs()
-            file.writeText(prompt)
+
+            // Atomic write: write to temp file first, then rename
+            val tempFile = java.io.File("${promptProperties.outputPath}.tmp")
+            tempFile.writeText(prompt)
+            tempFile.renameTo(file)
+
             log.info("Prompt written to ${promptProperties.outputPath}")
             true
         } catch (e: Exception) {
@@ -146,11 +160,13 @@ class PromptBuilderService(
 
     private fun formatNumber(num: BigDecimal?): String {
         if (num == null || num == BigDecimal.ZERO) return "0"
-        
+
         val abs = num.abs()
         return when {
             abs >= BigDecimal(1000000) -> num.setScale(2, java.math.RoundingMode.HALF_UP).toString()
-            abs >= BigDecimal(1) -> num.setScale(if (abs >= BigDecimal(100)) 0 else 2, java.math.RoundingMode.HALF_UP).toString()
+            abs >= BigDecimal(1) -> num.setScale(if (abs >= BigDecimal(100)) 0 else 2, java.math.RoundingMode.HALF_UP)
+                .toString()
+
             abs >= BigDecimal(0.01) -> num.setScale(4, java.math.RoundingMode.HALF_UP).toString()
             else -> num.setScale(8, java.math.RoundingMode.HALF_UP).toString()
         }
@@ -172,49 +188,46 @@ class PromptBuilderService(
 
     private fun formatPositions(positions: List<Position>): String {
         if (positions.isEmpty()) return "{}"
-        
-        return positions.joinToString(", ") { pos ->
-            buildString {
-                append("{'symbol': '${pos.symbol}', ")
-                append("'quantity': ${formatNumber(pos.quantity)}, ")
-                append("'entry_price': ${formatNumber(pos.entryPrice)}, ")
-                append("'current_price': ${formatNumber(pos.currentPrice)}, ")
-                if (pos.liquidationPrice != null) {
-                    append("'liquidation_price': ${formatNumber(pos.liquidationPrice)}, ")
+
+        return try {
+            // Convert to a simplified map structure for readability
+            val positionMaps = positions.map { pos ->
+                mutableMapOf<String, Any?>(
+                    "symbol" to pos.symbol,
+                    "quantity" to formatNumber(pos.quantity),
+                    "entry_price" to formatNumber(pos.entryPrice),
+                    "current_price" to formatNumber(pos.currentPrice),
+                    "unrealized_pnl" to formatNumber(pos.unrealizedPnl),
+                    "wait_for_fill" to pos.waitForFill
+                ).apply {
+                    pos.liquidationPrice?.let { put("liquidation_price", formatNumber(it)) }
+                    pos.leverage?.let { put("leverage", it) }
+                    pos.exitPlan?.let { plan ->
+                        put(
+                            "exit_plan", mapOf(
+                                "profit_target" to formatNumber(plan.profitTarget),
+                                "stop_loss" to formatNumber(plan.stopLoss),
+                                "invalidation_condition" to plan.invalidationCondition
+                            )
+                        )
+                    }
+                    pos.confidence?.let { put("confidence", formatNumber(it)) }
+                    pos.riskUsd?.let { put("risk_usd", formatNumber(it)) }
+                    pos.slOid?.let { put("sl_oid", it) }
+                    pos.tpOid?.let { put("tp_oid", it) }
+                    pos.entryOid?.let { put("entry_oid", it) }
+                    pos.notionalUsd?.let { put("notional_usd", formatNumber(it)) }
                 }
-                append("'unrealized_pnl': ${formatNumber(pos.unrealizedPnl)}, ")
-                if (pos.leverage != null) {
-                    append("'leverage': ${pos.leverage}, ")
-                }
-                if (pos.exitPlan != null) {
-                    append("'exit_plan': ")
-                    append("{'profit_target': ${formatNumber(pos.exitPlan.profitTarget)}, ")
-                    append("'stop_loss': ${formatNumber(pos.exitPlan.stopLoss)}, ")
-                    append("'invalidation_condition': '${pos.exitPlan.invalidationCondition}'}, ")
-                }
-                if (pos.confidence != null) {
-                    append("'confidence': ${formatNumber(pos.confidence)}, ")
-                }
-                if (pos.riskUsd != null) {
-                    append("'risk_usd': ${formatNumber(pos.riskUsd)}, ")
-                }
-                if (pos.slOid != null) {
-                    append("'sl_oid': ${pos.slOid}, ")
-                }
-                if (pos.tpOid != null) {
-                    append("'tp_oid': ${pos.tpOid}, ")
-                }
-                append("'wait_for_fill': ${pos.waitForFill}, ")
-                if (pos.entryOid != null) {
-                    append("'entry_oid': ${pos.entryOid}, ")
-                }
-                if (pos.notionalUsd != null) {
-                    append("'notional_usd': ${formatNumber(pos.notionalUsd)}")
-                } else {
-                    setLength(length - 2) // Remove trailing ", "
-                }
-                append("}")
             }
+
+            // Use single quotes for outer strings to match original format
+            objectMapper.writeValueAsString(positionMaps)
+                .replace("\"", "'")
+        } catch (e: Exception) {
+            log.error("Error formatting positions", e)
+            "{}"
         }
     }
+
+
 }
