@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.model.MarketState
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicLong
 
 @Service
 class PromptSchedulerService(
@@ -14,6 +15,8 @@ class PromptSchedulerService(
     private val tradingProperties: TradingProperties
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
+
+
 
     @Scheduled(fixedDelay = 180000, initialDelay = 5000)
     fun updatePrompt() {

@@ -19,6 +19,7 @@ import java.time.temporal.ChronoUnit
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicLong
 
 @Service
 class OkxApiService(
@@ -29,11 +30,11 @@ class OkxApiService(
     private val objectMapper = ObjectMapper()
 
     // Default start time for tracking minutes
-    private var sessionStartTime: Long = System.currentTimeMillis()
-    private var invocationCount: Long = 0L
+    private val sessionStartTime: AtomicLong = AtomicLong(System.currentTimeMillis())
+    private val invocationCount: AtomicLong = AtomicLong(0L)
 
     fun fetchMarketData(symbols: List<String>): Map<String, CurrencyMarketData> {
-        invocationCount++
+        invocationCount.incrementAndGet()
         log.info("Fetching market data for symbols: $symbols (invocation #$invocationCount)")
 
         return symbols.associate { symbol ->
@@ -89,7 +90,9 @@ class OkxApiService(
         val volume4h = candles4h.lastOrNull()?.volume?.toBigDecimalOrNull() ?: BigDecimal.ZERO
         val avgVolume4h = if (candles4h.isNotEmpty()) {
             val volumes = candles4h.mapNotNull { it.volume.toBigDecimalOrNull() }
-            if (volumes.isNotEmpty()) volumes.fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(volumes.size) else BigDecimal.ZERO
+            if (volumes.isNotEmpty()) volumes.fold(BigDecimal.ZERO, BigDecimal::add)
+                .divide(BigDecimal(volumes.size), 10, java.math.RoundingMode.HALF_UP)
+            else BigDecimal.ZERO
         } else {
             BigDecimal.ZERO
         }
@@ -113,10 +116,10 @@ class OkxApiService(
             openInterest = openInterest,
             fundingRate = fundingRate,
             intradayPrices = prices,
-            intradayEma20 = prices.let { (0..it.lastIndex).map { i -> calculateEMA(it.subList(0, i + 1), 20) } },
-            intradayMacd = prices.let { (0..it.lastIndex).map { i -> calculateMACD(it.subList(0, i + 1)) } },
-            intradayRsi7 = prices.let { (0..it.lastIndex).map { i -> calculateRSI(it.subList(0, i + 1), 7) } },
-            intradayRsi14 = prices.let { (0..it.lastIndex).map { i -> calculateRSI(it.subList(0, i + 1), 14) } },
+            intradayEma20 = intradayEma20,
+            intradayMacd = intradayMacd,
+            intradayRsi7 = intradayRsi7,
+            intradayRsi14 = intradayRsi14,
             ema20_4h = ema20_4h,
             ema50_4h = ema50_4h,
             atr3_4h = atr3_4h,
@@ -182,8 +185,8 @@ class OkxApiService(
         }
     }
 
-    fun getSessionStartTime(): Long = sessionStartTime
-    fun getInvocationCount(): Long = invocationCount
+    fun getSessionStartTime(): Long = sessionStartTime.get()
+    fun getInvocationCount(): Long = invocationCount.get()
 
     // Private API call methods
     private fun fetchTicker(instId: String): OkxTickerResponse? {
@@ -214,8 +217,8 @@ class OkxApiService(
             
             val jsonNode = objectMapper.readTree(response)
             val candleArray = jsonNode.get("data") ?: return emptyList()
-            
-            candleArray.map { candle ->
+
+            val parsed = candleArray.map { candle ->
                 val values = candle.map { it.asText() }
                 OkxCandleResponse(
                     timestamp = values.getOrNull(0) ?: "",
@@ -227,6 +230,8 @@ class OkxApiService(
                     volumeCcy = values.getOrNull(6) ?: "0"
                 )
             }
+
+            parsed.sortedBy { it.timestamp.toLongOrNull() ?: Long.MAX_VALUE }
         } catch (e: Exception) {
             log.error("Error fetching candles for $instId", e)
             emptyList()
@@ -367,10 +372,12 @@ class OkxApiService(
     // Technical Indicator Calculations
     private fun calculateEMA(prices: List<BigDecimal>, period: Int): BigDecimal {
         if (prices.isEmpty() || period <= 0) return BigDecimal.ZERO
-        if (prices.size < period) return prices.fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(prices.size)
+        if (prices.size < period) return prices.fold(BigDecimal.ZERO, BigDecimal::add)
+            .divide(BigDecimal(prices.size), 10, java.math.RoundingMode.HALF_UP)
 
         val k = BigDecimal(2).divide(BigDecimal(period + 1), 10, java.math.RoundingMode.HALF_UP)
-        var ema = prices.take(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
+        var ema = prices.take(period).fold(BigDecimal.ZERO, BigDecimal::add)
+            .divide(BigDecimal(period), 10, java.math.RoundingMode.HALF_UP)
 
         for (i in period until prices.size) {
             ema = prices[i].multiply(k).add(ema.multiply(BigDecimal.ONE.subtract(k)))
@@ -396,12 +403,16 @@ class OkxApiService(
 
         if (gains.size < period) return BigDecimal.ZERO
 
-        var avgGain = gains.take(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
-        var avgLoss = losses.take(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
+        var avgGain = gains.take(period).fold(BigDecimal.ZERO, BigDecimal::add)
+            .divide(BigDecimal(period), 10, java.math.RoundingMode.HALF_UP)
+        var avgLoss = losses.take(period).fold(BigDecimal.ZERO, BigDecimal::add)
+            .divide(BigDecimal(period), 10, java.math.RoundingMode.HALF_UP)
 
         for (i in period until gains.size) {
-            avgGain = (avgGain.multiply(BigDecimal(period - 1)).add(gains[i])) / BigDecimal(period)
-            avgLoss = (avgLoss.multiply(BigDecimal(period - 1)).add(losses[i])) / BigDecimal(period)
+            avgGain = (avgGain.multiply(BigDecimal(period - 1)).add(gains[i]))
+                .divide(BigDecimal(period), 10, java.math.RoundingMode.HALF_UP)
+            avgLoss = (avgLoss.multiply(BigDecimal(period - 1)).add(losses[i]))
+                .divide(BigDecimal(period), 10, java.math.RoundingMode.HALF_UP)
         }
 
         return if (avgLoss.compareTo(BigDecimal.ZERO) == 0) {
@@ -433,12 +444,15 @@ class OkxApiService(
         if (trueRanges.isEmpty()) return BigDecimal.ZERO
 
         return if (trueRanges.size < period) {
-            trueRanges.fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(trueRanges.size)
+            trueRanges.fold(BigDecimal.ZERO, BigDecimal::add)
+                .divide(BigDecimal(trueRanges.size), 10, java.math.RoundingMode.HALF_UP)
         } else {
             // Use Wilder's smoothing for ATR
-            var atr = trueRanges.take(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
+            var atr = trueRanges.take(period).fold(BigDecimal.ZERO, BigDecimal::add)
+                .divide(BigDecimal(period), 10, java.math.RoundingMode.HALF_UP)
             for (i in period until trueRanges.size) {
-                atr = (atr.multiply(BigDecimal(period - 1)).add(trueRanges[i])) / BigDecimal(period)
+                atr = (atr.multiply(BigDecimal(period - 1)).add(trueRanges[i]))
+                    .divide(BigDecimal(period), 10, java.math.RoundingMode.HALF_UP)
             }
             atr
         }
@@ -451,7 +465,8 @@ class OkxApiService(
         val k = BigDecimal(2).divide(BigDecimal(period + 1), 10, java.math.RoundingMode.HALF_UP)
 
         // Initial SMA
-        var ema = prices.take(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
+        var ema = prices.take(period).fold(BigDecimal.ZERO, BigDecimal::add)
+            .divide(BigDecimal(period), 10, java.math.RoundingMode.HALF_UP)
 
         // Add zeros for initial period
         repeat(period - 1) { result.add(BigDecimal.ZERO) }
@@ -487,8 +502,10 @@ class OkxApiService(
         val gains = changes.map { if (it > BigDecimal.ZERO) it else BigDecimal.ZERO }
         val losses = changes.map { if (it < BigDecimal.ZERO) it.abs() else BigDecimal.ZERO }
 
-        var avgGain = gains.take(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
-        var avgLoss = losses.take(period).fold(BigDecimal.ZERO, BigDecimal::add) / BigDecimal(period)
+        var avgGain = gains.take(period).fold(BigDecimal.ZERO, BigDecimal::add)
+            .divide(BigDecimal(period), 10, java.math.RoundingMode.HALF_UP)
+        var avgLoss = losses.take(period).fold(BigDecimal.ZERO, BigDecimal::add)
+            .divide(BigDecimal(period), 10, java.math.RoundingMode.HALF_UP)
 
         // Calculate first RSI
         val firstRsi = if (avgLoss.compareTo(BigDecimal.ZERO) == 0) {
@@ -501,8 +518,10 @@ class OkxApiService(
 
         // Progressive RSI
         for (i in period until gains.size) {
-            avgGain = (avgGain.multiply(BigDecimal(period - 1)).add(gains[i])) / BigDecimal(period)
-            avgLoss = (avgLoss.multiply(BigDecimal(period - 1)).add(losses[i])) / BigDecimal(period)
+            avgGain = (avgGain.multiply(BigDecimal(period - 1)).add(gains[i]))
+                .divide(BigDecimal(period), 10, java.math.RoundingMode.HALF_UP)
+            avgLoss = (avgLoss.multiply(BigDecimal(period - 1)).add(losses[i]))
+                .divide(BigDecimal(period), 10, java.math.RoundingMode.HALF_UP)
 
             val rsi = if (avgLoss.compareTo(BigDecimal.ZERO) == 0) {
                 BigDecimal(100)
