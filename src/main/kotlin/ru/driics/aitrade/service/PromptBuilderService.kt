@@ -4,6 +4,10 @@ import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import ru.driics.aitrade.config.PromptProperties
 import ru.driics.aitrade.model.MarketState
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -34,12 +38,17 @@ class PromptBuilderService(
 
     fun writePromptToFile(prompt: String): Boolean {
         return try {
-            val file = java.io.File(promptProperties.outputPath)
-            file.parentFile?.mkdirs()
+            val target: Path = Path.of(promptProperties.outputPath)
+            target.parent?.let { Files.createDirectories(it) }
 
-            val tempFile = java.io.File("${promptProperties.outputPath}.tmp")
-            tempFile.writeText(prompt)
-            tempFile.renameTo(file)
+            val tmp: Path = target.resolveSibling(target.fileName.toString() + ".tmp")
+            Files.writeString(tmp, prompt, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)
+
+            try {
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            } catch (_: Exception) {
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING)
+            }
 
             log.info("Prompt written to ${promptProperties.outputPath}")
             true

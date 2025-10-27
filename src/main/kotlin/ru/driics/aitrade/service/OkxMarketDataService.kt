@@ -2,6 +2,7 @@ package ru.driics.aitrade.service
 
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
+
 import ru.driics.aitrade.model.*
 import java.math.BigDecimal
 import java.util.concurrent.atomic.AtomicLong
@@ -47,14 +48,14 @@ class OkxMarketDataService(
         val rsi7 = technicalIndicatorService.calculateRSI(prices, 7)
         val rsi14 = technicalIndicatorService.calculateRSI(prices, 14)
 
-        // Calculate intraday series
-        val intradayEma20 = technicalIndicatorService.calculateProgressiveEMA(prices, 20)
-        val intradayMacd = technicalIndicatorService.calculateProgressiveMACD(prices)
-        val intradayRsi7 = technicalIndicatorService.calculateProgressiveRSI(prices, 7)
-        val intradayRsi14 = technicalIndicatorService.calculateProgressiveRSI(prices, 14)
+        // Calculate intraday series (progressive calculations return oldest → latest)
+        val intradayEma20Full = technicalIndicatorService.calculateProgressiveEMA(prices, 20)
+        val intradayMacdFull = technicalIndicatorService.calculateProgressiveMACD(prices)
+        val intradayRsi7Full = technicalIndicatorService.calculateProgressiveRSI(prices, 7)
+        val intradayRsi14Full = technicalIndicatorService.calculateProgressiveRSI(prices, 14)
 
         // Fetch 4-hour data
-        val candles4h = okxHttpClient.fetchCandles(instId, "4h", 10)
+        val candles4h = okxHttpClient.fetchCandles(instId, "4H", 50)
         val prices4h = candles4h.mapNotNull { it.close.toBigDecimalOrNull() }
 
         val ema20_4h = technicalIndicatorService.calculateEMA(prices4h, 20)
@@ -65,8 +66,8 @@ class OkxMarketDataService(
         val volume4h = candles4h.lastOrNull()?.volume?.toBigDecimalOrNull() ?: BigDecimal.ZERO
         val avgVolume4h = calculateAverageVolume(candles4h)
 
-        val macd4h = technicalIndicatorService.calculateProgressiveMACD(prices4h)
-        val rsi14_4h = technicalIndicatorService.calculateProgressiveRSI(prices4h, 14)
+        val macd4hFull = technicalIndicatorService.calculateProgressiveMACD(prices4h)
+        val rsi14_4hFull = technicalIndicatorService.calculateProgressiveRSI(prices4h, 14)
 
         // Fetch funding rate and open interest
         val fundingRate = okxHttpClient.fetchFundingRate(instId)
@@ -80,19 +81,24 @@ class OkxMarketDataService(
             currentRsi7 = rsi7,
             openInterest = openInterest,
             fundingRate = fundingRate,
-            intradayPrices = prices,
-            intradayEma20 = intradayEma20,
-            intradayMacd = intradayMacd,
-            intradayRsi7 = intradayRsi7,
-            intradayRsi14 = intradayRsi14,
+
+            // ✅ FIXED: Limit to last 10 values (oldest → latest)
+            intradayPrices = prices.takeLast(10),
+            intradayEma20 = intradayEma20Full.takeLast(10),
+            intradayMacd = intradayMacdFull.takeLast(10),
+            intradayRsi7 = intradayRsi7Full.takeLast(10),
+            intradayRsi14 = intradayRsi14Full.takeLast(10),
+
             ema20_4h = ema20_4h,
             ema50_4h = ema50_4h,
             atr3_4h = atr3_4h,
             atr14_4h = atr14_4h,
             volume4h = volume4h,
             avgVolume4h = avgVolume4h,
-            macd4h = macd4h,
-            rsi14_4h = rsi14_4h
+
+            // ✅ FIXED: Limit 4-hour series to last 10 values
+            macd4h = macd4hFull.takeLast(10),
+            rsi14_4h = rsi14_4hFull.takeLast(10)
         )
     }
 

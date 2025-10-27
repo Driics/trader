@@ -1,8 +1,7 @@
 package ru.driics.aitrade.service
 
-import com.fasterxml.jackson.databind.JsonNode
-import com.fasterxml.jackson.databind.ObjectMapper
 import org.slf4j.LoggerFactory
+import org.springframework.core.ParameterizedTypeReference
 import org.springframework.http.HttpEntity
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpMethod
@@ -16,28 +15,36 @@ import java.math.BigDecimal
 class OkxHttpClient(
     private val okxProperties: OkxProperties,
     private val restTemplate: RestTemplate,
-    private val okxAuthService: OkxAuthService,
-    private val objectMapper: ObjectMapper
+    private val okxAuthService: OkxAuthService
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
     fun fetchTicker(instId: String): OkxTickerResponse? {
         return try {
             val url = "${okxProperties.baseUrl}/api/v5/market/ticker?instId=$instId"
-            val response = restTemplate.getForEntity(url, String::class.java).body ?: return null
 
-            val jsonNode = objectMapper.readTree(response)
-            validateApiResponse(jsonNode, "ticker")
-
-            val data = jsonNode.get("data")?.get(0) ?: return null
-
-            OkxTickerResponse(
-                instrumentId = data.get("instId")?.asText() ?: instId,
-                lastPrice = data.get("last")?.asText() ?: "0",
-                askPrice = data.get("askPx")?.asText() ?: "0",
-                bidPrice = data.get("bidPx")?.asText() ?: "0",
-                timestamp = data.get("ts")?.asText() ?: ""
+            val responseType = object : ParameterizedTypeReference<OkxApiResponse<OkxTickerResponse>>() {}
+            val response = restTemplate.exchange(
+                url,
+                HttpMethod.GET,
+                null,
+                responseType
             )
+
+            val apiResponse = response?.body ?: run {
+                log.warn("Received null response for ticker: $instId")
+                return null
+            }
+
+            if (!apiResponse.isSuccess()) {
+                log.warn("OKX API error for ticker $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
+                return null
+            }
+
+            apiResponse.getFirstOrNull() ?: run {
+                log.warn("No ticker data found for $instId")
+                null
+            }
         } catch (e: Exception) {
             log.error("Error fetching ticker for $instId", e)
             null
@@ -47,27 +54,28 @@ class OkxHttpClient(
     fun fetchCandles(instId: String, period: String, limit: Int): List<OkxCandleResponse> {
         return try {
             val url = "${okxProperties.baseUrl}/api/v5/market/candles?instId=$instId&bar=$period&limit=$limit"
-            val response = restTemplate.getForEntity(url, String::class.java).body ?: return emptyList()
 
-            val jsonNode = objectMapper.readTree(response)
-            validateApiResponse(jsonNode, "candles")
+            val responseType = object : ParameterizedTypeReference<OkxCandlesApiResponse>() {}
+            val response = restTemplate.exchange(
+                url,
+                HttpMethod.GET,
+                null,
+                responseType
+            )
 
-            val candleArray = jsonNode.get("data") ?: return emptyList()
+            val apiResponse = response?.body ?: run {
+                log.warn("Received null response for candles: $instId, period: $period")
+                return emptyList()
+            }
 
-            candleArray.map { candle ->
-                val values = candle.map { it.asText() }
-                OkxCandleResponse(
-                    timestamp = values.getOrNull(0) ?: "",
-                    open = values.getOrNull(1) ?: "0",
-                    high = values.getOrNull(2) ?: "0",
-                    low = values.getOrNull(3) ?: "0",
-                    close = values.getOrNull(4) ?: "0",
-                    volume = values.getOrNull(5) ?: "0",
-                    volumeCcy = values.getOrNull(6) ?: "0"
-                )
-            }.sortedBy { it.timestamp.toLongOrNull() ?: Long.MAX_VALUE }
+            if (!apiResponse.isSuccess()) {
+                log.warn("OKX API error for candles $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
+                return emptyList()
+            }
+
+            apiResponse.toCandles().sortedBy { it.timestamp.toLongOrNull() ?: Long.MAX_VALUE }
         } catch (e: Exception) {
-            log.error("Error fetching candles for $instId", e)
+            log.error("Error fetching candles for $instId, period: $period", e)
             emptyList()
         }
     }
@@ -75,13 +83,30 @@ class OkxHttpClient(
     fun fetchFundingRate(instId: String): BigDecimal? {
         return try {
             val url = "${okxProperties.baseUrl}/api/v5/public/funding-rate?instId=$instId"
-            val response = restTemplate.getForEntity(url, String::class.java).body ?: return null
 
-            val jsonNode = objectMapper.readTree(response)
-            validateApiResponse(jsonNode, "funding-rate")
+            // ✅ Use ParameterizedTypeReference to preserve generic type info
+            val responseType = object : ParameterizedTypeReference<OkxApiResponse<OkxFundingResponse>>() {}
+            val response = restTemplate.exchange(
+                url,
+                HttpMethod.GET,
+                null,
+                responseType
+            )
 
-            val data = jsonNode.get("data")?.get(0) ?: return null
-            data.get("fundingRate")?.asText()?.toBigDecimalOrNull()
+            val apiResponse = response?.body ?: run {
+                log.warn("Received null response for funding rate: $instId")
+                return null
+            }
+
+            if (!apiResponse.isSuccess()) {
+                log.warn("OKX API error for funding rate $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
+                return null
+            }
+
+            apiResponse.getFirstOrNull()?.fundingRate?.toBigDecimalOrNull() ?: run {
+                log.debug("No funding rate data for $instId")
+                null
+            }
         } catch (e: Exception) {
             log.error("Error fetching funding rate for $instId", e)
             null
@@ -91,13 +116,29 @@ class OkxHttpClient(
     fun fetchOpenInterest(instId: String): BigDecimal? {
         return try {
             val url = "${okxProperties.baseUrl}/api/v5/public/open-interest?instId=$instId"
-            val response = restTemplate.getForEntity(url, String::class.java).body ?: return null
 
-            val jsonNode = objectMapper.readTree(response)
-            validateApiResponse(jsonNode, "open-interest")
+            val responseType = object : ParameterizedTypeReference<OkxApiResponse<OkxOpenInterestResponse>>() {}
+            val response = restTemplate.exchange(
+                url,
+                HttpMethod.GET,
+                null,
+                responseType
+            )
 
-            val data = jsonNode.get("data")?.get(0) ?: return null
-            data.get("oi")?.asText()?.toBigDecimalOrNull()
+            val apiResponse = response?.body ?: run {
+                log.warn("Received null response for open interest: $instId")
+                return null
+            }
+
+            if (!apiResponse.isSuccess()) {
+                log.warn("OKX API error for open interest $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
+                return null
+            }
+
+            apiResponse.getFirstOrNull()?.openInterest?.toBigDecimalOrNull() ?: run {
+                log.debug("No open interest data for $instId")
+                null
+            }
         } catch (e: Exception) {
             log.error("Error fetching open interest for $instId", e)
             null
@@ -108,26 +149,41 @@ class OkxHttpClient(
         return try {
             val url = "${okxProperties.baseUrl}/api/v5/account/balance"
             val requestPath = "/api/v5/account/balance"
-            val authHeaders = okxAuthService.createAuthHeaders("GET", requestPath)
 
+            val authHeaders = okxAuthService.createAuthHeaders("GET", requestPath)
             val headers = HttpHeaders()
             authHeaders.forEach { (key, value) -> headers.set(key, value) }
             val entity = HttpEntity<String>(headers)
 
-            val response = restTemplate.exchange(url, HttpMethod.GET, entity, String::class.java)
-            val body = response.body ?: return OkxAccountResponse("0", "0", "0", "0")
-
-            val jsonNode = objectMapper.readTree(body)
-            validateApiResponse(jsonNode, "account")
-
-            val data = jsonNode.get("data")?.get(0) ?: return OkxAccountResponse("0", "0", "0", "0")
-
-            OkxAccountResponse(
-                totalEquity = data.get("totalEq")?.asText() ?: "0",
-                availableBalance = data.get("availBal")?.asText() ?: "0",
-                cashBalance = data.get("cashBal")?.asText() ?: "0",
-                unrealizedPnl = data.get("upl")?.asText() ?: "0"
+            val responseType = object : ParameterizedTypeReference<OkxAccountApiResponse>() {}
+            val response = restTemplate.exchange(
+                url,
+                HttpMethod.GET,
+                entity,
+                responseType
             )
+
+            val apiResponse = response?.body ?: run {
+                log.warn("Received null response body for account")
+                return OkxAccountResponse("0", "0", "0", "0")
+            }
+
+            if (!apiResponse.isSuccess()) {
+                log.warn("OKX API error for account - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
+                return OkxAccountResponse("0", "0", "0", "0")
+            }
+
+            apiResponse.getFirstOrNull()?.let { data ->
+                OkxAccountResponse(
+                    totalEquity = data.totalEquity,
+                    availableBalance = data.availableBalance,
+                    cashBalance = data.cashBalance,
+                    unrealizedPnl = data.unrealizedPnl
+                )
+            } ?: run {
+                log.warn("No account data found in response")
+                OkxAccountResponse("0", "0", "0", "0")
+            }
         } catch (e: Exception) {
             log.error("Error fetching account info", e)
             OkxAccountResponse("0", "0", "0", "0")
@@ -138,53 +194,39 @@ class OkxHttpClient(
         return try {
             val url = "${okxProperties.baseUrl}/api/v5/account/positions?instType=SWAP"
             val requestPath = "/api/v5/account/positions?instType=SWAP"
-            val authHeaders = okxAuthService.createAuthHeaders("GET", requestPath)
 
+            val authHeaders = okxAuthService.createAuthHeaders("GET", requestPath)
             val headers = HttpHeaders()
             authHeaders.forEach { (key, value) -> headers.set(key, value) }
             val entity = HttpEntity<String>(headers)
 
-            val response = restTemplate.exchange(url, HttpMethod.GET, entity, String::class.java)
-            val body = response.body ?: return emptyList()
+            // ✅ Use ParameterizedTypeReference for generic response
+            val responseType = object : ParameterizedTypeReference<OkxApiResponse<OkxPositionResponse>>() {}
+            val response = restTemplate.exchange(
+                url,
+                HttpMethod.GET,
+                entity,
+                responseType
+            )
 
-            val jsonNode = objectMapper.readTree(body)
-            validateApiResponse(jsonNode, "positions")
-
-            val dataArray = jsonNode.get("data") ?: return emptyList()
-
-            dataArray.mapNotNull { position ->
-                try {
-                    OkxPositionResponse(
-                        instrumentId = position.get("instId")?.asText() ?: return@mapNotNull null,
-                        positionId = position.get("posId")?.asText() ?: "",
-                        positionSide = position.get("posSide")?.asText() ?: "",
-                        quantity = position.get("pos")?.asText() ?: "0",
-                        averagePrice = position.get("avgPx")?.asText() ?: "0",
-                        marginMode = position.get("mgnMode")?.asText() ?: "",
-                        leverage = position.get("lever")?.asText() ?: "1",
-                        liquidationPrice = position.get("liqPx")?.asText() ?: "0",
-                        markPrice = position.get("markPx")?.asText() ?: "0",
-                        unrealizedPnl = position.get("upl")?.asText() ?: "0",
-                        unrealizedPnlRatio = position.get("uplRatio")?.asText() ?: "0",
-                        createTime = position.get("cTime")?.asText() ?: "",
-                        updateTime = position.get("uTime")?.asText() ?: ""
-                    )
-                } catch (e: Exception) {
-                    log.error("Error parsing position", e)
-                    null
-                }
+            val apiResponse = response?.body ?: run {
+                log.warn("Received null response body for positions")
+                return emptyList()
             }
+
+            if (!apiResponse.isSuccess()) {
+                log.warn("OKX API error for positions - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
+                return emptyList()
+            }
+
+            apiResponse.data.ifEmpty {
+                log.debug("No open positions found")
+            }
+
+            apiResponse.data
         } catch (e: Exception) {
             log.error("Error fetching open positions", e)
             emptyList()
-        }
-    }
-
-    private fun validateApiResponse(jsonNode: JsonNode, endpoint: String) {
-        val code = jsonNode.get("code")?.asText()
-        if (code != "0") {
-            val msg = jsonNode.get("msg")?.asText() ?: "Unknown error"
-            log.warn("OKX API error at $endpoint - Code: $code, Message: $msg")
         }
     }
 }
