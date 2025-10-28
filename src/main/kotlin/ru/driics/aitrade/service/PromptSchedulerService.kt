@@ -1,5 +1,6 @@
 package ru.driics.aitrade.service
 
+import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
@@ -11,7 +12,8 @@ import java.time.Instant
 class PromptSchedulerService(
     private val okxMarketDataService: OkxMarketDataService,
     private val promptBuilderService: PromptBuilderService,
-    private val tradingProperties: TradingProperties
+    private val tradingProperties: TradingProperties,
+    private val koogAiService: KoogAiService
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -69,7 +71,24 @@ class PromptSchedulerService(
 
             promptBuilderService.printPromptToConsole(prompt)
 
-            "Prompt updated successfully"
+            // ✅ AI Analysis with Koog Spring Boot Starter
+            log.info("Starting Koog AI analysis (auto-configured)...")
+            runBlocking {
+                val ai = koogAiService.analyzePrompt(prompt)
+                if (ai.isSuccess) {
+                    log.info(
+                        "AI ({} / {}) analysis complete in {} ms. Preview: {}",
+                        ai.provider, ai.model, ai.executionTimeMs, ai.response.take(220)
+                    )
+                } else {
+                    log.warn(
+                        "AI ({} / {}) analysis failed in {} ms: {}",
+                        ai.provider, ai.model, ai.executionTimeMs, ai.errorMessage
+                    )
+                }
+            }
+
+            "Prompt updated and analyzed successfully"
         } catch (e: Exception) {
             log.error("Error during prompt update", e)
             "Error: ${e.message}"

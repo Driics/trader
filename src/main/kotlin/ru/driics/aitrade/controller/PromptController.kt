@@ -182,7 +182,7 @@ class PromptController(
                 "lastModifiedFormatted" to dateFormatter.format(
                     Instant.ofEpochMilli(promptFile.lastModified())
                 ),
-                "lineCount" to promptFile.readLines().size,
+                "lineCount" to promptFile.useLines { it.count() },
                 "readable" to promptFile.canRead()
             ))
         } else {

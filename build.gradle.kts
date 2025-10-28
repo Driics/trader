@@ -1,6 +1,6 @@
 plugins {
-    kotlin("jvm") version "2.0.21"  // Latest stable
-    kotlin("plugin.spring") version "2.0.21"
+    kotlin("jvm") version "2.2.0"  // Latest stable
+    kotlin("plugin.spring") version "2.2.0"
     id("org.springframework.boot") version "3.5.7"
     id("io.spring.dependency-management") version "1.1.7"
 }
@@ -26,6 +26,7 @@ dependencies {
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("org.jetbrains.kotlin:kotlin-reflect")
 
+    implementation("ai.koog:koog-spring-boot-starter:0.5.0")
     
     // HTTP Client
     implementation("com.squareup.okhttp3:okhttp:4.11.0")

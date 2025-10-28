@@ -39,7 +39,7 @@ class OkxMarketDataService(
         val currentPrice = ticker?.bidPrice?.toBigDecimalOrNull() ?: BigDecimal.ZERO
 
         // Fetch 3-minute candles
-        val candles = okxHttpClient.fetchCandles(instId, "3m", 50)
+        val candles = okxHttpClient.fetchCandles(instId, "3m", 100)
         val prices = candles.mapNotNull { it.close.toBigDecimalOrNull() }
 
         // Calculate current indicators
