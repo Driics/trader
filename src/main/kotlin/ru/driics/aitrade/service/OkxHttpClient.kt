@@ -1,5 +1,6 @@
 package ru.driics.aitrade.service
 
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.slf4j.LoggerFactory
 import org.springframework.core.ParameterizedTypeReference
 import org.springframework.http.HttpEntity
@@ -238,6 +239,117 @@ class OkxHttpClient(
         } catch (e: Exception) {
             log.error("Error fetching open positions", e)
             emptyList()
+        }
+    }
+
+    fun getSwapInstrument(instId: String): OkxInstrumentInfo? = try {
+        val url = "${okxProperties.baseUrl}/api/v5/public/instruments?instType=SWAP&instId=$instId"
+        val type = object : ParameterizedTypeReference<OkxPublicInstrumentsApiResponse>() {}
+        val resp = restTemplate.exchange(url, HttpMethod.GET, null, type)
+        val body = resp.body
+        if (body == null || !body.isSuccess()) {
+            log.warn("Instruments fetch failed for {} - code={}, msg={}", instId, body?.code, body?.msg)
+            null
+        } else {
+            body.firstOrNull()
+        }
+    } catch (e: Exception) {
+        log.error("Error getting instrument {}", instId, e)
+        null
+    }
+
+    fun setLeverageCross(instId: String, leverage: Int, posSide: String? = null): Boolean {
+        return try {
+            val path = "/api/v5/account/set-leverage"
+            val url = "${okxProperties.baseUrl}$path"
+            val payload = mutableMapOf(
+                "instId" to instId,
+                "lever" to leverage.toString(),
+                "mgnMode" to "cross"
+            )
+            posSide?.let { payload["posSide"] = it } // only if using long/short mode
+
+            val headers = HttpHeaders()
+            okxAuthService.createAuthHeaders("POST", path, jacksonObjectMapper().writeValueAsString(payload))
+                .forEach { (k, v) -> headers.set(k, v) }
+
+            val entity = HttpEntity(payload, headers)
+            val type = object : ParameterizedTypeReference<Map<String, Any>>() {}
+            val resp = restTemplate.exchange(url, HttpMethod.POST, entity, type)
+            val ok = (resp.body as? Map<*, *>)?.get("code")?.toString() == "0"
+            if (!ok) {
+                log.warn("Set leverage failed for {}: body={}", instId, resp.body)
+            }
+            ok
+        } catch (e: Exception) {
+            log.error("Error setting leverage for {}", instId, e)
+            false
+        }
+    }
+
+    fun placeMarketOrderWithAttach(
+        instId: String,
+        side: String,             // "buy" | "sell"
+        tdMode: String = "cross", // "cross" | "isolated"
+        szContracts: String,      // size in contracts (respect lotSz and minSz)
+        tpPx: String? = null,     // take-profit price (optional)
+        slPx: String? = null,     // stop-loss price (optional)
+        posSide: String? = null,  // optional for long/short mode
+        clOrdId: String? = null,
+        tag: String? = "ai-signal"
+    ): OkxPlaceOrderData? {
+        return try {
+            val path = "/api/v5/trade/order"
+            val url = "${okxProperties.baseUrl}$path"
+
+            val payload = mutableMapOf(
+                "instId" to instId,
+                "tdMode" to tdMode,
+                "side" to side,
+                "ordType" to "market",
+                "sz" to szContracts
+            )
+            clOrdId?.let { payload["clOrdId"] = it }
+            tag?.let { payload["tag"] = it }
+            posSide?.let { payload["posSide"] = it }
+
+            // Attach TP/SL using new attachAlgoOrds array (OKX docs)
+            val attach = mutableListOf<MutableMap<String, String>>()
+            if (!tpPx.isNullOrBlank()) {
+                attach += mutableMapOf(
+                    "tpTriggerPx" to tpPx,
+                    "tpOrdPx" to tpPx,      // limit TP at the same price; alternatively set tpOrdKind="limit"
+                    "tpOrdKind" to "limit"
+                )
+            }
+            if (!slPx.isNullOrBlank()) {
+                attach += mutableMapOf(
+                    "slTriggerPx" to slPx,
+                    "slOrdPx" to "-1"       // market stop-loss on trigger
+                )
+            }
+            if (attach.isNotEmpty()) payload["attachAlgoOrds"] = attach.joinToString(prefix = "[", postfix = "]")
+
+            val bodyJson = jacksonObjectMapper().writeValueAsString(payload)
+            val headers = HttpHeaders()
+            okxAuthService.createAuthHeaders("POST", path, bodyJson).forEach { (k, v) -> headers.set(k, v) }
+
+            val entity = HttpEntity(bodyJson, headers)
+            val type = object : ParameterizedTypeReference<OkxPlaceOrderApiResponse>() {}
+            val resp = restTemplate.exchange(url, HttpMethod.POST, entity, type)
+            val api = resp.body
+
+            if (api == null) {
+                log.warn("Null response placing order {}", clOrdId)
+                return null
+            }
+            if (!api.isSuccess()) {
+                log.warn("Order rejected {}: code={}, msg={}, data={}", clOrdId, api.code, api.msg, api.data)
+            }
+            api.firstOrNull()
+        } catch (e: Exception) {
+            log.error("Error placing order {}", clOrdId, e)
+            null
         }
     }
 }
