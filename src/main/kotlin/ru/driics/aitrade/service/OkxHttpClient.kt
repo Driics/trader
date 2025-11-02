@@ -173,17 +173,28 @@ class OkxHttpClient(
                 return OkxAccountResponse("0", "0", "0", "0")
             }
 
-            apiResponse.getFirstOrNull()?.let { data ->
-                OkxAccountResponse(
-                    totalEquity = data.totalEquity,
-                    availableBalance = data.availableBalance,
-                    cashBalance = data.cashBalance,
-                    unrealizedPnl = data.unrealizedPnl
-                )
-            } ?: run {
-                log.warn("No account data found in response")
-                OkxAccountResponse("0", "0", "0", "0")
+            val data = apiResponse.getFirstOrNull()
+                ?: return OkxAccountResponse("0", "0", "0", "0")
+
+            val totalEq = data.totalEquity.toBigDecimalOrNull() ?: BigDecimal.ZERO
+            val availEqUsd = data.availableEquityUsd.toBigDecimalOrNull() ?: BigDecimal.ZERO
+
+            // Try per‑ccy USDT as fallback for available cash if availEq isn’t available
+            val usdtAvailBal = data.details.firstOrNull { it.currency.equals("USDT", ignoreCase = true) }
+                ?.availableBalance?.toBigDecimalOrNull()
+
+            val derivedAvailable = when {
+                availEqUsd > BigDecimal.ZERO -> availEqUsd
+                usdtAvailBal != null -> usdtAvailBal
+                else -> BigDecimal.ZERO
             }
+
+            return OkxAccountResponse(
+                totalEquity = totalEq.toPlainString(),
+                availableBalance = derivedAvailable.toPlainString(),
+                cashBalance = data.cashBalance, // kept as-is (per-ccy)
+                unrealizedPnl = data.unrealizedPnl
+            )
         } catch (e: Exception) {
             log.error("Error fetching account info", e)
             OkxAccountResponse("0", "0", "0", "0")

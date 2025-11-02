@@ -5,7 +5,9 @@ import org.springframework.stereotype.Service
 
 import ru.driics.aitrade.model.*
 import java.math.BigDecimal
+import java.math.RoundingMode
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 @Service
 class OkxMarketDataService(
@@ -15,6 +17,7 @@ class OkxMarketDataService(
     private val log = LoggerFactory.getLogger(javaClass)
     private val sessionStartTime: AtomicLong = AtomicLong(System.currentTimeMillis())
     private val invocationCount: AtomicLong = AtomicLong(0L)
+    private val initialAccountEquity: AtomicReference<BigDecimal?> = AtomicReference(null)
 
     fun fetchMarketData(symbols: List<String>): Map<String, CurrencyMarketData> {
         invocationCount.incrementAndGet()
@@ -103,20 +106,38 @@ class OkxMarketDataService(
     }
 
     fun fetchAccountInfo(): AccountInfo {
-        log.info("Fetching account information")
         return try {
-            val account = okxHttpClient.fetchAccount()
-            val totalEquity = account.totalEquity.toBigDecimalOrNull() ?: BigDecimal.ZERO
-            val availableBalance = account.availableBalance.toBigDecimalOrNull() ?: BigDecimal.ZERO
+            val acc = okxHttpClient.fetchAccount()
+            val totalEq = acc.totalEquity.toBigDecimalOrNull() ?: BigDecimal.ZERO
+            val avail = acc.availableBalance.toBigDecimalOrNull() ?: BigDecimal.ZERO
+            val upl = acc.unrealizedPnl.toBigDecimalOrNull() ?: BigDecimal.ZERO
+
+            // establish baseline once (first successful read)
+            val baseline = initialAccountEquity.get() ?: run {
+                initialAccountEquity.set(totalEq)
+                totalEq
+            }
+
+            // Total Return relative to baseline so “no trades yet” reads 0.00%
+            val totalReturnPct =
+                if (baseline.compareTo(BigDecimal.ZERO) == 0) BigDecimal.ZERO
+                else totalEq.subtract(baseline)
+                    .divide(baseline, 6, RoundingMode.HALF_UP)
+                    .multiply(BigDecimal(100))
+
+            // If there are no positions AND OKX returned 0 available while equity > 0,
+            // we surface availableCash = totalEq (unified account, no trades case).
+            val positions = fetchPositions()
+            val availableCash =
+                if (positions.isEmpty() && avail.compareTo(BigDecimal.ZERO) == 0 && totalEq > BigDecimal.ZERO)
+                    totalEq
+                else
+                    avail
 
             AccountInfo(
-                totalReturn = if (totalEquity > BigDecimal.ZERO) {
-                    ((totalEquity - BigDecimal(10000)) / BigDecimal(10000) * BigDecimal(100))
-                } else {
-                    BigDecimal.ZERO
-                },
-                availableCash = availableBalance,
-                accountValue = totalEquity,
+                totalReturn = totalReturnPct,
+                availableCash = availableCash,
+                accountValue = totalEq,
                 sharpeRatio = null
             )
         } catch (e: Exception) {

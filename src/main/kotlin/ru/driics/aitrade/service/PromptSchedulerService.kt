@@ -77,8 +77,8 @@ class PromptSchedulerService(
                 val ai = koogAiService.analyzePrompt(prompt)
                 if (ai.isSuccess) {
                     log.info(
-                        "AI ({} / {}) analysis complete in {} ms. Preview: {}",
-                        ai.provider, ai.model, ai.executionTimeMs, ai.response.take(220)
+                        "AI ({} / {}) analysis complete in {} ms. Preview:\n {}",
+                        ai.provider, ai.model, ai.executionTimeMs, ai.response
                     )
                 } else {
                     log.warn(

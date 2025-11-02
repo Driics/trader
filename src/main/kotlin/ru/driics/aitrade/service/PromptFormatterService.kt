@@ -30,6 +30,13 @@ class PromptFormatterService {
         }
     }
 
+    fun formatMoneyUsd(num: BigDecimal?): String {
+        if (num == null) return "$0.00"
+        val bd = num.setScale(2, RoundingMode.HALF_UP)
+        val nf = java.text.NumberFormat.getCurrencyInstance(java.util.Locale.US)
+        return nf.format(bd)
+    }
+
     fun formatScientific(num: BigDecimal?): String {
         if (num == null || num == BigDecimal.ZERO) return "0"
 

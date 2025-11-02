@@ -94,6 +94,9 @@ data class OkxAccountData(
     @JsonProperty("totalEq")
     val totalEquity: String = "0",
 
+    @JsonProperty("availEq")
+    val availableEquityUsd: String = "0",
+
     @JsonProperty("availBal")
     val availableBalance: String = "0",
 

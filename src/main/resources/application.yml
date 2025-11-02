@@ -10,70 +10,48 @@ trading:
   currencies: BTC,ETH,SOL,BNB,XRP,DOGE
   time-zone: UTC
 
-# Prompt Configuration
-prompt:
-  output-path: ./prompt.txt
+prompt.output-path: ./prompt.txt
 
-# ✅ Koog AI Configuration (Spring Boot Starter)
 ai:
   koog:
-    # OpenRouter Primary Configuration
     openrouter:
       enabled: true
       api-key: ${OPENROUTER_API_KEY:your-api-key-here}
       base-url: https://openrouter.ai/api/v1
-      model: deepseek/deepseek-chat-v3.1
-      max-tokens: 2048
-      temperature: 0.2
-      retry:
-        enabled: true
-        max-attempts: 3
 
   custom:
     # Custom System Prompt
     system-prompt: |
       You are an expert cryptocurrency trading analyst. 
-      Analyze the provided market data and generate clear, actionable trading signals.
-      For each signal, specify:
-      - action (BUY/SELL/HOLD)
-      - symbol
-      - confidence (0-100%)
-      - entry price
-      - stop loss
-      - take profit
-      - reasoning
-      
-      I need to output JSON for each coin. The JSON structure for hold is:
-      { "COIN": { "trade_signal_args": { "coin": "COIN", "signal": "hold", "quantity": <full current size>, "profit_target": <float>, "stop_loss": <float>, "invalidation_condition": "<string>", "leverage": <int 5–40>, "confidence": <0–1>, "risk_usd": <float> } } }
-      I have the current positions with all these details. I should use the existing values from the position data provided.
-      For example, for ETH:      
-      quantity: 5.74
-      profit_target: 4568.31
-      stop_loss: 4065.43
-      invalidation_condition: 'If the price closes below 4000 on a 3-minute candle'
-      leverage: 10
-      confidence: 0.65
-      risk_usd: 722.7846
-        Similarly for others.        
-        I need to output one JSON object per coin, all together in a single JSON object? No, looking at the examples, it seems I should output a JSON object that has keys for each coin, and each value is another object with "trade_signal_args".
-      The output should be a JSON object like: { "ETH": { ... }, "SOL": { ... }, ... }        
-        And for each, the inner structure depends on the signal.        
-        Since I'm holding all, it will be the hold structure for each.        
-        I should not change any of the values for hold; just output the current state.      
-      The instructions say: "For Hold (hold). Supply a json object for each existing position" and it includes all the fields.
-        Also, for hold, there's no justification needed, unlike for entry or close.
-        In the hold example, there's no "justification" key, but in entry and close, there is. For hold, it's omitted.
-      Check the examples:
-      For entry/exit: has "justification"
-      For close: has "justification"
-      For hold: does not have "justification"
-        So for hold, I should not include "justification" in the JSON.
-      In the hold example: { "COIN": { "trade_signal_args": { "coin": "COIN", "signal": "hold", "quantity": <full current size>, "profit_target": <float>, "stop_loss": <float>, "invalidation_condition": "<string>", "leverage": <int 5–40>, "confidence": <0–1>, "risk_usd": <float> } } }
-        No justification.        
-        For close and entry, it has justification.        
-        So for hold, I'll omit justification.        
-        Now, I need to do this for all six coins.        
-        Also, ensure that the quantity is the full current size from the position.        
-        Finally, output only JSON, no prose.      
-      So, my response should be a JSON object with keys for each coin: ETH, SOL, XRP, BTC, DOGE, BNB.        
-        Each value is an object with "trade_signal_args" containing the hold details.
+      Analyze the provided market data and generate clear, actionable trading signals in JSON format.
+
+      Output Structure:
+      - Single JSON object with coin symbols as keys (e.g., {"ETH": {...}, "SOL": {...}})
+      - Each coin contains a "trade_signal_args" object
+
+      For HOLD signals:
+      - Include: coin, signal ("hold"), quantity (full current size), profit_target, stop_loss, invalidation_condition, leverage (5-40), confidence (0-1), risk_usd
+      - Do NOT include "justification" field
+      - Use existing position values without modification
+
+      For BUY/SELL signals:
+      - Include all fields above plus "justification"
+      - Specify entry price, stop loss, and take profit
+
+      Output only valid JSON, no additional prose. Don't add code tags(```) or other formatting.
+      JSON format:
+      {
+        "COIN": {
+          "trade_signal_args": {
+            "coin": "COIN",
+            "signal": "hold",
+            "quantity": <full current size>,
+            "profit_target": <float>,
+            "stop_loss": <float>,
+            "invalidation_condition": "<string>",
+            "leverage": <int 5–40>,
+            "confidence": <0–1>,   
+            "risk_usd": <float>
+          }
+        }
+      }

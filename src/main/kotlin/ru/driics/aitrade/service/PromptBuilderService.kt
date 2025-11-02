@@ -144,8 +144,8 @@ class PromptBuilderService(
     private fun StringBuilder.appendAccountInfo(marketState: MarketState) {
         append("HERE IS YOUR ACCOUNT INFORMATION & PERFORMANCE\n")
         append("Current Total Return (percent): ${promptFormatterService.formatPercent(marketState.account.totalReturn)}\n")
-        append("Available Cash: ${promptFormatterService.formatNumber(marketState.account.availableCash)}\n")
-        append("Current Account Value: ${promptFormatterService.formatNumber(marketState.account.accountValue)}\n")
+        append("Available Cash (USD): ${promptFormatterService.formatMoneyUsd(marketState.account.availableCash)}\n")
+        append("Current Account Value (USD): ${promptFormatterService.formatMoneyUsd(marketState.account.accountValue)}\n")
 
         if (marketState.positions.isNotEmpty()) {
             append("Current live positions & performance: ")
