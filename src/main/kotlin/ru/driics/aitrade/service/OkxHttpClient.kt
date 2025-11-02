@@ -302,7 +302,7 @@ class OkxHttpClient(
             val path = "/api/v5/trade/order"
             val url = "${okxProperties.baseUrl}$path"
 
-            val payload = mutableMapOf(
+            val payload = mutableMapOf<String, Any>(
                 "instId" to instId,
                 "tdMode" to tdMode,
                 "side" to side,
@@ -328,7 +328,7 @@ class OkxHttpClient(
                     "slOrdPx" to "-1"       // market stop-loss on trigger
                 )
             }
-            if (attach.isNotEmpty()) payload["attachAlgoOrds"] = attach.joinToString(prefix = "[", postfix = "]")
+            if (attach.isNotEmpty()) payload["attachAlgoOrds"] = attach
 
             val bodyJson = jacksonObjectMapper().writeValueAsString(payload)
             val headers = HttpHeaders()

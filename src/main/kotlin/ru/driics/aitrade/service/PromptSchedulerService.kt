@@ -13,7 +13,8 @@ class PromptSchedulerService(
     private val okxMarketDataService: OkxMarketDataService,
     private val promptBuilderService: PromptBuilderService,
     private val tradingProperties: TradingProperties,
-    private val koogAiService: KoogAiService
+    private val koogAiService: KoogAiService,
+    private val aiTradeExecutionService: AiTradeExecutionService
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -80,6 +81,26 @@ class PromptSchedulerService(
                         "AI ({} / {}) analysis complete in {} ms. Preview:\n {}",
                         ai.provider, ai.model, ai.executionTimeMs, ai.response
                     )
+
+                    if (tradingProperties.autoExecute) {
+                        try {
+                            val execResults = aiTradeExecutionService.execute(ai.response)
+                            val placed = execResults.count { it.action == "placed" }
+                            val skipped = execResults.size - placed
+                            log.info(
+                                "Auto-execution done: placed={}, skipped={}. Details:\n{}",
+                                placed, skipped,
+                                execResults.joinToString("\n") {
+                                    "- ${it.symbol}: ${it.action} (${it.message})" +
+                                            (it.ordId?.let { id -> ", ordId=$id" } ?: "")
+                                }
+                            )
+                        } catch (e: Exception) {
+                            log.error("Auto-execution failed; continuing scheduler cycle", e)
+                        }
+                    } else {
+                        log.info("Auto-execution disabled (trading.auto-execute=false). Skipping order placement.")
+                    }
                 } else {
                     log.warn(
                         "AI ({} / {}) analysis failed in {} ms: {}",

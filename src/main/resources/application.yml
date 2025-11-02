@@ -9,6 +9,7 @@ okx:
 trading:
   currencies: BTC,ETH,SOL,BNB,XRP,DOGE
   time-zone: UTC
+  auto-execute: true
 
 prompt.output-path: ./prompt.txt
 
@@ -40,6 +41,7 @@ ai:
 
       Output only valid JSON, no additional prose. Don't add code tags(```) or other formatting.
       JSON format:
+      Example for hold:
       {
         "COIN": {
           "trade_signal_args": {

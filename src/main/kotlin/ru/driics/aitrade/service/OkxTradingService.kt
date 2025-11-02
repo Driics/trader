@@ -31,6 +31,8 @@ class OkxTradingService(
     ): Pair<Boolean, String?> {
         val tpStr = tpPx?.let { quantize(it, tickSz).toPlainString() }
         val slStr = slPx?.let { quantize(it, tickSz).toPlainString() }
+        val safeTag = sanitizeTag("ai-signal")
+
         val res = okxHttpClient.placeMarketOrderWithAttach(
             instId = instId,
             side = side,
@@ -40,7 +42,7 @@ class OkxTradingService(
             slPx = slStr,
             posSide = null, // if you later switch to long/short mode, pass "long"/"short" here
             clOrdId = clOrdId,
-            tag = "ai-signal"
+            tag = safeTag
         )
         val ok = (res?.sCode == "0")
         if (!ok) {
@@ -58,4 +60,10 @@ class OkxTradingService(
 
     private fun stripTrailingZeros(x: BigDecimal): String =
         x.stripTrailingZeros().toPlainString()
+
+    private fun sanitizeTag(raw: String?, maxLen: Int = 16, fallback: String = "AISIGNAL"): String? {
+        val cleaned = (raw ?: fallback).filter { it.isLetterOrDigit() }.uppercase()
+        val trimmed = cleaned.take(maxLen)
+        return trimmed.ifBlank { null }
+    }
 }

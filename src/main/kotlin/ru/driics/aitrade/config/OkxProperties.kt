@@ -21,7 +21,8 @@ data class OkxProperties(
 @ConfigurationProperties(prefix = "trading")
 data class TradingProperties(
     var currencies: String = "BTC,ETH,SOL,BNB,XRP,DOGE",
-    var timeZone: String = "UTC"
+    var timeZone: String = "UTC",
+    var autoExecute: Boolean = false
 ) {
     fun getCurrenciesList(): List<String> = currencies.split(",").map { it.trim() }
 }

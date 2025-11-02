@@ -12,6 +12,7 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Instant
 import java.util.*
+import java.util.concurrent.atomic.AtomicLong
 
 @Service
 class AiTradeExecutionService(
@@ -29,6 +30,16 @@ class AiTradeExecutionService(
         private val defaultLeverage = 10
     }
     private val mapper = jacksonObjectMapper()
+    private val clCounter = AtomicLong(0)
+
+    private fun makeClOrdId(symbol: String): String {
+        val sym = symbol.filter { it.isLetterOrDigit() }.uppercase()
+        val head = ("AI" + sym).take(8)
+        val ts36 = System.currentTimeMillis().toString(36).uppercase()
+        val c36 = (clCounter.incrementAndGet() and 0xFFFF).toString(36).uppercase()
+        val raw = head + ts36 + c36
+        return if (raw.length <= 32) raw else raw.takeLast(32)
+    }
 
     /**
      * Execute AI decisions (JSON string) across supported symbols.
@@ -97,15 +108,37 @@ class AiTradeExecutionService(
             val stopLoss = args.stopLoss
             val profitTarget = args.profitTarget
 
+            if (signal == "buy") {
+                if (profitTarget != null && profitTarget <= entryPx) {
+                    results += AiTradeExecutionResult(symbol, "skipped", "Invalid profit_target for buy: $profitTarget <= $entryPx")
+                    continue
+                }
+                if (stopLoss != null && stopLoss >= entryPx) {
+                    results += AiTradeExecutionResult(symbol, "skipped", "Invalid stop_loss for buy: $stopLoss >= $entryPx")
+                    continue
+                }
+            } else if (signal == "sell") {
+                if (profitTarget != null && profitTarget >= entryPx) {
+                    results += AiTradeExecutionResult(symbol, "skipped", "Invalid profit_target for sell: $profitTarget >= $entryPx")
+                    continue
+                }
+                if (stopLoss != null && stopLoss <= entryPx) {
+                    results += AiTradeExecutionResult(symbol, "skipped", "Invalid stop_loss for sell: $stopLoss <= $entryPx")
+                    continue
+                }
+            }
+
             // Quantity in coin units: prefer provided quantity if > 0; else compute from risk_usd / price gap
             val coinQty = when {
                 (args.quantity ?: BigDecimal.ZERO) > BigDecimal.ZERO -> args.quantity!!
                 args.riskUsd != null && stopLoss != null && stopLoss > BigDecimal.ZERO -> {
                     val riskPerUnit = (entryPx - stopLoss).abs()
-                    if (riskPerUnit.compareTo(BigDecimal.ZERO) <= 0) {
+                    val minRisk = entryPx.multiply(BigDecimal("0.005"))
+                    if (riskPerUnit < minRisk) {
+                        log.warn("Risk per unit too small for {}: {} < {}", symbol, riskPerUnit, minRisk)
                         BigDecimal.ZERO
                     } else {
-                        args.riskUsd!!.divide(riskPerUnit, 8, RoundingMode.HALF_UP)
+                        args.riskUsd.divide(riskPerUnit, 8, RoundingMode.HALF_UP)
                     }
                 }
                 else -> BigDecimal.ZERO
@@ -144,7 +177,7 @@ class AiTradeExecutionService(
             val tick = inst.tickSz?.toBigDecimalOrNull()?.takeIf { it > BigDecimal.ZERO } ?: BigDecimal("0.01")
 
             // Place market order and attach TP/SL
-            val clId = "ai-${symbol}-${now}"
+            val clId = makeClOrdId(symbol)
             val side = if (signal == "buy") "buy" else "sell"
 
             val (ok, ordId) = okxTradingService.placeMarketOrderWithTpSl(
