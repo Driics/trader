@@ -78,9 +78,14 @@ data class OkxPlaceOrderApiResponse(
 
 // ---------- Execution result per symbol ----------
 
+enum class AIAction {
+    PLACED,
+    SKIPPED
+}
+
 data class AiTradeExecutionResult(
     val symbol: String,
-    val action: String, // "skipped" | "placed"
+    val action: AIAction,
     val message: String,
     val instId: String? = null,
     val clOrdId: String? = null,

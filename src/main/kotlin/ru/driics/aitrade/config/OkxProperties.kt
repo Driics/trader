@@ -4,6 +4,7 @@ import jakarta.validation.constraints.NotBlank
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.stereotype.Component
 import org.springframework.validation.annotation.Validated
+import java.math.BigDecimal
 
 @Component
 @ConfigurationProperties(prefix = "okx.api")
@@ -22,7 +23,9 @@ data class OkxProperties(
 data class TradingProperties(
     var currencies: String = "BTC,ETH,SOL,BNB,XRP,DOGE",
     var timeZone: String = "UTC",
-    var autoExecute: Boolean = false
+    var autoExecute: Boolean = false,
+    var takerFeePct: BigDecimal = BigDecimal("0.0010"),      // 0.10% (conservative default)
+    var marginBufferPct: BigDecimal = BigDecimal("0.02")
 ) {
     fun getCurrenciesList(): List<String> = currencies.split(",").map { it.trim() }
 }

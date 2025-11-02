@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
 import ru.driics.aitrade.config.TradingProperties
+import ru.driics.aitrade.model.AIAction
 import ru.driics.aitrade.model.MarketState
 import java.time.Instant
 
@@ -85,8 +86,8 @@ class PromptSchedulerService(
                     if (tradingProperties.autoExecute) {
                         try {
                             val execResults = aiTradeExecutionService.execute(ai.response)
-                            val placed = execResults.count { it.action == "placed" }
-                            val skipped = execResults.size - placed
+                            val placed = execResults.count { it.action == AIAction.PLACED }
+                            val skipped = execResults.count { it.action == AIAction.SKIPPED }
                             log.info(
                                 "Auto-execution done: placed={}, skipped={}. Details:\n{}",
                                 placed, skipped,
