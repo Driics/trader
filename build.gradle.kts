@@ -26,9 +26,10 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-validation")
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("org.jetbrains.kotlin:kotlin-reflect")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-core:1.9.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-core-jvm:1.9.0")
+    implementation(platform("org.jetbrains.kotlinx:kotlinx-serialization-bom:1.9.0"))
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-core")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-core-jvm")
 
     implementation("ai.koog:koog-spring-boot-starter:0.5.1")
     
