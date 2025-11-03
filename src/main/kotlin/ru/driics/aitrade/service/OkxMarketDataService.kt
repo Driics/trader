@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 @Service
 class OkxMarketDataService(
-    private val okxHttpClient: OkxHttpClient,
+    private val okxRestClient: OkxRestClient,
     private val technicalIndicatorService: TechnicalIndicatorService
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
@@ -38,11 +38,11 @@ class OkxMarketDataService(
         val instId = "${symbol}-USDT-SWAP"
 
         // Fetch ticker
-        val ticker = okxHttpClient.fetchTicker(instId)
+        val ticker = okxRestClient.fetchTicker(instId)
         val currentPrice = ticker?.bidPrice?.toBigDecimalOrNull() ?: BigDecimal.ZERO
 
         // Fetch 3-minute candles
-        val candles = okxHttpClient.fetchCandles(instId, "3m", 100)
+        val candles = okxRestClient.fetchCandles(instId, "3m", 100)
         val prices = candles.mapNotNull { it.close.toBigDecimalOrNull() }
 
         // Calculate current indicators
@@ -58,7 +58,7 @@ class OkxMarketDataService(
         val intradayRsi14Full = technicalIndicatorService.calculateProgressiveRSI(prices, 14)
 
         // Fetch 4-hour data
-        val candles4h = okxHttpClient.fetchCandles(instId, "4H", 50)
+        val candles4h = okxRestClient.fetchCandles(instId, "4H", 50)
         val prices4h = candles4h.mapNotNull { it.close.toBigDecimalOrNull() }
 
         val ema20_4h = technicalIndicatorService.calculateEMA(prices4h, 20)
@@ -73,8 +73,8 @@ class OkxMarketDataService(
         val rsi14_4hFull = technicalIndicatorService.calculateProgressiveRSI(prices4h, 14)
 
         // Fetch funding rate and open interest
-        val fundingRate = okxHttpClient.fetchFundingRate(instId)
-        val openInterest = okxHttpClient.fetchOpenInterest(instId)
+        val fundingRate = okxRestClient.fetchFundingRate(instId)
+        val openInterest = okxRestClient.fetchOpenInterest(instId)
 
         return CurrencyMarketData(
             symbol = symbol,
@@ -107,7 +107,7 @@ class OkxMarketDataService(
 
     fun fetchAccountInfo(): AccountInfo {
         return try {
-            val acc = okxHttpClient.fetchAccount()
+            val acc = okxRestClient.fetchAccount()
             val totalEq = acc.totalEquity.toBigDecimalOrNull() ?: BigDecimal.ZERO
             val avail = acc.availableBalance.toBigDecimalOrNull() ?: BigDecimal.ZERO
             val upl = acc.unrealizedPnl.toBigDecimalOrNull() ?: BigDecimal.ZERO
@@ -153,7 +153,7 @@ class OkxMarketDataService(
     fun fetchPositions(): List<Position> {
         log.info("Fetching positions")
         return try {
-            val positions = okxHttpClient.fetchOpenPositions()
+            val positions = okxRestClient.fetchOpenPositions()
             positions.mapNotNull { pos ->
                 try {
                     Position(

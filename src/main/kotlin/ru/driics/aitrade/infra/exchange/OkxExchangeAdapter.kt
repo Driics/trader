@@ -8,7 +8,7 @@ import ru.driics.aitrade.domain.ports.PlaceOrderOutcome
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.model.MarketState
 import ru.driics.aitrade.model.OkxInstrumentInfo
-import ru.driics.aitrade.service.OkxHttpClient
+import ru.driics.aitrade.service.OkxRestClient
 import ru.driics.aitrade.service.OkxMarketDataService
 import ru.driics.aitrade.service.OkxTradingService
 import java.math.BigDecimal
@@ -17,7 +17,7 @@ import java.math.BigDecimal
 class OkxExchangeAdapter(
     private val market: OkxMarketDataService,
     private val tradingService: OkxTradingService,
-    private val rest: OkxHttpClient
+    private val rest: OkxRestClient
 ): MarketDataPort, TradingPort {
     override suspend fun loadMarketState(symbols: List<String>): MarketState = withContext(Dispatchers.IO) {
         val currencies = market.fetchMarketData(symbols)

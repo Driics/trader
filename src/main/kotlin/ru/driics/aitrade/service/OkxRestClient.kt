@@ -13,7 +13,7 @@ import ru.driics.aitrade.model.*
 import java.math.BigDecimal
 
 @Service
-class OkxHttpClient(
+class OkxRestClient(
     private val okxProperties: OkxProperties,
     private val restTemplate: RestTemplate,
     private val okxAuthService: OkxAuthService

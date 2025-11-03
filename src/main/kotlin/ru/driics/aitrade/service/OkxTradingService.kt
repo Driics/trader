@@ -8,17 +8,17 @@ import java.math.RoundingMode
 
 @Service
 class OkxTradingService(
-    private val okxHttpClient: OkxHttpClient
+    private val okxRestClient: OkxRestClient
 ) {
     companion object {
         private val log = KotlinLogging.logger {  }
     }
 
     fun loadInstrument(instId: String): OkxInstrumentInfo? =
-        okxHttpClient.getSwapInstrument(instId)
+        okxRestClient.getSwapInstrument(instId)
 
     fun setCrossLeverage(instId: String, leverage: Int): Boolean =
-        okxHttpClient.setLeverageCross(instId, leverage)
+        okxRestClient.setLeverageCross(instId, leverage)
 
     fun placeMarketOrderWithTpSl(
         instId: String,
@@ -33,7 +33,7 @@ class OkxTradingService(
         val slStr = slPx?.let { quantize(it, tickSz).toPlainString() }
         val safeTag = sanitizeTag("ai-signal")
 
-        val res = okxHttpClient.placeMarketOrderWithAttach(
+        val res = okxRestClient.placeMarketOrderWithAttach(
             instId = instId,
             side = side,
             tdMode = "cross",

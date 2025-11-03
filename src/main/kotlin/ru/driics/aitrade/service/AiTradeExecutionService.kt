@@ -17,7 +17,6 @@ import ru.driics.aitrade.model.AiTradeSignalArgs
 import ru.driics.aitrade.model.OkxInstrumentInfo
 import java.math.BigDecimal
 import java.math.RoundingMode
-import java.time.Instant
 import java.util.*
 import java.util.concurrent.atomic.AtomicLong
 
@@ -25,7 +24,7 @@ import java.util.concurrent.atomic.AtomicLong
 class AiTradeExecutionService(
     private val okxMarketDataService: OkxMarketDataService,
     private val okxTradingService: OkxTradingService,
-    private val okxHttpClient: OkxHttpClient,
+    private val okxRestClient: OkxRestClient,
     private val tradingProperties: TradingProperties
 ) {
     companion object {
@@ -227,7 +226,7 @@ class AiTradeExecutionService(
 
         // Fetch instrument + ticker concurrently
         val instDeferred = async(Dispatchers.IO) { okxTradingService.loadInstrument(instId) }
-        val tickDeferred = async(Dispatchers.IO) { okxHttpClient.fetchTicker(instId) }
+        val tickDeferred = async(Dispatchers.IO) { okxRestClient.fetchTicker(instId) }
 
         val inst = instDeferred.await() ?: return@coroutineScope PlanResult.Skip(symbol, "No instrument info for $instId")
         val ticker = tickDeferred.await()
