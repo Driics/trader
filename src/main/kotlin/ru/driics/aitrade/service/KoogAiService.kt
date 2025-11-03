@@ -32,9 +32,9 @@ class KoogAiService(
     }
 
 
-    val deepSeekV31 = LLModel(
+    val model = LLModel(
         provider = LLMProvider.OpenRouter,
-        id = "deepseek/deepseek-v3.2-exp",
+        id = "qwen/qwen3-max",
         contextLength = 131_072,
         capabilities = listOf(
             LLMCapability.Temperature,
@@ -47,7 +47,7 @@ class KoogAiService(
 
     override fun getProviderName(): String = "koog-openrouter"
 
-    override fun getModel(): String = deepSeekV31.id
+    override fun getModel(): String = model.id
 
     override fun getLastAnalysis(): LastAiAnalysis? = last.get()
 
@@ -60,13 +60,13 @@ class KoogAiService(
                 user(prompt)
             }
 
-            val result = openRouterExecutorMy.execute(p, deepSeekV31)
+            val result = openRouterExecutorMy.execute(p, model)
             val took = System.currentTimeMillis() - t0
 
             val responseText = result[0].content
             val snapshot = LastAiAnalysis(
                 provider = getProviderName(),
-                model = deepSeekV31.id,
+                model = model.id,
                 timestamp = Instant.now().toEpochMilli(),
                 executionTimeMs = took,
                 success = true,
@@ -86,7 +86,7 @@ class KoogAiService(
             logger.error(e) { "Koog/OpenRouter analysis failed" }
             val snapshot = LastAiAnalysis(
                 provider = getProviderName(),
-                model = deepSeekV31.id,
+                model = model.id,
                 timestamp = Instant.now().toEpochMilli(),
                 executionTimeMs = took,
                 success = false,

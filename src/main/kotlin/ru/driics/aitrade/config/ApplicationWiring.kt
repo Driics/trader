@@ -9,8 +9,7 @@ import ru.driics.aitrade.application.usecase.ExecuteAiDecisionsUseCase
 import ru.driics.aitrade.domain.ports.AiAnalysisPort
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PromptOutputPort
-import ru.driics.aitrade.service.AiTradeExecutionService
-import ru.driics.aitrade.service.PromptBuilderService
+import ru.driics.aitrade.domain.ports.TradingPort
 
 @Configuration
 class ApplicationWiring(
@@ -19,28 +18,30 @@ class ApplicationWiring(
     @Bean
     fun buildPromptUseCase(
         market: MarketDataPort,
-        builder: PromptBuilderService,
         out: PromptOutputPort
-    ) = BuildPromptUseCase(market, builder, out)
+    ) = BuildPromptUseCase(market, out)
 
     @Bean
     fun analyzePromptUseCase(ai: AiAnalysisPort) = AnalyzePromptUseCase(ai)
 
     @Bean
-    fun executeAiUseCase(legacy: AiTradeExecutionService) = ExecuteAiDecisionsUseCase(legacy)
+    fun executeAiUseCase(
+        trading: TradingPort,
+        market: MarketDataPort
+    ) = ExecuteAiDecisionsUseCase(trading, market, tradingProperties)
 
     @Bean
     fun updateCycleOrchestrator(
         build: BuildPromptUseCase,
         analyze: AnalyzePromptUseCase,
-        execute: ExecuteAiDecisionsUseCase
+        execute: ExecuteAiDecisionsUseCase,
+        market: MarketDataPort
     ) = UpdateCycleOrchestrator(
         build = build,
         analyze = analyze,
         execute = execute,
+        market = market,
         autoExecute = tradingProperties.autoExecute,
-        symbols = tradingProperties.getCurrenciesList(),
-        sessionStart = { System.currentTimeMillis() - 0L }, // PromptBuilderService already prints minutes; replace with real start if stored
-        invocation = { 0L } // you can wire OkxMarketDataService.getInvocationCount if needed
+        symbols = tradingProperties.getCurrenciesList()
     )
 }

@@ -8,16 +8,17 @@ import java.io.File
 
 @Service
 class FilePromptOutputAdapter(
-    @param:Value($$"${prompt.output-path:./prompt.txt}") private val path: String
-): PromptOutputPort {
+    @param:Value($$"${prompt.output-path:./prompt.txt}")
+    private val path: String
+) : PromptOutputPort {
     companion object {
-        private val log = KotlinLogging.logger {  }
+        private val log = KotlinLogging.logger {}
     }
+
     override fun write(prompt: String): Boolean = try {
         val target = File(path)
-
         val tmp = File("$path.tmp")
-        tmp.parentFile.mkdirs()
+        tmp.parentFile?.mkdirs()
         tmp.writeText(prompt)
 
         val success = tmp.renameTo(target) || run {
@@ -26,8 +27,7 @@ class FilePromptOutputAdapter(
             true
         }
 
-        if (!success)
-            log.warn { "Failed to write prompt to $path" }
+        if (!success) log.warn { "Failed to write prompt to $path" }
 
         success
     } catch (e: Exception) {
@@ -35,5 +35,8 @@ class FilePromptOutputAdapter(
         false
     }
 
-    override fun print(prompt: String) = println(prompt)
+    override fun print(prompt: String) {
+        // Intentionally empty - we don't print prompts anymore
+        // Logging is handled by use cases
+    }
 }
