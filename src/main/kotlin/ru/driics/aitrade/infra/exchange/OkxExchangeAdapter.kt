@@ -1,28 +1,33 @@
 package ru.driics.aitrade.infra.exchange
 
+import com.github.benmanes.caffeine.cache.Caffeine
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.springframework.stereotype.Service
+import ru.driics.aitrade.config.TradingProperties
+import ru.driics.aitrade.domain.model.MarginMode
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PlaceOrderOutcome
 import ru.driics.aitrade.domain.ports.TradingPort
+import ru.driics.aitrade.domain.quantize
 import ru.driics.aitrade.domain.services.IndicatorCalculator
-import ru.driics.aitrade.model.AccountInfo
-import ru.driics.aitrade.model.CurrencyMarketData
-import ru.driics.aitrade.model.MarketState
-import ru.driics.aitrade.model.OkxCandleResponse
-import ru.driics.aitrade.model.OkxInstrumentInfo
-import ru.driics.aitrade.model.Position
+import ru.driics.aitrade.model.*
 import ru.driics.aitrade.service.OkxRestClient
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.time.Duration
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 @Service
 class OkxExchangeAdapter(
-    private val rest: OkxRestClient
+    private val rest: OkxRestClient,
+    private val tradingProperties: TradingProperties
 ) : MarketDataPort, TradingPort {
     companion object {
         private val log = KotlinLogging.logger { }
@@ -32,18 +37,31 @@ class OkxExchangeAdapter(
     private val invocationCount = AtomicLong(0L)
     private val initialAccountEquity = AtomicReference<BigDecimal?>(null)
 
+    private val instrumentCache = Caffeine.newBuilder()
+        .expireAfterWrite(Duration.ofMinutes(tradingProperties.instrumentCacheTtlMinutes))
+        .maximumSize(100)
+        .build<String, OkxInstrumentInfo>()
+
     override suspend fun loadMarketState(symbols: List<String>): MarketState = withContext(Dispatchers.IO) {
         val count = invocationCount.incrementAndGet()
         log.debug { "Loading market state for ${symbols.size} symbols (invocation #$count)" }
 
+        val semaphore = Semaphore(tradingProperties.maxConcurrentSymbols)
+
         val currencies = symbols.associateWith { symbol ->
-            try {
-                fetchCurrencyData(symbol)
-            } catch (e: Exception) {
-                log.error(e) { "Failed to fetch data for $symbol" }
-                createEmptyCurrencyData(symbol)
+            async(Dispatchers.IO) {
+                semaphore.withPermit {
+                    withTimeout(5000) {
+                        runCatching {
+                            fetchCurrencyData(symbol)
+                        }.getOrElse { e ->
+                            log.error(e) { "Failed to fetch data for $symbol" }
+                            createEmptyCurrencyData(symbol)
+                        }
+                    }
+                }
             }
-        }
+        }.mapValues { it.value.await() }
 
         val positions = fetchPositions()
         val account = fetchAccountInfo(positions)
@@ -123,14 +141,13 @@ class OkxExchangeAdapter(
         )
     }
 
-    private fun createEmptyCurrencyData(symbol: String)
-        = CurrencyMarketData(
-            symbol = symbol,
-            currentPrice = BigDecimal.ZERO,
-            currentEma20 = BigDecimal.ZERO,
-            currentMacd = BigDecimal.ZERO,
-            currentRsi7 = BigDecimal.ZERO
-        )
+    private fun createEmptyCurrencyData(symbol: String) = CurrencyMarketData(
+        symbol = symbol,
+        currentPrice = BigDecimal.ZERO,
+        currentEma20 = BigDecimal.ZERO,
+        currentMacd = BigDecimal.ZERO,
+        currentRsi7 = BigDecimal.ZERO
+    )
 
     private suspend fun fetchAccountInfo(prefetchedPositions: List<Position>? = null): AccountInfo {
         val acc = rest.fetchAccount()
@@ -199,7 +216,9 @@ class OkxExchangeAdapter(
     override suspend fun loadInstrument(instId: String): OkxInstrumentInfo? =
         withContext(Dispatchers.IO) {
             try {
-                rest.getSwapInstrument(instId)
+                instrumentCache.get(instId) {
+                    rest.getSwapInstrument(instId)!!
+                }
             } catch (e: Exception) {
                 log.error(e) { "Failed to load instrument $instId" }
                 null
@@ -218,15 +237,20 @@ class OkxExchangeAdapter(
         }
     }
 
-    override suspend fun setCrossLeverage(instId: String, leverage: Int): Boolean =
+    override suspend fun setLeverage(instId: String, leverage: Int, marginMode: MarginMode): Boolean =
         withContext(Dispatchers.IO) {
             try {
-                rest.setLeverageCross(instId, leverage)
+                rest.setLeverageCross(
+                    instId,
+                    leverage,
+                    marginMode
+                )
             } catch (e: Exception) {
-                log.error(e) { "Failed to set leverage $leverage for $instId" }
+                log.error(e) { "Failed to set leverage $leverage for $instId in ${marginMode.asOkxApiValue} mode" }
                 false
             }
         }
+
     override suspend fun placeMarketOrderWithTpSl(
         instId: String,
         side: String,
@@ -235,16 +259,17 @@ class OkxExchangeAdapter(
         sl: BigDecimal?,
         tickSz: BigDecimal,
         clOrdId: String,
-        tag: String?
+        tag: String?,
+        marginMode: MarginMode
     ): PlaceOrderOutcome = withContext(Dispatchers.IO) {
         try {
-            val tpStr = tp?.let { quantize(it, tickSz).toPlainString() }
-            val slStr = sl?.let { quantize(it, tickSz).toPlainString() }
+            val tpStr = tp?.quantize(tickSz)?.toPlainString()
+            val slStr = sl?.quantize(tickSz)?.toPlainString()
 
             val res = rest.placeMarketOrderWithAttach(
                 instId = instId,
                 side = side,
-                tdMode = "cross",
+                tdMode = marginMode.asOkxApiValue,
                 szContracts = contracts.stripTrailingZeros().toPlainString(),
                 tpPx = tpStr,
                 slPx = slStr,

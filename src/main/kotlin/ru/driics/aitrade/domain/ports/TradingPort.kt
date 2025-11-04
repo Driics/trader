@@ -1,5 +1,6 @@
 package ru.driics.aitrade.domain.ports
 
+import ru.driics.aitrade.domain.model.MarginMode
 import ru.driics.aitrade.model.OkxInstrumentInfo
 import java.math.BigDecimal
 
@@ -8,7 +9,7 @@ interface TradingPort {
 
     suspend fun getLastPrice(instId: String): BigDecimal?
 
-    suspend fun setCrossLeverage(instId: String, leverage: Int): Boolean
+    suspend fun setLeverage(instId: String, leverage: Int, marginMode: MarginMode): Boolean
 
     suspend fun placeMarketOrderWithTpSl(
         instId: String,
@@ -18,7 +19,8 @@ interface TradingPort {
         sl: BigDecimal?,
         tickSz: BigDecimal,
         clOrdId: String,
-        tag: String? = null
+        tag: String? = null,
+        marginMode: MarginMode
     ): PlaceOrderOutcome
 }
 

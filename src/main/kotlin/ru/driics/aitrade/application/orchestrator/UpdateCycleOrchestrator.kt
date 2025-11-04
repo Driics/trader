@@ -10,7 +10,9 @@ import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.model.AccountInfo
 import ru.driics.aitrade.model.AiTradeDecisionMap
 import ru.driics.aitrade.model.Position
+import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Orchestrates the three-stage update cycle:
@@ -35,6 +37,8 @@ class UpdateCycleOrchestrator(
     private val invocationCount = AtomicLong(0L)
     private val lastUpdateTime = AtomicLong(0L)
 
+    private val lastPromptHash = AtomicReference<String?>(null)
+
     suspend fun runOnce(): UpdateCycleResult {
         val invocation = invocationCount.incrementAndGet()
         val startMs = System.currentTimeMillis()
@@ -55,6 +59,21 @@ class UpdateCycleOrchestrator(
                 promptSize = 0
             )
         }
+
+        val currentHash = hashPrompt(prompt)
+        val previousHash = lastPromptHash.get()
+        if (currentHash == previousHash) {
+            log.info { "Prompt unchanged from previous cycle, skipping AI analysis" }
+            lastUpdateTime.set(System.currentTimeMillis())
+            return UpdateCycleResult(
+                success = true,
+                message = "Skipped (prompt unchanged)",
+                executionTimeMs = System.currentTimeMillis() - startMs,
+                promptSize = prompt.length,
+                positionsPlaced = 0
+            )
+        }
+        lastPromptHash.set(currentHash)
 
         // Stage 2: AI analysis
         val aiResult = try {
@@ -80,14 +99,27 @@ class UpdateCycleOrchestrator(
         }
 
         log.info { "AI analysis completed successfully" }
-        logAiDecisionsSummary(aiResult.response)
+
+        val decisions: AiTradeDecisionMap = try {
+            mapper.readValue(aiResult.response)
+        } catch (e: Exception) {
+            log.error(e) { "Failed to parse AI decisions" }
+            return UpdateCycleResult(
+                success = false,
+                message = "Error: Failed to parse AI decisions - ${e.message}",
+                executionTimeMs = System.currentTimeMillis() - startMs,
+                promptSize = prompt.length
+            )
+        }
+
+        logAiDecisionsSummary(decisions)
 
         var executionResults: List<ru.driics.aitrade.model.AiTradeExecutionResult>? = null
 
         // Stage 3: Execute decisions (if enabled)
         if (autoExecute) {
             try {
-                executionResults = execute.execute(aiResult.response)
+                executionResults = execute.execute(decisions)
                 log.info { "Trade execution completed: ${executionResults.size} decisions processed" }
             } catch (e: Exception) {
                 log.error(e) { "Failed to execute AI decisions" }
@@ -129,10 +161,8 @@ class UpdateCycleOrchestrator(
     /**
      * Logs a compact summary of AI decisions instead of verbose JSON.
      */
-    private fun logAiDecisionsSummary(aiJson: String) {
+    private fun logAiDecisionsSummary(decisions: AiTradeDecisionMap) {
         try {
-            val decisions: AiTradeDecisionMap = mapper.readValue(aiJson)
-
             log.info { "═══ AI Decisions Summary (${decisions.size} symbols) ═══" }
 
             decisions.forEach { (symbol, envelope) ->
@@ -153,11 +183,15 @@ class UpdateCycleOrchestrator(
 
                 log.info { "  • $details" }
             }
-
         } catch (e: Exception) {
-            log.warn { "Could not parse AI decisions for summary: ${e.message}" }
-            log.debug { "AI response (first 200 chars): ${aiJson.take(200)}" }
+            log.warn { "Could not log AI decisions summary: ${e.message}" }
         }
+    }
+
+    private fun hashPrompt(prompt: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val hash = digest.digest(prompt.toByteArray())
+        return hash.joinToString("") { "%02x".format(it) }
     }
 }
 

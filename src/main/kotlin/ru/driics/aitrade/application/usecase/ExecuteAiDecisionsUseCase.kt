@@ -7,6 +7,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import ru.driics.aitrade.config.TradingProperties
+import ru.driics.aitrade.domain.isPositive
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.IdGenerator
@@ -27,8 +28,11 @@ class ExecuteAiDecisionsUseCase(
 ) {
     companion object {
         private val log = KotlinLogging.logger {}
-        private val minConfidence = BigDecimal("0.60")
     }
+
+    private val minConfidence = tradingProperties.minConfidence
+    private val maxLev = tradingProperties.maxLeverage
+    private val minLev = tradingProperties.minLeverage
 
     private val mapper = jacksonObjectMapper()
     private val sizingPolicy = OrderSizingPolicy(
@@ -36,26 +40,15 @@ class ExecuteAiDecisionsUseCase(
         marginBufferPct = tradingProperties.marginBufferPct
     )
 
-    suspend fun execute(aiJson: String): List<AiTradeExecutionResult> = coroutineScope {
+    suspend fun execute(decisions: AiTradeDecisionMap): List<AiTradeExecutionResult> = coroutineScope {
         log.info { "Executing AI trading decisions" }
 
         val supported = tradingProperties.getCurrenciesList().map { it.uppercase(Locale.ROOT) }.toSet()
 
-        val parsed: AiTradeDecisionMap = try {
-            mapper.readValue(aiJson)
-        } catch (e: Exception) {
-            log.error(e) { "Failed to parse AI JSON" }
-            return@coroutineScope listOf(
-                AiTradeExecutionResult("*", AIAction.SKIPPED, "Invalid AI JSON: ${e.message}")
-            )
-        }
-
-        log.info { "Parsed ${parsed.size} AI decisions" }
-
         val state = market.loadMarketState(supported.toList())
         var remainingCashUsd = state.account.availableCash.max(BigDecimal.ZERO)
 
-        val planResults = parsed.values.map { env ->
+        val planResults = decisions.values.map { env ->
             async {
                 buildPlan(env.args, supported)
             }
@@ -79,7 +72,6 @@ class ExecuteAiDecisionsUseCase(
                     val result = executePlan(plan, remainingCashUsd)
 
                     if (result.action == AIAction.PLACED) {
-                        // Deduct used capital
                         val usedUsd = extractUsedUsd(result.message)
                         remainingCashUsd = (remainingCashUsd - usedUsd).max(BigDecimal.ZERO)
                     }
@@ -152,11 +144,11 @@ class ExecuteAiDecisionsUseCase(
             return PlanResult.Skip(symbol, "Zero/unknown quantity")
         }
 
-        val lev = (args.leverage ?: 10).coerceIn(5, 40)
-        val tick = inst.tickSz?.toBigDecimalOrNull()?.takeIf { it > BigDecimal.ZERO } ?: BigDecimal("0.01")
-        val lot = inst.lotSz?.toBigDecimalOrNull()?.takeIf { it > BigDecimal.ZERO } ?: BigDecimal.ONE
-        val min = inst.minSz?.toBigDecimalOrNull()?.takeIf { it > BigDecimal.ZERO } ?: lot
-        val ctVal = inst.ctVal?.toBigDecimalOrNull()?.takeIf { it > BigDecimal.ZERO }
+        val lev = (args.leverage ?: 10).coerceIn(minLev, maxLev)
+        val tick = inst.tickSz?.toBigDecimalOrNull()?.takeIf { it.isPositive() } ?: BigDecimal("0.01")
+        val lot = inst.lotSz?.toBigDecimalOrNull()?.takeIf { it.isPositive() } ?: BigDecimal.ONE
+        val min = inst.minSz?.toBigDecimalOrNull()?.takeIf { it.isPositive() } ?: lot
+        val ctVal = inst.ctVal?.toBigDecimalOrNull()?.takeIf { it.isPositive() }
             ?: return PlanResult.Skip(symbol, "Invalid ctVal")
         val ccy = (inst.ctValCcy ?: "").uppercase(Locale.ROOT)
         val side = if (signal == "buy") "buy" else "sell"
@@ -192,22 +184,20 @@ class ExecuteAiDecisionsUseCase(
             availableUsd = availableUsd
         )
 
-        val sizing = sizingPolicy.size(sizingInput)
-        if (sizing == null) {
-            return AiTradeExecutionResult(
-                symbol = plan.symbol,
-                action = AIAction.SKIPPED,
-                message = "Insufficient margin",
-                instId = plan.instId
-            )
-        }
+        val sizing = sizingPolicy.size(sizingInput) ?: return AiTradeExecutionResult(
+            symbol = plan.symbol,
+            action = AIAction.SKIPPED,
+            message = "Insufficient margin",
+            instId = plan.instId
+        )
 
-        val levOk = trading.setCrossLeverage(plan.instId, sizing.leverage)
+        val marginMode = tradingProperties.getMarginMode()
+        val levOk = trading.setLeverage(plan.instId, sizing.leverage, marginMode)
         if (!levOk) {
             return AiTradeExecutionResult(
                 symbol = plan.symbol,
                 action = AIAction.SKIPPED,
-                message = "Failed to set leverage ${sizing.leverage}",
+                message = "Failed to set leverage ${sizing.leverage} (${marginMode.asOkxApiValue})",
                 instId = plan.instId
             )
         }
@@ -223,7 +213,8 @@ class ExecuteAiDecisionsUseCase(
             sl = plan.slPx,
             tickSz = plan.tickSz,
             clOrdId = clId,
-            tag = tag
+            tag = tag,
+            marginMode = marginMode
         )
 
         return if (outcome.ok) {

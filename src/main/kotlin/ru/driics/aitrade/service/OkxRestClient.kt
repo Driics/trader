@@ -9,6 +9,7 @@ import org.springframework.http.HttpMethod
 import org.springframework.stereotype.Service
 import org.springframework.web.client.RestTemplate
 import ru.driics.aitrade.config.OkxProperties
+import ru.driics.aitrade.domain.model.MarginMode
 import ru.driics.aitrade.model.*
 import java.math.BigDecimal
 
@@ -258,14 +259,14 @@ class OkxRestClient(
         null
     }
 
-    fun setLeverageCross(instId: String, leverage: Int, posSide: String? = null): Boolean {
+    fun setLeverageCross(instId: String, leverage: Int, marginMode: MarginMode, posSide: String? = null): Boolean {
         return try {
             val path = "/api/v5/account/set-leverage"
             val url = "${okxProperties.baseUrl}$path"
             val payload = mutableMapOf(
                 "instId" to instId,
                 "lever" to leverage.toString(),
-                "mgnMode" to "cross"
+                "mgnMode" to marginMode.asOkxApiValue
             )
             posSide?.let { payload["posSide"] = it } // only if using long/short mode
 
