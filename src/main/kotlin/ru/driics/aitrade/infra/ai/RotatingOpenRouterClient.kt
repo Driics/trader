@@ -42,6 +42,7 @@ class RotatingOpenRouterClient(
                 log.debug { "OpenRouter call with key idx=$idxUsed mode=$mode attempt=${attempt + 1}/$maxAttempts" }
                 val client = OpenRouterLLMClient(apiKey = keyUsed)
                 val response = client.execute(prompt, model)
+                require(response.isNotEmpty()) { "Empty response from OpenRouter" }
                 successesPerKey.incrementAndGet(idxUsed)
                 return response[0]
             } catch (e: Exception) {
@@ -87,9 +88,3 @@ class RotatingOpenRouterClient(
         )
     }
 }
-
-data class RotationStats(
-    val totalKeys: Int,
-    val currentIndex: Int,
-    val currentKey: String
-)

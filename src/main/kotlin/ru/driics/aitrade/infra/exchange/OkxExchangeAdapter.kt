@@ -14,7 +14,7 @@ import ru.driics.aitrade.domain.model.MarginMode
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PlaceOrderOutcome
 import ru.driics.aitrade.domain.ports.TradingPort
-import ru.driics.aitrade.domain.quantize
+import ru.driics.aitrade.domain.util.quantize
 import ru.driics.aitrade.domain.services.IndicatorCalculator
 import ru.driics.aitrade.model.*
 import ru.driics.aitrade.service.OkxRestClient
@@ -217,7 +217,7 @@ class OkxExchangeAdapter(
         withContext(Dispatchers.IO) {
             try {
                 instrumentCache.get(instId) {
-                    rest.getSwapInstrument(instId)!!
+                    rest.getSwapInstrument(instId) ?: error("Instrument $instId not found")
                 }
             } catch (e: Exception) {
                 log.error(e) { "Failed to load instrument $instId" }
@@ -240,7 +240,7 @@ class OkxExchangeAdapter(
     override suspend fun setLeverage(instId: String, leverage: Int, marginMode: MarginMode): Boolean =
         withContext(Dispatchers.IO) {
             try {
-                rest.setLeverageCross(
+                rest.setLeverage(
                     instId,
                     leverage,
                     marginMode
@@ -288,11 +288,5 @@ class OkxExchangeAdapter(
             log.error(e) { "Failed to place order for $instId" }
             PlaceOrderOutcome(ok = false, ordId = null, message = e.message ?: "Exception")
         }
-    }
-
-    private fun quantize(px: BigDecimal, tick: BigDecimal): BigDecimal {
-        if (tick <= BigDecimal.ZERO) return px
-        val steps = px.divide(tick, 0, RoundingMode.HALF_UP)
-        return steps.multiply(tick).stripTrailingZeros()
     }
 }

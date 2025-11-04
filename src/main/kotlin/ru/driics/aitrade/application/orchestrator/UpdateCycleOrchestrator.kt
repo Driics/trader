@@ -11,6 +11,7 @@ import ru.driics.aitrade.model.AccountInfo
 import ru.driics.aitrade.model.AiTradeDecisionMap
 import ru.driics.aitrade.model.Position
 import java.security.MessageDigest
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -168,7 +169,7 @@ class UpdateCycleOrchestrator(
             decisions.forEach { (symbol, envelope) ->
                 val args = envelope.args
                 val signal = args.signal.uppercase()
-                val confidence = args.confidence?.let { String.format("%.2f", it.toDouble()) } ?: "N/A"
+                val confidence = args.confidence?.let { String.format(Locale.ROOT, "%.2f", it.toDouble()) } ?: "N/A"
                 val leverage = args.leverage ?: "N/A"
 
                 val details = buildString {
@@ -176,8 +177,8 @@ class UpdateCycleOrchestrator(
                     if (signal != "HOLD") {
                         append(" | Confidence: $confidence")
                         append(" | Leverage: $leverage")
-                        args.quantity?.let { append(" | Qty: ${String.format("%.4f", it.toDouble())}") }
-                        args.riskUsd?.let { append(" | Risk: $${String.format("%.2f", it.toDouble())}") }
+                        args.quantity?.let { append(" | Qty: ${String.format(Locale.ROOT, "%.4f", it.toDouble())}") }
+                        args.riskUsd?.let { append(" | Risk: $${String.format(Locale.ROOT, "%.2f", it.toDouble())}") }
                     }
                 }
 

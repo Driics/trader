@@ -259,7 +259,7 @@ class OkxRestClient(
         null
     }
 
-    fun setLeverageCross(instId: String, leverage: Int, marginMode: MarginMode, posSide: String? = null): Boolean {
+    fun setLeverage(instId: String, leverage: Int, marginMode: MarginMode, posSide: String? = null): Boolean {
         return try {
             val path = "/api/v5/account/set-leverage"
             val url = "${okxProperties.baseUrl}$path"

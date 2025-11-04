@@ -1,13 +1,12 @@
 package ru.driics.aitrade.application.usecase
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import com.fasterxml.jackson.module.kotlin.readValue
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import ru.driics.aitrade.config.TradingProperties
-import ru.driics.aitrade.domain.isPositive
+import ru.driics.aitrade.domain.util.isPositive
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.IdGenerator
@@ -46,7 +45,7 @@ class ExecuteAiDecisionsUseCase(
         val supported = tradingProperties.getCurrenciesList().map { it.uppercase(Locale.ROOT) }.toSet()
 
         val state = market.loadMarketState(supported.toList())
-        var remainingCashUsd = state.account.availableCash.max(BigDecimal.ZERO)
+        var remainingCashUsd = maxOf(state.account.availableCash, BigDecimal.ZERO)
 
         val planResults = decisions.values.map { env ->
             async {
@@ -73,7 +72,7 @@ class ExecuteAiDecisionsUseCase(
 
                     if (result.action == AIAction.PLACED) {
                         val usedUsd = extractUsedUsd(result.message)
-                        remainingCashUsd = (remainingCashUsd - usedUsd).max(BigDecimal.ZERO)
+                        remainingCashUsd = maxOf(remainingCashUsd - usedUsd, BigDecimal.ZERO)
                     }
 
                     results += result
@@ -256,6 +255,7 @@ class ExecuteAiDecisionsUseCase(
             val regex = """(\d+\.?\d*)\s*USD""".toRegex()
             regex.find(message)?.groupValues?.get(1)?.toBigDecimalOrNull() ?: BigDecimal.ZERO
         } catch (e: Exception) {
+            log.debug(e) { "Failed to parse USD amount from message: $message" }
             BigDecimal.ZERO
         }
     }
@@ -266,6 +266,4 @@ class ExecuteAiDecisionsUseCase(
 
         log.info { "═══ Execution Summary: $placed placed, $skipped skipped ═══" }
     }
-
-    private fun BigDecimal.max(other: BigDecimal) = if (this >= other) this else other
 }
