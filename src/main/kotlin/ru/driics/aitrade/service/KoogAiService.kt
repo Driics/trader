@@ -1,17 +1,16 @@
+// src/main/kotlin/ru/driics/aitrade/service/KoogAiService.kt
 package ru.driics.aitrade.service
 
 import ai.koog.prompt.dsl.prompt
-import ai.koog.prompt.executor.clients.openrouter.OpenRouterLLMClient
-import ai.koog.prompt.executor.llms.SingleLLMPromptExecutor
 import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
 import io.github.oshai.kotlinlogging.KotlinLogging
-import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.beans.factory.annotation.Value
-import org.springframework.context.annotation.Bean
-import org.springframework.context.annotation.Configuration
 import org.springframework.stereotype.Service
+import ru.driics.aitrade.config.OpenRouterProperties
+import ru.driics.aitrade.domain.services.ApiKeyRotationPolicy
+import ru.driics.aitrade.infra.ai.RotatingOpenRouterClient
 import ru.driics.aitrade.model.AiAnalysisResponse
 import ru.driics.aitrade.model.AiService
 import ru.driics.aitrade.model.LastAiAnalysis
@@ -20,17 +19,30 @@ import java.util.concurrent.atomic.AtomicReference
 
 @Service
 class KoogAiService(
-    @param:Qualifier("openRouterExecutorMy")
-    private val openRouterExecutorMy: SingleLLMPromptExecutor,
+    private val openRouterProperties: OpenRouterProperties,
     @param:Value("\${ai.custom.system-prompt:You are an expert crypto trading analyst.}")
-    private val systemPrompt: String,
-    @param:Value("\${ai.koog.openrouter.api-key}")
-    private val apiKey: String
-): AiService {
+    private val systemPrompt: String
+) : AiService {
     companion object {
         private val logger = KotlinLogging.logger {}
     }
 
+    private val rotationPolicy: ApiKeyRotationPolicy
+    private val rotatingClient: RotatingOpenRouterClient
+
+    init {
+        val apiKeys = openRouterProperties.getApiKeysList()
+        require(apiKeys.isNotEmpty()) { "At least one OpenRouter API key must be configured" }
+
+        rotationPolicy = ApiKeyRotationPolicy(apiKeys)
+        rotatingClient = RotatingOpenRouterClient(
+            rotationPolicy = rotationPolicy,
+            maxRetries = openRouterProperties.maxRetries,
+            retryDelayMs = openRouterProperties.retryDelayMs
+        )
+
+        logger.info { "Initialized KoogAiService with ${apiKeys.size} API key(s)" }
+    }
 
     val model = LLModel(
         provider = LLMProvider.OpenRouter,
@@ -41,7 +53,6 @@ class KoogAiService(
             LLMCapability.Completion
         )
     )
-
 
     private val last = AtomicReference<LastAiAnalysis?>(null)
 
@@ -55,15 +66,23 @@ class KoogAiService(
         val t0 = System.currentTimeMillis()
 
         return try {
+            // Build Koog prompt using DSL
             val p = prompt(id = "signal-gen") {
                 system(systemPrompt)
                 user(prompt)
             }
 
-            val result = openRouterExecutorMy.execute(p, model)
+            // Execute with rotating client
+            val response = rotatingClient.execute(p, model)
+
             val took = System.currentTimeMillis() - t0
 
-            val responseText = result[0].content
+            // Extract response text from Message.Response
+            val responseText = response.content
+
+            val stats = rotatingClient.getRotationStats()
+            logger.info { "API call successful (key ${stats.currentIndex + 1}/${stats.totalKeys}, ${took}ms)" }
+
             val snapshot = LastAiAnalysis(
                 provider = getProviderName(),
                 model = model.id,
@@ -74,6 +93,7 @@ class KoogAiService(
                 error = null
             )
             last.set(snapshot)
+
             AiAnalysisResponse(
                 provider = snapshot.provider,
                 model = snapshot.model,
@@ -83,7 +103,8 @@ class KoogAiService(
             )
         } catch (e: Exception) {
             val took = System.currentTimeMillis() - t0
-            logger.error(e) { "Koog/OpenRouter analysis failed" }
+            logger.error(e) { "Koog/OpenRouter analysis failed after all retries" }
+
             val snapshot = LastAiAnalysis(
                 provider = getProviderName(),
                 model = model.id,
@@ -94,6 +115,7 @@ class KoogAiService(
                 error = e.message
             )
             last.set(snapshot)
+
             AiAnalysisResponse(
                 provider = snapshot.provider,
                 model = snapshot.model,
@@ -104,19 +126,9 @@ class KoogAiService(
             )
         }
     }
-}
 
-@Configuration
-class KoogConfig {
-
-    @Bean
-    @Qualifier("openRouterExecutorMy")
-    fun openRouterExecutorMy(
-        @Value($$"${ai.koog.openrouter.api-key}") apiKey: String
-    ): SingleLLMPromptExecutor {
-        val client = OpenRouterLLMClient(
-            apiKey = apiKey,
-        )
-        return SingleLLMPromptExecutor(client)
-    }
+    /**
+     * Returns current rotation statistics for monitoring.
+     */
+    fun getRotationStats() = rotatingClient.getRotationStats()
 }

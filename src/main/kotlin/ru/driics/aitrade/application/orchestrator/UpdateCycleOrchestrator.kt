@@ -1,11 +1,14 @@
 package ru.driics.aitrade.application.orchestrator
 
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import io.github.oshai.kotlinlogging.KotlinLogging
 import ru.driics.aitrade.application.usecase.AnalyzePromptUseCase
 import ru.driics.aitrade.application.usecase.BuildPromptUseCase
 import ru.driics.aitrade.application.usecase.ExecuteAiDecisionsUseCase
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.model.AccountInfo
+import ru.driics.aitrade.model.AiTradeDecisionMap
 import ru.driics.aitrade.model.Position
 import java.util.concurrent.atomic.AtomicLong
 
@@ -27,6 +30,7 @@ class UpdateCycleOrchestrator(
         private val log = KotlinLogging.logger {}
     }
 
+    private val mapper = jacksonObjectMapper()
     private val sessionStartTime = AtomicLong(System.currentTimeMillis())
     private val invocationCount = AtomicLong(0L)
     private val lastUpdateTime = AtomicLong(0L)
@@ -76,7 +80,7 @@ class UpdateCycleOrchestrator(
         }
 
         log.info { "AI analysis completed successfully" }
-        logAiDecisions(aiResult.response)
+        logAiDecisionsSummary(aiResult.response)
 
         var executionResults: List<ru.driics.aitrade.model.AiTradeExecutionResult>? = null
 
@@ -122,20 +126,37 @@ class UpdateCycleOrchestrator(
 
     fun getLastUpdateTime(): Long? = lastUpdateTime.get().takeIf { it > 0 }
 
-    private fun logAiDecisions(aiJson: String) {
+    /**
+     * Logs a compact summary of AI decisions instead of verbose JSON.
+     */
+    private fun logAiDecisionsSummary(aiJson: String) {
         try {
-            val lines = aiJson.lines().take(15)
-            log.info { "AI Decisions (first 15 lines):" }
-            lines.forEach { line ->
-                if (line.isNotBlank()) {
-                    log.info { "  $line" }
+            val decisions: AiTradeDecisionMap = mapper.readValue(aiJson)
+
+            log.info { "═══ AI Decisions Summary (${decisions.size} symbols) ═══" }
+
+            decisions.forEach { (symbol, envelope) ->
+                val args = envelope.args
+                val signal = args.signal.uppercase()
+                val confidence = args.confidence?.let { String.format("%.2f", it.toDouble()) } ?: "N/A"
+                val leverage = args.leverage ?: "N/A"
+
+                val details = buildString {
+                    append("$symbol: $signal")
+                    if (signal != "HOLD") {
+                        append(" | Confidence: $confidence")
+                        append(" | Leverage: $leverage")
+                        args.quantity?.let { append(" | Qty: ${String.format("%.4f", it.toDouble())}") }
+                        args.riskUsd?.let { append(" | Risk: $${String.format("%.2f", it.toDouble())}") }
+                    }
                 }
+
+                log.info { "  • $details" }
             }
-            if (aiJson.lines().size > 15) {
-                log.info { "  ... (${aiJson.lines().size - 15} more lines)" }
-            }
+
         } catch (e: Exception) {
-            log.debug { "AI response: ${aiJson.take(200)}..." }
+            log.warn { "Could not parse AI decisions for summary: ${e.message}" }
+            log.debug { "AI response (first 200 chars): ${aiJson.take(200)}" }
         }
     }
 }

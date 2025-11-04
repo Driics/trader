@@ -25,7 +25,6 @@ class ExecuteAiDecisionsUseCase(
     private val market: MarketDataPort,
     private val tradingProperties: TradingProperties
 ) {
-
     companion object {
         private val log = KotlinLogging.logger {}
         private val minConfidence = BigDecimal("0.60")
@@ -228,7 +227,16 @@ class ExecuteAiDecisionsUseCase(
         )
 
         return if (outcome.ok) {
-            log.info { "✓ ${plan.symbol}: ${plan.side.uppercase()} ${sizing.roundedContracts} contracts @ ${plan.entryPx} (≈${sizing.totalUsd.setScale(2, RoundingMode.HALF_UP)} USD)" }
+            val orderDetails = buildString {
+                append("${plan.side.uppercase()} ${sizing.roundedContracts} contracts @ ${plan.entryPx.stripTrailingZeros().toPlainString()}")
+                append(" | Leverage: ${sizing.leverage}x")
+                plan.tpPx?.let { append(" | TP: ${it.stripTrailingZeros().toPlainString()}") }
+                plan.slPx?.let { append(" | SL: ${it.stripTrailingZeros().toPlainString()}") }
+                append(" | Cost: $${sizing.totalUsd.setScale(2, RoundingMode.HALF_UP)}")
+            }
+
+            log.info { "✓ ${plan.symbol}: $orderDetails" }
+
             AiTradeExecutionResult(
                 symbol = plan.symbol,
                 action = AIAction.PLACED,
@@ -256,7 +264,7 @@ class ExecuteAiDecisionsUseCase(
         return try {
             val regex = """(\d+\.?\d*)\s*USD""".toRegex()
             regex.find(message)?.groupValues?.get(1)?.toBigDecimalOrNull() ?: BigDecimal.ZERO
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             BigDecimal.ZERO
         }
     }
@@ -266,10 +274,6 @@ class ExecuteAiDecisionsUseCase(
         val skipped = results.count { it.action == AIAction.SKIPPED }
 
         log.info { "═══ Execution Summary: $placed placed, $skipped skipped ═══" }
-
-        results.filter { it.action == AIAction.PLACED }.forEach {
-            log.info { "  ✓ ${it.symbol}: ${it.message}" }
-        }
     }
 
     private fun BigDecimal.max(other: BigDecimal) = if (this >= other) this else other

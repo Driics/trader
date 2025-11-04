@@ -23,7 +23,11 @@ class FilePromptOutputAdapter(
 
         val success = tmp.renameTo(target) || run {
             tmp.copyTo(target, overwrite = true)
-            tmp.delete()
+
+            val deleted = tmp.delete()
+            if (!deleted)
+                log.warn { "Failed to delete temp file: ${tmp.absolutePath}" }
+
             true
         }
 

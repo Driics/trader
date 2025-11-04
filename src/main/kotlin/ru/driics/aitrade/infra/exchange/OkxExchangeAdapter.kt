@@ -45,8 +45,8 @@ class OkxExchangeAdapter(
             }
         }
 
-        val account = fetchAccountInfo()
         val positions = fetchPositions()
+        val account = fetchAccountInfo(positions)
 
         MarketState(
             timestamp = System.currentTimeMillis(),
@@ -132,7 +132,7 @@ class OkxExchangeAdapter(
             currentRsi7 = BigDecimal.ZERO
         )
 
-    private suspend fun fetchAccountInfo(): AccountInfo {
+    private suspend fun fetchAccountInfo(prefetchedPositions: List<Position>? = null): AccountInfo {
         val acc = rest.fetchAccount()
         val totalEq = acc.totalEquity.toBigDecimalOrNull() ?: BigDecimal.ZERO
         val avail = acc.availableBalance.toBigDecimalOrNull() ?: BigDecimal.ZERO
@@ -150,7 +150,7 @@ class OkxExchangeAdapter(
             BigDecimal.ZERO
         }
 
-        val positions = fetchPositions()
+        val positions = prefetchedPositions ?: fetchPositions()
         val availableCash = if (positions.isEmpty() && avail == BigDecimal.ZERO && totalEq > BigDecimal.ZERO) {
             totalEq
         } else {
