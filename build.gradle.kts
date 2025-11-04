@@ -22,8 +22,15 @@ repositories {
 
 dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
-    implementation("org.springframework.boot:spring-boot-starter-webflux")
     implementation("org.springframework.boot:spring-boot-starter-validation")
+    
+    // Ktor HTTP Client
+    val ktorVersion = "2.3.7"
+    implementation("io.ktor:ktor-client-core:$ktorVersion")
+    implementation("io.ktor:ktor-client-cio:$ktorVersion")
+    implementation("io.ktor:ktor-client-content-negotiation:$ktorVersion")
+    implementation("io.ktor:ktor-client-logging:$ktorVersion")
+    implementation("io.ktor:ktor-serialization-kotlinx-json:$ktorVersion")
     
     // Resilience4j for fault tolerance
     implementation("io.github.resilience4j:resilience4j-spring-boot3:2.2.0")
@@ -32,9 +39,8 @@ dependencies {
     implementation("io.github.resilience4j:resilience4j-circuitbreaker:2.2.0")
     implementation("io.github.resilience4j:resilience4j-ratelimiter:2.2.0")
     
-    // Reactor and coroutines
-    implementation("io.projectreactor.netty:reactor-netty-http")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor:1.9.0")
+    // Coroutines (no longer need reactor)
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     
     // Metrics
     implementation("io.micrometer:micrometer-core")

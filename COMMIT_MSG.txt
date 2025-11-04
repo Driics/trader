@@ -1,0 +1,24 @@
+refactor: migrate from Spring WebClient to Ktor HTTP client
+
+Replace Spring WebFlux WebClient with Ktor HttpClient for all OKX API calls.
+
+Changes:
+- Add Ktor client dependencies (v2.3.7) to build.gradle.kts
+- Remove spring-boot-starter-webflux dependency
+- Remove reactor-netty-http and kotlinx-coroutines-reactor
+- Create OkxKtorClientConfig for Ktor client bean configuration
+- Update OkxRestClient to use Ktor HttpClient API
+- Simplify all HTTP method calls with Ktor's concise DSL
+- Replace WebClientResponseException with ResponseException
+- Update integration tests to use Ktor HttpClient
+
+Benefits:
+- Reduced dependencies (no WebFlux/Reactor needed)
+- More idiomatic Kotlin code with Ktor's DSL
+- Better type safety with reified generics
+- Simplified exception handling
+- Maintained all existing functionality (timeouts, pooling, auth, metrics)
+
+All 9 OKX API methods migrated:
+- Public: fetchTicker, fetchCandles, fetchFundingRate, fetchOpenInterest, getSwapInstrument
+- Authenticated: fetchAccount, fetchOpenPositions, setLeverage, placeMarketOrderWithAttach

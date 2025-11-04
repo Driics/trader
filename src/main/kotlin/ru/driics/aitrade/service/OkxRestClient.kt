@@ -4,17 +4,16 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker
 import io.github.resilience4j.ratelimiter.annotation.RateLimiter
 import io.github.resilience4j.retry.annotation.Retry
+import io.ktor.client.*
+import io.ktor.client.call.*
+import io.ktor.client.plugins.*
+import io.ktor.client.request.*
+import io.ktor.http.*
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Timer
-import kotlinx.coroutines.reactor.awaitSingle
-import kotlinx.coroutines.reactor.awaitSingleOrNull
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
-import org.springframework.core.ParameterizedTypeReference
 import org.springframework.stereotype.Service
-import org.springframework.web.reactive.function.client.WebClient
-import org.springframework.web.reactive.function.client.WebClientResponseException
-import org.springframework.web.reactive.function.client.bodyToMono
 import ru.driics.aitrade.config.OkxHttpProperties
 import ru.driics.aitrade.config.OkxProperties
 import ru.driics.aitrade.domain.model.MarginMode
@@ -25,7 +24,7 @@ import java.math.BigDecimal
 class OkxRestClient(
     private val okxProperties: OkxProperties,
     private val okxHttpProps: OkxHttpProperties,
-    private val okxWebClient: WebClient,
+    private val okxHttpClient: HttpClient,
     private val okxAuthService: OkxAuthService,
     private val meterRegistry: MeterRegistry
 ) {
@@ -45,12 +44,7 @@ class OkxRestClient(
             val url = "${okxProperties.baseUrl}/api/v5/market/ticker?instId=$instId"
             
             val responseType = object : ParameterizedTypeReference<OkxApiResponse<OkxTickerResponse>>() {}
-            val apiResponse = okxWebClient.get()
-                .uri(url)
-                .retrieve()
-                .bodyToMono(responseType)
-                .awaitSingleOrNull()
-            
+            val apiResponse = okxHttpClient.get(url).body<OkxApiResponse<OkxTickerResponse>>()
             if (apiResponse == null) {
                 status = "null_response"
                 log.warn("Received null response for ticker: $instId")
@@ -68,9 +62,9 @@ class OkxRestClient(
                 log.warn("No ticker data found for $instId")
                 null
             }
-        } catch (e: WebClientResponseException) {
+        } catch (e: ResponseException) {
             status = "http_${e.statusCode.value()}"
-            log.error("HTTP error fetching ticker for $instId: ${e.statusCode}", e)
+            log.error("HTTP error fetching ticker for $instId: ${e.response.status}", e)
             null
         } catch (e: Exception) {
             status = "error"
@@ -102,17 +96,12 @@ class OkxRestClient(
             val url = "${okxProperties.baseUrl}/api/v5/market/candles?instId=$instId&bar=$period&limit=$limit"
             
             val responseType = object : ParameterizedTypeReference<OkxCandlesApiResponse>() {}
-            val apiResponse = okxWebClient.get()
+            val apiResponse = okxHttpClient.get()
                 .uri(url)
                 .retrieve()
                 .bodyToMono(responseType)
                 .awaitSingleOrNull()
-            
-            if (apiResponse == null) {
-                status = "null_response"
-                log.warn("Received null response for candles: $instId, period: $period")
-                return emptyList()
-            }
+            val apiResponse = okxHttpClient.get(url).body<OkxCandlesApiResponse>()
             
             if (!apiResponse.isSuccess()) {
                 status = "api_error_${apiResponse.code}"
@@ -121,9 +110,9 @@ class OkxRestClient(
             }
             
             apiResponse.toCandles().sortedBy { it.timestamp.toLongOrNull() ?: Long.MAX_VALUE }
-        } catch (e: WebClientResponseException) {
+        } catch (e: ResponseException) {
             status = "http_${e.statusCode.value()}"
-            log.error("HTTP error fetching candles for $instId, period: $period: ${e.statusCode}", e)
+            log.error("HTTP error fetching candles for $instId, period: $period: ${e.response.status}", e)
             emptyList()
         } catch (e: Exception) {
             status = "error"
@@ -156,7 +145,7 @@ class OkxRestClient(
             val url = "${okxProperties.baseUrl}/api/v5/public/funding-rate?instId=$instId"
             
             val responseType = object : ParameterizedTypeReference<OkxApiResponse<OkxFundingResponse>>() {}
-            val apiResponse = okxWebClient.get()
+            val apiResponse = okxHttpClient.get()
                 .uri(url)
                 .retrieve()
                 .bodyToMono(responseType)
@@ -166,12 +155,7 @@ class OkxRestClient(
                 status = "null_response"
                 log.warn("Received null response for funding rate: $instId")
                 return null
-            }
-            
-            if (!apiResponse.isSuccess()) {
-                status = "api_error_${apiResponse.code}"
-                log.warn("OKX API error for funding rate $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
-                return null
+            val apiResponse = okxHttpClient.get(url).body<OkxApiResponse<OkxFundingResponse>>()
             }
             
             apiResponse.getFirstOrNull()?.fundingRate?.toBigDecimalOrNull() ?: run {
@@ -204,7 +188,7 @@ class OkxRestClient(
             val url = "${okxProperties.baseUrl}/api/v5/public/open-interest?instId=$instId"
             
             val responseType = object : ParameterizedTypeReference<OkxApiResponse<OkxOpenInterestResponse>>() {}
-            val apiResponse = okxWebClient.get()
+            val apiResponse = okxHttpClient.get()
                 .uri(url)
                 .retrieve()
                 .bodyToMono(responseType)
@@ -219,12 +203,7 @@ class OkxRestClient(
             if (!apiResponse.isSuccess()) {
                 status = "api_error_${apiResponse.code}"
                 log.warn("OKX API error for open interest $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
-                return null
-            }
-            
-            apiResponse.getFirstOrNull()?.openInterest?.toBigDecimalOrNull() ?: run {
-                status = "empty_data"
-                log.debug("No open interest data for $instId")
+            val apiResponse = okxHttpClient.get(url).body<OkxApiResponse<OkxOpenInterestResponse>>()
                 null
             }
         } catch (e: Exception) {
@@ -257,7 +236,7 @@ class OkxRestClient(
             val authHeaders = okxAuthService.createAuthHeaders("GET", requestPath)
             
             val responseType = object : ParameterizedTypeReference<OkxAccountApiResponse>() {}
-            val apiResponse = okxWebClient.get()
+            val apiResponse = okxHttpClient.get()
                 .uri(url)
                 .headers { headers ->
                     authHeaders.forEach { (key, value) -> headers.set(key, value) }
@@ -277,15 +256,11 @@ class OkxRestClient(
                 log.warn("OKX API error for account - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
                 return OkxAccountResponse("0", "0", "0", "0")
             }
-            
-            val data = apiResponse.getFirstOrNull()
-                ?: return OkxAccountResponse("0", "0", "0", "0")
-            
-            val totalEq = data.totalEquity.toBigDecimalOrNull() ?: BigDecimal.ZERO
-            val availEqUsd = data.availableEquityUsd.toBigDecimalOrNull() ?: BigDecimal.ZERO
-            
-            val usdtAvailBal = data.details.firstOrNull { it.currency.equals("USDT", ignoreCase = true) }
-                ?.availableBalance?.toBigDecimalOrNull()
+            val apiResponse = okxHttpClient.get(url) {
+                authHeaders.forEach { (key, value) ->
+                    header(key, value)
+                }
+            }.body<OkxAccountApiResponse>()
             
             val derivedAvailable = when {
                 availEqUsd > BigDecimal.ZERO -> availEqUsd
@@ -327,7 +302,7 @@ class OkxRestClient(
             val authHeaders = okxAuthService.createAuthHeaders("GET", requestPath)
             
             val responseType = object : ParameterizedTypeReference<OkxApiResponse<OkxPositionResponse>>() {}
-            val apiResponse = okxWebClient.get()
+            val apiResponse = okxHttpClient.get()
                 .uri(url)
                 .headers { headers ->
                     authHeaders.forEach { (key, value) -> headers.set(key, value) }
@@ -351,15 +326,11 @@ class OkxRestClient(
             apiResponse.data.ifEmpty {
                 log.debug("No open positions found")
             }
-            
-            apiResponse.data
-        } catch (e: Exception) {
-            status = "error"
-            log.error("Error fetching open positions", e)
-            emptyList()
-        } finally {
-            sample.stop(
-                Timer.builder("okx.http")
+            val apiResponse = okxHttpClient.get(url) {
+                authHeaders.forEach { (key, value) ->
+                    header(key, value)
+                }
+            }.body<OkxApiResponse<OkxPositionResponse>>()
                     .tag("operation", "fetchOpenPositions")
                     .tag("status", status)
                     .register(meterRegistry)
@@ -377,7 +348,7 @@ class OkxRestClient(
             val url = "${okxProperties.baseUrl}/api/v5/public/instruments?instType=SWAP&instId=$instId"
             
             val responseType = object : ParameterizedTypeReference<OkxPublicInstrumentsApiResponse>() {}
-            val body = okxWebClient.get()
+            val body = okxHttpClient.get()
                 .uri(url)
                 .retrieve()
                 .bodyToMono(responseType)
@@ -405,12 +376,7 @@ class OkxRestClient(
     }
 
     // Trading methods - critical path with strictest policies
-    
-    @Retry(name = "okxTrade")
-    @RateLimiter(name = "okxTrade")
-    @CircuitBreaker(name = "okxTrade")
-    suspend fun setLeverage(instId: String, leverage: Int, marginMode: MarginMode, posSide: String? = null): Boolean {
-        val sample = Timer.start(meterRegistry)
+            val body = okxHttpClient.get(url).body<OkxPublicInstrumentsApiResponse>()
         var status = "success"
         
         return try {
@@ -428,7 +394,7 @@ class OkxRestClient(
             val authHeaders = okxAuthService.createAuthHeaders("POST", path, bodyJson)
             
             val responseType = object : ParameterizedTypeReference<Map<String, Any>>() {}
-            val resp = okxWebClient.post()
+            val resp = okxHttpClient.post()
                 .uri(url)
                 .headers { headers ->
                     authHeaders.forEach { (key, value) -> headers.set(key, value) }
@@ -461,16 +427,13 @@ class OkxRestClient(
     @Retry(name = "okxTrade")
     @RateLimiter(name = "okxTrade")
     @CircuitBreaker(name = "okxTrade")
-    suspend fun placeMarketOrderWithAttach(
-        instId: String,
-        side: String,
-        tdMode: String = "cross",
-        szContracts: String,
-        tpPx: String? = null,
-        slPx: String? = null,
-        posSide: String? = null,
-        clOrdId: String? = null,
-        tag: String? = "ai-signal"
+            val resp = okxHttpClient.post(url) {
+                authHeaders.forEach { (key, value) ->
+                    header(key, value)
+                }
+                contentType(ContentType.Application.Json)
+                setBody(bodyJson)
+            }.body<Map<String, Any>>()
     ): OkxPlaceOrderData? {
         val sample = Timer.start(meterRegistry)
         var status = "success"
@@ -515,7 +478,7 @@ class OkxRestClient(
             val authHeaders = okxAuthService.createAuthHeaders("POST", path, bodyJson)
             
             val responseType = object : ParameterizedTypeReference<OkxPlaceOrderApiResponse>() {}
-            val api = okxWebClient.post()
+            val api = okxHttpClient.post()
                 .uri(url)
                 .headers { headers ->
                     authHeaders.forEach { (key, value) -> headers.set(key, value) }
@@ -551,3 +514,10 @@ class OkxRestClient(
         }
     }
 }
+            val api = okxHttpClient.post(url) {
+                authHeaders.forEach { (key, value) ->
+                    header(key, value)
+                }
+                contentType(ContentType.Application.Json)
+                setBody(bodyJson)
+            }.body<OkxPlaceOrderApiResponse>()

@@ -6,7 +6,8 @@ import com.github.tomakehurst.wiremock.core.WireMockConfiguration
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.*
-import org.springframework.web.reactive.function.client.WebClient
+import io.ktor.client.*
+import io.ktor.client.engine.cio.*
 import ru.driics.aitrade.config.OkxHttpProperties
 import ru.driics.aitrade.config.OkxProperties
 import kotlin.test.assertEquals
@@ -39,8 +40,9 @@ class OkxRestClientIntegrationTest {
             readTimeoutMs = 10000,
             writeTimeoutMs = 5000
         )
-        
-        val webClient = WebClient.builder().build()
+        val httpClient = HttpClient(CIO) {
+            expectSuccess = false
+        }
         meterRegistry = SimpleMeterRegistry()
         
         val authService = OkxAuthService(okxProperties)
@@ -48,7 +50,7 @@ class OkxRestClientIntegrationTest {
         okxRestClient = OkxRestClient(
             okxProperties = okxProperties,
             okxHttpProps = httpProps,
-            okxWebClient = webClient,
+            okxHttpClient = httpClient,
             okxAuthService = authService,
             meterRegistry = meterRegistry
         )
