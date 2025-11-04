@@ -1,15 +1,15 @@
-package ru.driics.aitrade.service
+package ru.driics.aitrade.domain.services
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import org.slf4j.LoggerFactory
-import org.springframework.stereotype.Service
 import ru.driics.aitrade.model.Position
 import java.math.BigDecimal
 import java.math.RoundingMode
 
-@Service
-class PromptFormatterService {
-    private val log = LoggerFactory.getLogger(javaClass)
+/**
+ * Pure domain service for formatting data in prompts.
+ * Stateless, no external dependencies.
+ */
+object PromptFormatter {
     private val objectMapper = jacksonObjectMapper()
 
     fun formatNumber(num: BigDecimal?): String {
@@ -39,7 +39,6 @@ class PromptFormatterService {
 
     fun formatScientific(num: BigDecimal?): String {
         if (num == null || num == BigDecimal.ZERO) return "0"
-
         val abs = num.abs()
         return if (abs < BigDecimal("0.0001")) {
             String.format("%.2e", num.toDouble())
@@ -88,7 +87,6 @@ class PromptFormatterService {
                 }
             }
 
-            // Single dict for one position, array for multiple
             val jsonString = if (positionMaps.size == 1) {
                 objectMapper.writeValueAsString(positionMaps[0])
             } else {
@@ -97,7 +95,6 @@ class PromptFormatterService {
 
             jsonString.replace("\"", "'")
         } catch (e: Exception) {
-            log.error("Error formatting positions", e)
             "{}"
         }
     }

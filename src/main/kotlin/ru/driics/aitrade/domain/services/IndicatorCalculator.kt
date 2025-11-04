@@ -1,13 +1,14 @@
-package ru.driics.aitrade.service
+package ru.driics.aitrade.domain.services
 
-import org.springframework.stereotype.Service
 import ru.driics.aitrade.model.OkxCandleResponse
 import java.math.BigDecimal
 import java.math.RoundingMode
 
-@Service
-class TechnicalIndicatorService {
-
+/**
+ * Pure domain service for technical indicator calculations.
+ * No dependencies, stateless, highly testable.
+ */
+object IndicatorCalculator {
     fun calculateEMA(prices: List<BigDecimal>, period: Int): BigDecimal {
         if (prices.isEmpty() || period <= 0) return BigDecimal.ZERO
         if (prices.size < period) {
@@ -28,7 +29,6 @@ class TechnicalIndicatorService {
 
     fun calculateMACD(prices: List<BigDecimal>): BigDecimal {
         if (prices.size < 26) return BigDecimal.ZERO
-
         val ema12 = calculateEMA(prices, 12)
         val ema26 = calculateEMA(prices, 26)
         return ema12 - ema26
@@ -43,7 +43,6 @@ class TechnicalIndicatorService {
 
         if (gains.size < period) return BigDecimal.ZERO
 
-        // Wilder's smoothing
         var avgGain = gains.take(period).fold(BigDecimal.ZERO, BigDecimal::add)
             .divide(BigDecimal(period), 10, RoundingMode.HALF_UP)
         var avgLoss = losses.take(period).fold(BigDecimal.ZERO, BigDecimal::add)
@@ -90,7 +89,6 @@ class TechnicalIndicatorService {
             trueRanges.fold(BigDecimal.ZERO, BigDecimal::add)
                 .divide(BigDecimal(trueRanges.size), 10, RoundingMode.HALF_UP)
         } else {
-            // Wilder's smoothing
             var atr = trueRanges.take(period).fold(BigDecimal.ZERO, BigDecimal::add)
                 .divide(BigDecimal(period), 10, RoundingMode.HALF_UP)
             for (i in period until trueRanges.size) {
@@ -101,7 +99,7 @@ class TechnicalIndicatorService {
         }
     }
 
-    // Progressive calculations (no leading zeros)
+    // Progressive calculations
     fun calculateProgressiveEMA(prices: List<BigDecimal>, period: Int): List<BigDecimal> {
         if (prices.size < period) return emptyList()
 
@@ -125,8 +123,6 @@ class TechnicalIndicatorService {
 
         val ema12List = calculateProgressiveEMA(prices, 12)
         val ema26List = calculateProgressiveEMA(prices, 26)
-
-        // Align lists (skip first 14 values from ema12)
         val alignedEma12 = ema12List.drop(14)
         return alignedEma12.zip(ema26List) { ema12, ema26 -> ema12 - ema26 }
     }
@@ -147,7 +143,6 @@ class TechnicalIndicatorService {
         var avgLoss = losses.take(period).fold(BigDecimal.ZERO, BigDecimal::add)
             .divide(BigDecimal(period), 10, RoundingMode.HALF_UP)
 
-        // First RSI
         val firstRsi = if (avgLoss.compareTo(BigDecimal.ZERO) == 0) {
             BigDecimal(100)
         } else {
@@ -158,7 +153,6 @@ class TechnicalIndicatorService {
         }
         result.add(firstRsi)
 
-        // Progressive RSI
         for (i in period until gains.size) {
             avgGain = (avgGain.multiply(BigDecimal(period - 1)).add(gains[i]))
                 .divide(BigDecimal(period), 10, RoundingMode.HALF_UP)

@@ -21,6 +21,7 @@ data class UpdateResponse(
 data class UpdateData(
     val symbolsFetched: Int,
     val positionsCount: Int,
+    val positionsPlaced: Int,
     val accountValueUsd: String,
     val promptSizeBytes: Int,
     val fileWritten: Boolean
@@ -32,7 +33,8 @@ data class StatusResponse(
     val version: String,
     val uptime: UptimeInfo,
     val session: SessionInfo,
-    val scheduler: SchedulerInfo
+    val scheduler: SchedulerInfo,
+    val trading: TradingInfo
 )
 
 data class UptimeInfo(
@@ -56,6 +58,12 @@ data class SchedulerInfo(
     val nextExecutionEstimate: String
 )
 
+data class TradingInfo(
+    val autoExecuteEnabled: Boolean,
+    val symbolsCount: Int,
+    val symbols: List<String>
+)
+
 data class ErrorResponse(
     val status: String,
     val message: String,
@@ -70,5 +78,6 @@ data class SessionStatsResponse(
     val minutesSinceStart: Long,
     val currencies: List<String>,
     val scheduledUpdateInterval: String,
-    val outputPath: String
+    val outputPath: String,
+    val autoExecuteEnabled: Boolean
 )
