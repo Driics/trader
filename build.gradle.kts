@@ -24,6 +24,21 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-webflux")
     implementation("org.springframework.boot:spring-boot-starter-validation")
+    
+    // Resilience4j for fault tolerance
+    implementation("io.github.resilience4j:resilience4j-spring-boot3:2.2.0")
+    implementation("io.github.resilience4j:resilience4j-reactor:2.2.0")
+    implementation("io.github.resilience4j:resilience4j-retry:2.2.0")
+    implementation("io.github.resilience4j:resilience4j-circuitbreaker:2.2.0")
+    implementation("io.github.resilience4j:resilience4j-ratelimiter:2.2.0")
+    
+    // Reactor and coroutines
+    implementation("io.projectreactor.netty:reactor-netty-http")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor:1.9.0")
+    
+    // Metrics
+    implementation("io.micrometer:micrometer-core")
+    
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("org.jetbrains.kotlin:kotlin-reflect")
     implementation(platform("org.jetbrains.kotlinx:kotlinx-serialization-bom:1.9.0"))
@@ -33,7 +48,7 @@ dependencies {
 
     implementation("ai.koog:koog-spring-boot-starter:0.5.1")
     
-    // HTTP Client
+    // HTTP Client (OkHttp kept for backward compatibility during rollout)
     implementation("com.squareup.okhttp3:okhttp:4.11.0")
     
     // Logging
@@ -44,6 +59,7 @@ dependencies {
     
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
+    testImplementation("com.github.tomakehurst:wiremock-jre8:2.35.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
@@ -65,7 +81,6 @@ configurations.all {
         }
     }
 }
-
 
 tasks.withType<Test> {
     useJUnitPlatform()

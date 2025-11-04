@@ -4,6 +4,16 @@ okx:
     secret: ${OKX_SECRET:your-okx-secret}
     passphrase: ${OKX_PASSPHRASE:your-okx-passphrase}
     base-url: https://www.okx.com
+  
+  http:
+    client-type: webclient  # webclient | resttemplate (rollout flag)
+    connect-timeout-ms: 5000
+    read-timeout-ms: 30000
+    write-timeout-ms: 10000
+    pool:
+      max-connections: 200
+      pending-acquire-max-count: 2000
+      pending-acquire-timeout-ms: 5000
 
 # Trading Configuration
 trading:
@@ -11,7 +21,8 @@ trading:
   time-zone: UTC
   auto-execute: true
 
-prompt.output-path: ./prompt.txt
+prompt:
+  output-path: ./prompt.txt
 
 ai:
   koog:
@@ -23,7 +34,6 @@ ai:
       base-url: https://openrouter.ai/api/v1
 
   custom:
-    # Custom System Prompt
     system-prompt: |
       You are an expert cryptocurrency trading analyst. 
       Analyze the provided market data and generate clear, actionable trading signals in JSON format.
@@ -42,20 +52,85 @@ ai:
       - Specify entry price, stop loss, and take profit
 
       Output only valid JSON, no additional prose. Don't add code tags(```) or other formatting.
-      JSON format:
-      Example for hold:
-      {
-        "COIN": {
-          "trade_signal_args": {
-            "coin": "COIN",
-            "signal": "hold",
-            "quantity": <full current size>,
-            "profit_target": <float>,
-            "stop_loss": <float>,
-            "invalidation_condition": "<string>",
-            "leverage": <int 5–40>,
-            "confidence": <0–1>,   
-            "risk_usd": <float>
-          }
-        }
-      }
+
+# Resilience4j Configuration
+resilience4j:
+  retry:
+    instances:
+      okxMarket:
+        max-attempts: 3
+        wait-duration: 1s
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2.0
+        enable-randomized-wait: true
+        randomized-wait-factor: 0.3
+        retry-exceptions:
+          - org.springframework.web.reactive.function.client.WebClientRequestException
+          - org.springframework.web.reactive.function.client.WebClientResponseException$ServiceUnavailable
+          - org.springframework.web.reactive.function.client.WebClientResponseException$GatewayTimeout
+          - java.util.concurrent.TimeoutException
+          - java.io.IOException
+      okxAccount:
+        max-attempts: 2
+        wait-duration: 2s
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2.0
+        retry-exceptions:
+          - org.springframework.web.reactive.function.client.WebClientRequestException
+          - org.springframework.web.reactive.function.client.WebClientResponseException$ServiceUnavailable
+      okxTrade:
+        max-attempts: 3
+        wait-duration: 1s
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2.0
+        retry-exceptions:
+          - org.springframework.web.reactive.function.client.WebClientRequestException
+          - java.util.concurrent.TimeoutException
+  
+  circuitbreaker:
+    instances:
+      okxMarket:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 20s
+        permitted-number-of-calls-in-half-open-state: 5
+        automatic-transition-from-open-to-half-open-enabled: true
+        record-exceptions:
+          - org.springframework.web.reactive.function.client.WebClientRequestException
+          - java.util.concurrent.TimeoutException
+      okxAccount:
+        sliding-window-size: 10
+        failure-rate-threshold: 60
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
+      okxTrade:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 2
+  
+  ratelimiter:
+    instances:
+      okxMarket:
+        limit-for-period: 50
+        limit-refresh-period: 1s
+        timeout-duration: 0
+      okxAccount:
+        limit-for-period: 20
+        limit-refresh-period: 1s
+        timeout-duration: 0
+      okxTrade:
+        limit-for-period: 10
+        limit-refresh-period: 1s
+        timeout-duration: 0
+
+# Spring Actuator for metrics exposure
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+  metrics:
+    tags:
+      application: ${spring.application.name:aiTrader}

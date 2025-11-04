@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicReference
 @Service
 class OkxExchangeAdapter(
     private val rest: OkxRestClient,
+    // OkxRestClient now uses WebClient with suspend functions
     private val tradingProperties: TradingProperties
 ) : MarketDataPort, TradingPort {
     companion object {
