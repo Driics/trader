@@ -28,7 +28,7 @@ class ApiKeyRotationPolicy(
      * Uses round-robin to ensure uniform distribution.
      */
     fun rotateToNextKey(): String {
-        val nextIndex = rotationIndex.incrementAndGet() % keys.size
+        val nextIndex = Math.floorMod(rotationIndex.incrementAndGet(), keys.size)
         return keys[nextIndex]
     }
 
