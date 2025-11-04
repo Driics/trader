@@ -50,6 +50,10 @@ class ApiKeyRotationPolicy(
     val currentIndex: Int
         get() = rotationIndex.get() % keys.size
 
+    val isSingleKey: Boolean get() = keyCount <= 1
+
+    val hasMultipleKeys: Boolean get() = keyCount > 1
+
     /**
      * Resets rotation to the first key.
      */

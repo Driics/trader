@@ -54,6 +54,7 @@ class KoogAiService(
         )
     )
 
+
     private val last = AtomicReference<LastAiAnalysis?>(null)
 
     override fun getProviderName(): String = "koog-openrouter"
@@ -71,17 +72,13 @@ class KoogAiService(
                 system(systemPrompt)
                 user(prompt)
             }
-
-            // Execute with rotating client
             val response = rotatingClient.execute(p, model)
-
             val took = System.currentTimeMillis() - t0
 
-            // Extract response text from Message.Response
             val responseText = response.content
 
             val stats = rotatingClient.getRotationStats()
-            logger.info { "API call successful (key ${stats.currentIndex + 1}/${stats.totalKeys}, ${took}ms)" }
+            logger.info { "AI call ok: ${took}ms | keys=${stats.totalKeys} | mode=${stats.mode} | idx=${stats.currentIndex}" }
 
             val snapshot = LastAiAnalysis(
                 provider = getProviderName(),
@@ -126,6 +123,8 @@ class KoogAiService(
             )
         }
     }
+
+    fun getKeyMode(): RotatingOpenRouterClient.KeyMode = rotatingClient.getMode()
 
     /**
      * Returns current rotation statistics for monitoring.
