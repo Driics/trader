@@ -42,6 +42,8 @@ class OkxExchangeAdapter(
         .expireAfterWrite(Duration.ofMinutes(tradingProperties.instrumentCacheTtlMinutes))
         .maximumSize(100)
         .build<String, OkxInstrumentInfo>()
+    
+    private val candles4HCache = Candles4HCache()
 
     override suspend fun loadMarketState(symbols: List<String>): MarketState = withContext(Dispatchers.IO) {
         val count = invocationCount.incrementAndGet()
@@ -100,7 +102,7 @@ class OkxExchangeAdapter(
         val intradayRsi14 = IndicatorCalculator.calculateProgressiveRSI(prices, 14)
 
         // Fetch 4-hour candles for longer-term context
-        val candles4h = rest.fetchCandles(instId, "4H", 50)
+        val candles4h = fetch4HCandlesWithCache(symbol, instId)
         val prices4h = candles4h.mapNotNull { it.close.toBigDecimalOrNull() }
 
         val ema20_4h = IndicatorCalculator.calculateEMA(prices4h, 20)
@@ -109,8 +111,25 @@ class OkxExchangeAdapter(
         val atr14_4h = IndicatorCalculator.calculateATR(candles4h, 14)
 
         val volume4h = candles4h.lastOrNull()?.volume?.toBigDecimalOrNull() ?: BigDecimal.ZERO
-        val avgVolume4h = calculateAverageVolume(candles4h)
+        val avgVolume4h = calculateAverageVolume(candles4h, last = 20)
 
+        
+        // Ensure exactly 10 values in 4H series (pad with zeros if needed)
+        val macd4hPadded = macd4h.takeLast(10).let { list ->
+            if (list.size < 10) {
+                List(10 - list.size) { BigDecimal.ZERO } + list
+            } else {
+                list
+            }
+        }
+        
+        val rsi14_4hPadded = rsi14_4h.takeLast(10).let { list ->
+            if (list.size < 10) {
+                List(10 - list.size) { BigDecimal.ZERO } + list
+            } else {
+                list
+            }
+        }
         val macd4h = IndicatorCalculator.calculateProgressiveMACD(prices4h)
         val rsi14_4h = IndicatorCalculator.calculateProgressiveRSI(prices4h, 14)
 
@@ -137,8 +156,8 @@ class OkxExchangeAdapter(
             atr14_4h = atr14_4h,
             volume4h = volume4h,
             avgVolume4h = avgVolume4h,
-            macd4h = macd4h.takeLast(10),
-            rsi14_4h = rsi14_4h.takeLast(10)
+            macd4h = macd4hPadded,
+            rsi14_4h = rsi14_4hPadded
         )
     }
 
@@ -184,6 +203,44 @@ class OkxExchangeAdapter(
     }
 
     private suspend fun fetchPositions(): List<Position> {
+    
+    /**
+     * Fetch 4H candles with caching to avoid recalculations.
+     * Checks if data has changed since last fetch.
+     */
+    private suspend fun fetch4HCandlesWithCache(symbol: String, instId: String): List<OkxCandleResponse> {
+        val newCandles = rest.fetchCandles(instId, "4H", 200)
+        
+        if (newCandles.isEmpty()) {
+            log.warn { "No 4H candles returned for $symbol" }
+            return emptyList()
+        }
+        
+        val newHash = Candles4HCache.generateHash(newCandles)
+        val lastTimestamp = newCandles.lastOrNull()?.timestamp?.toLongOrNull() ?: 0L
+        
+        val cached = candles4HCache.get(symbol)
+        
+        // If hash matches, data hasn't changed - return cached candles
+        if (cached != null && cached.dataHash == newHash) {
+            log.debug { "4H data unchanged for $symbol, using cached version" }
+            return cached.candles
+        }
+        
+        // Data changed or no cache - update cache
+        log.debug { "4H data updated for $symbol (hash: $newHash)" }
+        candles4HCache.put(
+            symbol,
+            Cached4HData(
+                candles = newCandles,
+                lastCandleTimestamp = lastTimestamp,
+                dataHash = newHash
+            )
+        )
+        
+        return newCandles
+    }
+
         val positions = rest.fetchOpenPositions()
         return positions.mapNotNull { pos ->
             try {
@@ -203,9 +260,19 @@ class OkxExchangeAdapter(
         }
     }
 
-    private fun calculateAverageVolume(candles: List<OkxCandleResponse>): BigDecimal {
+    private fun calculateAverageVolume(candles: List<OkxCandleResponse>, last: Int? = null): BigDecimal {
+        val candlesToUse = if (last != null && candles.size > last) {
+            candles.takeLast(last)
+        val candlesToUse = if (last != null && candles.size > last) {
+            candles.takeLast(last)
+        } else {
+            candles
+        }
+        } else {
+            candles
+        }
         if (candles.isEmpty()) return BigDecimal.ZERO
-        val volumes = candles.mapNotNull { it.volume.toBigDecimalOrNull() }
+        val volumes = candlesToUse.mapNotNull { it.volume.toBigDecimalOrNull() }
         return if (volumes.isNotEmpty()) {
             volumes.fold(BigDecimal.ZERO, BigDecimal::add)
                 .divide(BigDecimal(volumes.size), 10, RoundingMode.HALF_UP)
