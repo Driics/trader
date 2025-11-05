@@ -22,6 +22,7 @@ class OkxRestClientIntegrationTest {
     private lateinit var wireMockServer: WireMockServer
     private lateinit var okxRestClient: OkxRestClient
     private lateinit var meterRegistry: SimpleMeterRegistry
+    private lateinit var httpClient: HttpClient
 
     @BeforeAll
     fun setup() {
@@ -36,13 +37,20 @@ class OkxRestClientIntegrationTest {
         )
 
         val httpProps = OkxHttpProperties(
-            clientType = "webclient",
+            clientType = "ktor",
             connectTimeoutMs = 5000,
             readTimeoutMs = 10000,
             writeTimeoutMs = 5000
         )
-        val httpClient = HttpClient(CIO) {
+
+        httpClient = HttpClient(CIO) {
             expectSuccess = false
+            engine {
+                requestTimeout = 10000
+                endpoint {
+                    connectTimeout = 5000
+                }
+            }
         }
         meterRegistry = SimpleMeterRegistry()
 
@@ -60,6 +68,7 @@ class OkxRestClientIntegrationTest {
 
     @AfterAll
     fun tearDown() {
+        httpClient.close()
         wireMockServer.stop()
     }
 
@@ -153,6 +162,12 @@ class OkxRestClientIntegrationTest {
         assertEquals(2, result.size)
         // Verify sorting: earlier timestamp first
         assertTrue(result[0].timestamp.toLong() <= result[1].timestamp.toLong())
+
+        assertEquals("1609455600000", result[0].timestamp)
+        assertEquals("28500", result[0].open)
+        assertEquals("29000", result[0].high)
+        assertEquals("28000", result[0].low)
+        assertEquals("29000", result[0].close)
     }
 
     @Test
@@ -193,6 +208,10 @@ class OkxRestClientIntegrationTest {
         // In integration test with Spring, retries would work
         // Here we just verify the stub setup works
         assertTrue(result.isEmpty())
+
+        val timer = meterRegistry.find("okx.http").tag("operation", "fetchAccount").timer()
+        assertNotNull(timer)
+        assertEquals(1, timer.count())
     }
 
     @Test
