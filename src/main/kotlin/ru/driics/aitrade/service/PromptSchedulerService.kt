@@ -20,10 +20,10 @@ class PromptSchedulerService(
     }
 
     /**
-     * Executes scheduled update every 3 minutes.
+     * Executes scheduled update every 15 minutes.
      * Initial delay: 5 seconds after startup.
      */
-    @Scheduled(fixedDelay = 180000, initialDelay = 5000)
+    @Scheduled(fixedDelay = 900_000, initialDelay = 5000)
     fun updatePrompt() {
         log.info { "╔══════════════════════════════════════════════════════" }
         log.info { "║ Scheduled Update Triggered" }
