@@ -45,7 +45,4 @@ class ApplicationWiring(
         autoExecute = tradingProperties.autoExecute,
         symbols = tradingProperties.getCurrenciesList()
     )
-
-    @Bean
-    fun clock(): Clock = Clock.systemUTC()
 }
