@@ -5,11 +5,23 @@ okx:
     passphrase: ${OKX_PASSPHRASE:your-okx-passphrase}
     base-url: https://www.okx.com
 
+  http:
+    client-type: ktor
+    connect-timeout-ms: 5000
+    read-timeout-ms: 30000
+    write-timeout-ms: 10000
+    pool:
+      max-connections: 200
+      pending-acquire-max-count: 2000
+      pending-acquire-timeout-ms: 5000
+
 # Trading Configuration
 trading:
   currencies: BTC,ETH,SOL,BNB,XRP,DOGE
   time-zone: UTC
   auto-execute: true
+  max-concurrent-symbols: 10
+  instrument-cache-ttl-minutes: 60
 
 prompt.output-path: ./prompt.txt
 
@@ -59,3 +71,83 @@ ai:
           }
         }
       }
+
+resilience4j:
+  retry:
+    instances:
+      okxMarket:
+        max-attempts: 3
+        wait-duration: 1s
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2.0
+        enable-randomized-wait: true
+        randomized-wait-factor: 0.3
+        retry-exceptions:
+          - io.ktor.client.plugins.HttpRequestTimeoutException
+          - java.net.ConnectException
+          - java.io.IOException
+      okxAccount:
+        max-attempts: 2
+        wait-duration: 2s
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2.0
+        retry-exceptions:
+          - java.net.ConnectException
+      okxTrade:
+        max-attempts: 3
+        wait-duration: 1s
+        enable-exponential-backoff: true
+        exponential-backoff-multiplier: 2.0
+        retry-exceptions:
+          - java.util.concurrent.TimeoutException
+
+  circuitbreaker:
+    instances:
+      okxMarket:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 20s
+        permitted-number-of-calls-in-half-open-state: 5
+        automatic-transition-from-open-to-half-open-enabled: true
+        record-exceptions:
+          - java.util.concurrent.TimeoutException
+      okxAccount:
+        sliding-window-size: 10
+        failure-rate-threshold: 60
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
+      okxTrade:
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 2
+
+  ratelimiter:
+    instances:
+      okxMarket:
+        limit-for-period: 50
+        limit-refresh-period: 1s
+        timeout-duration: 0
+      okxAccount:
+        limit-for-period: 20
+        limit-refresh-period: 1s
+        timeout-duration: 0
+      okxTrade:
+        limit-for-period: 10
+        limit-refresh-period: 1s
+        timeout-duration: 0
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus,resilience4j
+  metrics:
+    tags:
+      application: ${spring.application.name:aiTrader}
+  health:
+    circuitbreakers:
+      enabled: true
+    ratelimiters:
+      enabled: true

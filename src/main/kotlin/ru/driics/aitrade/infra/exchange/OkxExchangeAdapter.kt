@@ -4,6 +4,7 @@ import com.github.benmanes.caffeine.cache.Caffeine
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -217,7 +218,8 @@ class OkxExchangeAdapter(
         withContext(Dispatchers.IO) {
             try {
                 instrumentCache.get(instId) {
-                    rest.getSwapInstrument(instId) ?: error("Instrument $instId not found")
+                    runBlocking { rest.getSwapInstrument(instId) }
+                        ?: error("Instrument $instId not found")
                 }
             } catch (e: Exception) {
                 log.error(e) { "Failed to load instrument $instId" }
