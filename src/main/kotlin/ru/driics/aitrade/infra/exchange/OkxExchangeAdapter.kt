@@ -113,7 +113,10 @@ class OkxExchangeAdapter(
         val volume4h = candles4h.lastOrNull()?.volume?.toBigDecimalOrNull() ?: BigDecimal.ZERO
         val avgVolume4h = calculateAverageVolume(candles4h, last = 20)
 
-        
+        val macd4h = IndicatorCalculator.calculateProgressiveMACD(prices4h)
+        val rsi14_4h = IndicatorCalculator.calculateProgressiveRSI(prices4h, 14)
+
+
         // Ensure exactly 10 values in 4H series (pad with zeros if needed)
         val macd4hPadded = macd4h.takeLast(10).let { list ->
             if (list.size < 10) {
@@ -130,8 +133,6 @@ class OkxExchangeAdapter(
                 list
             }
         }
-        val macd4h = IndicatorCalculator.calculateProgressiveMACD(prices4h)
-        val rsi14_4h = IndicatorCalculator.calculateProgressiveRSI(prices4h, 14)
 
         // Fetch funding rate and open interest
         val fundingRate = rest.fetchFundingRate(instId)
@@ -203,6 +204,24 @@ class OkxExchangeAdapter(
     }
 
     private suspend fun fetchPositions(): List<Position> {
+        val positions = rest.fetchOpenPositions()
+        return positions.mapNotNull { pos ->
+            try {
+                Position(
+                    symbol = pos.instrumentId.substringBefore("-"),
+                    quantity = pos.quantity.toBigDecimalOrNull() ?: BigDecimal.ZERO,
+                    entryPrice = pos.averagePrice.toBigDecimalOrNull() ?: BigDecimal.ZERO,
+                    currentPrice = pos.markPrice.toBigDecimalOrNull() ?: BigDecimal.ZERO,
+                    liquidationPrice = pos.liquidationPrice.toBigDecimalOrNull(),
+                    unrealizedPnl = pos.unrealizedPnl.toBigDecimalOrNull() ?: BigDecimal.ZERO,
+                    leverage = pos.leverage.toIntOrNull()
+                )
+            } catch (e: Exception) {
+                log.warn(e) { "Failed to parse position: ${pos.instrumentId}" }
+                null
+            }
+        }
+    }
     
     /**
      * Fetch 4H candles with caching to avoid recalculations.
@@ -241,37 +260,13 @@ class OkxExchangeAdapter(
         return newCandles
     }
 
-        val positions = rest.fetchOpenPositions()
-        return positions.mapNotNull { pos ->
-            try {
-                Position(
-                    symbol = pos.instrumentId.substringBefore("-"),
-                    quantity = pos.quantity.toBigDecimalOrNull() ?: BigDecimal.ZERO,
-                    entryPrice = pos.averagePrice.toBigDecimalOrNull() ?: BigDecimal.ZERO,
-                    currentPrice = pos.markPrice.toBigDecimalOrNull() ?: BigDecimal.ZERO,
-                    liquidationPrice = pos.liquidationPrice.toBigDecimalOrNull(),
-                    unrealizedPnl = pos.unrealizedPnl.toBigDecimalOrNull() ?: BigDecimal.ZERO,
-                    leverage = pos.leverage.toIntOrNull()
-                )
-            } catch (e: Exception) {
-                log.warn(e) { "Failed to parse position: ${pos.instrumentId}" }
-                null
-            }
-        }
-    }
-
     private fun calculateAverageVolume(candles: List<OkxCandleResponse>, last: Int? = null): BigDecimal {
-        val candlesToUse = if (last != null && candles.size > last) {
-            candles.takeLast(last)
-        val candlesToUse = if (last != null && candles.size > last) {
-            candles.takeLast(last)
-        } else {
-            candles
-        }
-        } else {
-            candles
-        }
         if (candles.isEmpty()) return BigDecimal.ZERO
+        val candlesToUse = if (last != null && candles.size > last) {
+            candles.takeLast(last)
+        } else {
+            candles
+        }
         val volumes = candlesToUse.mapNotNull { it.volume.toBigDecimalOrNull() }
         return if (volumes.isNotEmpty()) {
             volumes.fold(BigDecimal.ZERO, BigDecimal::add)
