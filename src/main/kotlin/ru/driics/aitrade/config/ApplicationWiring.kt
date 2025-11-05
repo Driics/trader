@@ -10,6 +10,7 @@ import ru.driics.aitrade.domain.ports.AiAnalysisPort
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PromptOutputPort
 import ru.driics.aitrade.domain.ports.TradingPort
+import java.time.Clock
 
 @Configuration
 class ApplicationWiring(
@@ -44,4 +45,7 @@ class ApplicationWiring(
         autoExecute = tradingProperties.autoExecute,
         symbols = tradingProperties.getCurrenciesList()
     )
+
+    @Bean
+    fun clock(): Clock = Clock.systemUTC()
 }
