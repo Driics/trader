@@ -3,9 +3,11 @@ package ru.driics.aitrade.application.orchestrator
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.micrometer.core.instrument.MeterRegistry
 import ru.driics.aitrade.application.usecase.AnalyzePromptUseCase
 import ru.driics.aitrade.application.usecase.BuildPromptUseCase
 import ru.driics.aitrade.application.usecase.ExecuteAiDecisionsUseCase
+import ru.driics.aitrade.common.timedSuspend
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.model.AccountInfo
 import ru.driics.aitrade.model.AiTradeDecisionMap
@@ -15,17 +17,12 @@ import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
-/**
- * Orchestrates the three-stage update cycle:
- * 1. Build prompt from market data
- * 2. Analyze with AI
- * 3. Execute trading decisions (if enabled)
- */
 class UpdateCycleOrchestrator(
     private val build: BuildPromptUseCase,
     private val analyze: AnalyzePromptUseCase,
     private val execute: ExecuteAiDecisionsUseCase,
     private val market: MarketDataPort,
+    private val meterRegistry: MeterRegistry,
     private val autoExecute: Boolean,
     private val symbols: List<String>
 ) {
@@ -37,17 +34,30 @@ class UpdateCycleOrchestrator(
     private val sessionStartTime = AtomicLong(System.currentTimeMillis())
     private val invocationCount = AtomicLong(0L)
     private val lastUpdateTime = AtomicLong(0L)
-
     private val lastPromptHash = AtomicReference<String?>(null)
 
     suspend fun runOnce(): UpdateCycleResult {
         val invocation = invocationCount.incrementAndGet()
-        val startMs = System.currentTimeMillis()
 
         log.info { "╔══════════════════════════════════════════════════════" }
         log.info { "║ Update Cycle #$invocation" }
         log.info { "╚══════════════════════════════════════════════════════" }
 
+        val (result, took) = meterRegistry.timedSuspend(
+            "update.cycle",
+            "autoExecute", autoExecute.toString()
+        ) {
+            doRunOnce(invocation)
+        }
+
+        lastUpdateTime.set(System.currentTimeMillis())
+
+        log.info { "═══ Update cycle #$invocation completed in ${took}ms ═══\n" }
+
+        return result.copy(executionTimeMs = took)
+    }
+
+    private suspend fun doRunOnce(invocation: Long): UpdateCycleResult {
         // Stage 1: Build prompt
         val prompt = try {
             build.execute(symbols, sessionStartTime.get(), invocation)
@@ -56,7 +66,7 @@ class UpdateCycleOrchestrator(
             return UpdateCycleResult(
                 success = false,
                 message = "Error: Failed to build prompt - ${e.message}",
-                executionTimeMs = System.currentTimeMillis() - startMs,
+                executionTimeMs = 0,
                 promptSize = 0
             )
         }
@@ -65,11 +75,10 @@ class UpdateCycleOrchestrator(
         val previousHash = lastPromptHash.get()
         if (currentHash == previousHash) {
             log.info { "Prompt unchanged from previous cycle, skipping AI analysis" }
-            lastUpdateTime.set(System.currentTimeMillis())
             return UpdateCycleResult(
                 success = true,
                 message = "Skipped (prompt unchanged)",
-                executionTimeMs = System.currentTimeMillis() - startMs,
+                executionTimeMs = 0,
                 promptSize = prompt.length,
                 positionsPlaced = 0
             )
@@ -84,7 +93,7 @@ class UpdateCycleOrchestrator(
             return UpdateCycleResult(
                 success = false,
                 message = "Error: Failed to analyze prompt - ${e.message}",
-                executionTimeMs = System.currentTimeMillis() - startMs,
+                executionTimeMs = 0,
                 promptSize = prompt.length
             )
         }
@@ -94,7 +103,7 @@ class UpdateCycleOrchestrator(
             return UpdateCycleResult(
                 success = false,
                 message = "Error: AI analysis failed - ${aiResult.errorMessage}",
-                executionTimeMs = System.currentTimeMillis() - startMs,
+                executionTimeMs = 0,
                 promptSize = prompt.length
             )
         }
@@ -108,7 +117,7 @@ class UpdateCycleOrchestrator(
             return UpdateCycleResult(
                 success = false,
                 message = "Error: Failed to parse AI decisions - ${e.message}",
-                executionTimeMs = System.currentTimeMillis() - startMs,
+                executionTimeMs = 0,
                 promptSize = prompt.length
             )
         }
@@ -127,7 +136,7 @@ class UpdateCycleOrchestrator(
                 return UpdateCycleResult(
                     success = false,
                     message = "Warning: AI succeeded but execution failed - ${e.message}",
-                    executionTimeMs = System.currentTimeMillis() - startMs,
+                    executionTimeMs = 0,
                     promptSize = prompt.length
                 )
             }
@@ -135,15 +144,10 @@ class UpdateCycleOrchestrator(
             log.info { "Auto-execution disabled, skipping trade placement" }
         }
 
-        lastUpdateTime.set(System.currentTimeMillis())
-        val executionTimeMs = lastUpdateTime.get() - startMs
-
-        log.info { "═══ Update cycle #$invocation completed in ${executionTimeMs}ms ═══\n" }
-
         return UpdateCycleResult(
             success = true,
             message = "Success",
-            executionTimeMs = executionTimeMs,
+            executionTimeMs = 0,
             promptSize = prompt.length,
             positionsPlaced = executionResults?.count { it.action == ru.driics.aitrade.model.AIAction.PLACED } ?: 0
         )
@@ -159,16 +163,13 @@ class UpdateCycleOrchestrator(
 
     fun getLastUpdateTime(): Long? = lastUpdateTime.get().takeIf { it > 0 }
 
-    /**
-     * Logs a compact summary of AI decisions instead of verbose JSON.
-     */
     private fun logAiDecisionsSummary(decisions: AiTradeDecisionMap) {
         try {
             log.info { "═══ AI Decisions Summary (${decisions.size} symbols) ═══" }
 
             decisions.forEach { (symbol, envelope) ->
                 val args = envelope.args
-                val signal = args.signal.uppercase()
+                val signal = args.signal.name
                 val confidence = args.confidence?.let { String.format(Locale.ROOT, "%.2f", it.toDouble()) } ?: "N/A"
                 val leverage = args.leverage ?: "N/A"
 

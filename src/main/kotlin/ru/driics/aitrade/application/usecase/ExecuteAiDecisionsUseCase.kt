@@ -11,15 +11,11 @@ import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.IdGenerator
 import ru.driics.aitrade.domain.services.OrderSizingPolicy
+import ru.driics.aitrade.domain.types.asSymbol
 import ru.driics.aitrade.model.*
 import java.math.BigDecimal
 import java.math.RoundingMode
-import java.util.*
 
-/**
- * Use case: Execute AI trading decisions.
- * Uses domain services (OrderSizingPolicy, IdGenerator) and ports (TradingPort, MarketDataPort).
- */
 class ExecuteAiDecisionsUseCase(
     private val trading: TradingPort,
     private val market: MarketDataPort,
@@ -42,7 +38,7 @@ class ExecuteAiDecisionsUseCase(
     suspend fun execute(decisions: AiTradeDecisionMap): List<AiTradeExecutionResult> = coroutineScope {
         log.info { "Executing AI trading decisions" }
 
-        val supported = tradingProperties.getCurrenciesList().map { it.uppercase(Locale.ROOT) }.toSet()
+        val supported = tradingProperties.getCurrenciesList().map { it.asSymbol().value }.toSet()
 
         val state = market.loadMarketState(supported.toList())
         var remainingCashUsd = maxOf(state.account.availableCash, BigDecimal.ZERO)
@@ -106,12 +102,10 @@ class ExecuteAiDecisionsUseCase(
     )
 
     private suspend fun buildPlan(args: AiTradeSignalArgs, supported: Set<String>): PlanResult {
-        val symbol = args.coin.uppercase(Locale.ROOT)
+        val symbol = args.coin.asSymbol().value
         if (symbol !in supported) return PlanResult.Skip(symbol, "Not in configured list")
 
-        val signal = args.signal.lowercase(Locale.ROOT)
-        if (signal == "hold") return PlanResult.Skip(symbol, "Hold signal")
-        if (signal !in setOf("buy", "sell")) return PlanResult.Skip(symbol, "Unsupported signal: ${args.signal}")
+        if (args.signal == AiSignal.HOLD) return PlanResult.Skip(symbol, "Hold signal")
 
         val confidence = args.confidence ?: BigDecimal.ZERO
         if (confidence < minConfidence) {
@@ -149,8 +143,13 @@ class ExecuteAiDecisionsUseCase(
         val min = inst.minSz?.toBigDecimalOrNull()?.takeIf { it.isPositive() } ?: lot
         val ctVal = inst.ctVal?.toBigDecimalOrNull()?.takeIf { it.isPositive() }
             ?: return PlanResult.Skip(symbol, "Invalid ctVal")
-        val ccy = (inst.ctValCcy ?: "").uppercase(Locale.ROOT)
-        val side = if (signal == "buy") "buy" else "sell"
+        val ccy = (inst.ctValCcy ?: "").uppercase()
+
+        val side = when (args.signal) {
+            AiSignal.BUY -> "buy"
+            AiSignal.SELL -> "sell"
+            AiSignal.HOLD -> return PlanResult.Skip(symbol, "Hold signal")
+        }
 
         return PlanResult.Ready(
             OrderPlan(

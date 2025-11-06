@@ -17,11 +17,17 @@ okx:
 
 # Trading Configuration
 trading:
-  currencies: BTC,ETH,SOL,BNB,XRP,DOGE
+  currencies:
+    - BTC
+    - ETH
+    - SOL
+    - BNB
+    - XRP
+    - DOGE
   time-zone: UTC
   auto-execute: true
   max-concurrent-symbols: 10
-  instrument-cache-ttl-minutes: 60
+  instrument-cache-ttl-minutes: 10m
 
 prompt.output-path: ./prompt.txt
 

@@ -1,4 +1,3 @@
-// src/main/kotlin/ru/driics/aitrade/service/KoogAiService.kt
 package ru.driics.aitrade.service
 
 import ai.koog.prompt.dsl.prompt
@@ -6,8 +5,10 @@ import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.micrometer.core.instrument.MeterRegistry
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
+import ru.driics.aitrade.common.timedSuspend
 import ru.driics.aitrade.config.OpenRouterProperties
 import ru.driics.aitrade.domain.services.ApiKeyRotationPolicy
 import ru.driics.aitrade.infra.ai.RotatingOpenRouterClient
@@ -20,6 +21,7 @@ import java.util.concurrent.atomic.AtomicReference
 @Service
 class KoogAiService(
     private val openRouterProperties: OpenRouterProperties,
+    private val meterRegistry: MeterRegistry,
     @param:Value("\${ai.custom.system-prompt:You are an expert crypto trading analyst.}")
     private val systemPrompt: String
 ) : AiService {
@@ -54,7 +56,6 @@ class KoogAiService(
         )
     )
 
-
     private val last = AtomicReference<LastAiAnalysis?>(null)
 
     override fun getProviderName(): String = "koog-openrouter"
@@ -64,20 +65,23 @@ class KoogAiService(
     override fun getLastAnalysis(): LastAiAnalysis? = last.get()
 
     override suspend fun analyzePrompt(prompt: String): AiAnalysisResponse {
-        val t0 = System.currentTimeMillis()
-
         return try {
-            // Build Koog prompt using DSL
             val p = prompt(id = "signal-gen") {
                 system(systemPrompt)
                 user(prompt)
             }
-            val response = rotatingClient.execute(p, model)
-            val took = System.currentTimeMillis() - t0
+
+            val (response, took) = meterRegistry.timedSuspend(
+                "ai.analyze",
+                "provider", "koog",
+                "model", model.id
+            ) {
+                rotatingClient.execute(p, model)
+            }
 
             val responseText = response.content
-
             val stats = rotatingClient.getRotationStats()
+
             logger.info { "AI call ok: ${took}ms | keys=${stats.totalKeys} | mode=${stats.mode} | idx=${stats.currentIndex}" }
 
             val snapshot = LastAiAnalysis(
@@ -99,7 +103,7 @@ class KoogAiService(
                 isSuccess = true
             )
         } catch (e: Exception) {
-            val took = System.currentTimeMillis() - t0
+            val took = 0L
             logger.error(e) { "Koog/OpenRouter analysis failed after all retries" }
 
             val snapshot = LastAiAnalysis(
@@ -126,8 +130,5 @@ class KoogAiService(
 
     fun getKeyMode(): RotatingOpenRouterClient.KeyMode = rotatingClient.getMode()
 
-    /**
-     * Returns current rotation statistics for monitoring.
-     */
     fun getRotationStats() = rotatingClient.getRotationStats()
 }

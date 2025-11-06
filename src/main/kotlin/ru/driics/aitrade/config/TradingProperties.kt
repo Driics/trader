@@ -4,22 +4,19 @@ import jakarta.validation.constraints.DecimalMax
 import jakarta.validation.constraints.DecimalMin
 import jakarta.validation.constraints.Max
 import jakarta.validation.constraints.Min
-import jakarta.validation.constraints.NotBlank
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.domain.model.MarginMode
 import java.math.BigDecimal
+import java.time.Duration
 
 @Component
 @ConfigurationProperties(prefix = "trading")
 data class TradingProperties(
-    @field:NotBlank(message = "Currencies list cannot be empty")
-    var currencies: String = "",
-    @field:NotBlank(message = "Margin mode cannot be empty")
+    var currencies: List<String> = emptyList(),
     var marginMode: String = "isolated",
     var autoExecute: Boolean = false,
 
-    // Risk parameters
     @field:DecimalMin(value = "0.0", message = "Taker fee must be non-negative")
     @field:DecimalMax(value = "1.0", message = "Taker fee cannot exceed 100%")
     var takerFeePct: BigDecimal = BigDecimal("0.0005"),
@@ -39,16 +36,13 @@ data class TradingProperties(
     @field:Min(value = 1, message = "Min leverage must be at least 1")
     var minLeverage: Int = 5,
 
-    // API limits
     @field:Min(value = 1, message = "Max concurrent symbols must be at least 1")
     var maxConcurrentSymbols: Int = 4,
 
-    @field:Min(value = 1, message = "Instrument cache TTL must be at least 1 minute")
-    var instrumentCacheTtlMinutes: Long = 10
+    var instrumentCacheTtl: Duration = Duration.ofMinutes(10)
 ) {
     fun getCurrenciesList(): List<String> =
-        currencies.split(",")
-            .map { it.trim().uppercase() }
+        currencies.map { it.trim().uppercase() }
             .filter { it.isNotBlank() }
 
     fun getMarginMode(): MarginMode = MarginMode.fromString(marginMode)

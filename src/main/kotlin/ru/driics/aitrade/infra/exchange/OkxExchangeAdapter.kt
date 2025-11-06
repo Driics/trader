@@ -39,7 +39,7 @@ class OkxExchangeAdapter(
     private val initialAccountEquity = AtomicReference<BigDecimal?>(null)
 
     private val instrumentCache = Caffeine.newBuilder()
-        .expireAfterWrite(Duration.ofMinutes(tradingProperties.instrumentCacheTtlMinutes))
+        .expireAfterWrite(tradingProperties.instrumentCacheTtl)
         .maximumSize(100)
         .build<String, OkxInstrumentInfo>()
     
