@@ -12,17 +12,20 @@ inline fun <T> MeterRegistry.timed(
     vararg tags: String,
     crossinline block: () -> T
 ): Pair<T, Long> {
+    val sample = Timer.start(this)
     var duration = 0L
-    val result = Timer.builder(metricName)
-        .tags(*tags)
-        .register(this)
-        .recordCallable {
-            val startMs = System.currentTimeMillis()
-            val r = block()
-            duration = System.currentTimeMillis() - startMs
-            r
-        }!!
-    return result to duration
+    val startMs = System.currentTimeMillis()
+    return try {
+        val result = block()
+        duration = System.currentTimeMillis() - startMs
+        result to duration
+    } finally {
+        sample.stop(
+            Timer.builder(metricName)
+                .tags(*tags)
+                .register(this)
+        )
+    }
 }
 
 /**

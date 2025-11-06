@@ -27,7 +27,7 @@ trading:
   time-zone: UTC
   auto-execute: true
   max-concurrent-symbols: 10
-  instrument-cache-ttl-minutes: 10m
+  instrument-cache-ttl: 10m
 
 prompt.output-path: ./prompt.txt
 

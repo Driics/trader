@@ -15,6 +15,7 @@ import ru.driics.aitrade.domain.types.asSymbol
 import ru.driics.aitrade.model.*
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.util.Locale
 
 class ExecuteAiDecisionsUseCase(
     private val trading: TradingPort,
@@ -143,7 +144,7 @@ class ExecuteAiDecisionsUseCase(
         val min = inst.minSz?.toBigDecimalOrNull()?.takeIf { it.isPositive() } ?: lot
         val ctVal = inst.ctVal?.toBigDecimalOrNull()?.takeIf { it.isPositive() }
             ?: return PlanResult.Skip(symbol, "Invalid ctVal")
-        val ccy = (inst.ctValCcy ?: "").uppercase()
+        val ccy = (inst.ctValCcy ?: "").uppercase(Locale.ROOT)
 
         val side = when (args.signal) {
             AiSignal.BUY -> "buy"

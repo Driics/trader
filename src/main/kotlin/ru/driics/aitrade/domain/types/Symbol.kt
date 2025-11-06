@@ -10,6 +10,7 @@ value class Symbol(val value: String) {
     init {
         require(value.isNotBlank()) { "Symbol cannot be blank" }
         require(value == value.uppercase(Locale.ROOT)) { "Symbol must be uppercase" }
+        require(value == value.trim()) { "Symbol must not contain surrounding whitespace" }
     }
 
     companion object {

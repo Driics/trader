@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component
 import ru.driics.aitrade.domain.model.MarginMode
 import java.math.BigDecimal
 import java.time.Duration
+import java.util.*
 
 @Component
 @ConfigurationProperties(prefix = "trading")
@@ -42,7 +43,7 @@ data class TradingProperties(
     var instrumentCacheTtl: Duration = Duration.ofMinutes(10)
 ) {
     fun getCurrenciesList(): List<String> =
-        currencies.map { it.trim().uppercase() }
+        currencies.map { it.trim().uppercase(Locale.ROOT) }
             .filter { it.isNotBlank() }
 
     fun getMarginMode(): MarginMode = MarginMode.fromString(marginMode)
