@@ -2,6 +2,7 @@ package ru.driics.aitrade.infra.exchange
 
 import com.github.benmanes.caffeine.cache.Caffeine
 import io.github.oshai.kotlinlogging.KotlinLogging
+import io.ktor.client.plugins.ClientRequestException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
@@ -17,6 +18,7 @@ import ru.driics.aitrade.domain.ports.PlaceOrderOutcome
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.util.quantize
 import ru.driics.aitrade.domain.services.IndicatorCalculator
+import ru.driics.aitrade.domain.types.TradeResult
 import ru.driics.aitrade.model.*
 import ru.driics.aitrade.service.OkxRestClient
 import java.math.BigDecimal
@@ -42,7 +44,7 @@ class OkxExchangeAdapter(
         .expireAfterWrite(tradingProperties.instrumentCacheTtl)
         .maximumSize(100)
         .build<String, OkxInstrumentInfo>()
-    
+
     private val candles4HCache = Candles4HCache()
 
     override suspend fun loadMarketState(symbols: List<String>): MarketState = withContext(Dispatchers.IO) {
@@ -125,7 +127,7 @@ class OkxExchangeAdapter(
                 list
             }
         }
-        
+
         val rsi14_4hPadded = rsi14_4h.takeLast(10).let { list ->
             if (list.size < 10) {
                 List(10 - list.size) { BigDecimal.ZERO } + list
@@ -222,30 +224,30 @@ class OkxExchangeAdapter(
             }
         }
     }
-    
+
     /**
      * Fetch 4H candles with caching to avoid recalculations.
      * Checks if data has changed since last fetch.
      */
     private suspend fun fetch4HCandlesWithCache(symbol: String, instId: String): List<OkxCandleResponse> {
         val newCandles = rest.fetchCandles(instId, "4H", 200)
-        
+
         if (newCandles.isEmpty()) {
             log.warn { "No 4H candles returned for $symbol" }
             return emptyList()
         }
-        
+
         val newHash = Candles4HCache.generateHash(newCandles)
-        val lastTimestamp = newCandles.lastOrNull()?.timestamp?.toLongOrNull() ?: 0L
-        
+        val lastTimestamp = newCandles.lastOrNull()?.timestamp?.toLongOrNull() ?: Long.MAX_VALUE
+
         val cached = candles4HCache.get(symbol)
-        
+
         // If hash matches, data hasn't changed - return cached candles
         if (cached != null && cached.dataHash == newHash) {
             log.debug { "4H data unchanged for $symbol, using cached version" }
             return cached.candles
         }
-        
+
         // Data changed or no cache - update cache
         log.debug { "4H data updated for $symbol (hash: $newHash)" }
         candles4HCache.put(
@@ -256,7 +258,7 @@ class OkxExchangeAdapter(
                 dataHash = newHash
             )
         )
-        
+
         return newCandles
     }
 
@@ -276,43 +278,66 @@ class OkxExchangeAdapter(
         }
     }
 
-    override suspend fun loadInstrument(instId: String): OkxInstrumentInfo? =
-        withContext(Dispatchers.IO) {
-            try {
-                instrumentCache.get(instId) {
-                    runBlocking { rest.getSwapInstrument(instId) }
-                        ?: error("Instrument $instId not found")
-                }
-            } catch (e: Exception) {
-                log.error(e) { "Failed to load instrument $instId" }
-                null
-            }
-        }
+    override suspend fun loadInstrument(instId: String): TradeResult<OkxInstrumentInfo> {
+        return try {
+            val cached = instrumentCache.getIfPresent(instId)
+            if (cached != null)
+                return TradeResult.Success(cached)
 
-    override suspend fun getLastPrice(instId: String): BigDecimal? = withContext(Dispatchers.IO) {
-        try {
-            val t = rest.fetchTicker(instId)
-            t?.lastPrice?.toBigDecimalOrNull()
-                ?: t?.askPrice?.toBigDecimalOrNull()
-                ?: t?.bidPrice?.toBigDecimalOrNull()
+            val instrumentInfo = rest.getSwapInstrument(instId)
+                ?: return TradeResult.Failure.ApiError(
+                    code = "INSTRUMENT_NOT_FOUND",
+                    message = "Instrument $instId not found"
+                )
+
+            instrumentCache.put(instId, instrumentInfo)
+            TradeResult.Success(instrumentInfo)
+        } catch (e: ClientRequestException) {
+            TradeResult.Failure.NetworkError(
+                message = "HTTP ${e.response.status.value} fetching instrument $instId",
+                cause = e
+            )
         } catch (e: Exception) {
-            log.error(e) { "Failed to get last price for $instId" }
-            null
+            TradeResult.Failure.ApiError(
+                code = "UNKNOWN_ERROR",
+                message = "Error loading instrument $instId: ${e.message}",
+                cause = e
+            )
         }
     }
 
-    override suspend fun setLeverage(instId: String, leverage: Int, marginMode: MarginMode): Boolean =
-        withContext(Dispatchers.IO) {
-            try {
-                rest.setLeverage(
-                    instId,
-                    leverage,
-                    marginMode
-                )
-            } catch (e: Exception) {
-                log.error(e) { "Failed to set leverage $leverage for $instId in ${marginMode.asOkxApiValue} mode" }
-                false
-            }
+    override suspend fun getLastPrice(instId: String): TradeResult<BigDecimal?> {
+        return try {
+            val t = rest.fetchTicker(instId)
+            val lastPrice = t?.lastPrice?.toBigDecimalOrNull()
+                ?: t?.askPrice?.toBigDecimalOrNull()
+                ?: t?.bidPrice?.toBigDecimalOrNull()
+
+            TradeResult.Success(lastPrice)
+        } catch (e: Exception) {
+            TradeResult.Failure.ApiError(
+                code = "UNKOWN_ERROR",
+                message = "Error loading instrument $instId: ${e.message}",
+                cause = e
+            )
+        }
+    }
+
+    override suspend fun setLeverage(instId: String, leverage: Int, marginMode: MarginMode): TradeResult<Boolean> =
+        try {
+            val leverage = rest.setLeverage(
+                instId,
+                leverage,
+                marginMode
+            )
+
+            TradeResult.Success(leverage)
+        } catch (e: Exception) {
+            TradeResult.Failure.ApiError(
+                code = "UNKNOWN_ERROR",
+                message = "Failed to set leverage $leverage for $instId in ${marginMode.asOkxApiValue} mode",
+                cause = e
+            )
         }
 
     override suspend fun placeMarketOrderWithTpSl(
@@ -325,32 +350,45 @@ class OkxExchangeAdapter(
         clOrdId: String,
         tag: String?,
         marginMode: MarginMode
-    ): PlaceOrderOutcome = withContext(Dispatchers.IO) {
-        try {
-            val tpStr = tp?.quantize(tickSz)?.toPlainString()
-            val slStr = sl?.quantize(tickSz)?.toPlainString()
+    ): TradeResult<PlaceOrderOutcome> = try {
+        val tpStr = tp?.quantize(tickSz)?.toPlainString()
+        val slStr = sl?.quantize(tickSz)?.toPlainString()
 
-            val res = rest.placeMarketOrderWithAttach(
-                instId = instId,
-                side = side,
-                tdMode = marginMode.asOkxApiValue,
-                szContracts = contracts.stripTrailingZeros().toPlainString(),
-                tpPx = tpStr,
-                slPx = slStr,
-                posSide = null,
-                clOrdId = clOrdId,
-                tag = tag
+        val res = rest.placeMarketOrderWithAttach(
+            instId = instId,
+            side = side,
+            tdMode = marginMode.asOkxApiValue,
+            szContracts = contracts.stripTrailingZeros().toPlainString(),
+            tpPx = tpStr,
+            slPx = slStr,
+            posSide = null,
+            clOrdId = clOrdId,
+            tag = tag
+        )
+
+        when {
+            res == null -> TradeResult.Failure.ApiError(
+                code = "ORDER_REJECTED",
+                message = "Order placement failed"
             )
 
-            val ok = (res?.sCode == "0")
-            PlaceOrderOutcome(
-                ok = ok,
-                ordId = res?.ordId,
-                message = if (ok) "OK" else (res?.sMsg ?: "Unknown error")
+            res.sCode == "0" -> TradeResult.Success(
+                PlaceOrderOutcome(
+                    ok = true,
+                    ordId = res.ordId,
+                    message = "Order placed successfully"
+                )
             )
-        } catch (e: Exception) {
-            log.error(e) { "Failed to place order for $instId" }
-            PlaceOrderOutcome(ok = false, ordId = null, message = e.message ?: "Exception")
+
+            else -> TradeResult.Failure.ApiError(
+                code = res.sCode ?: "UNKNOWN",
+                message = res.sMsg ?: "Order rejected"
+            )
         }
+    } catch (e: Exception) {
+        TradeResult.Failure.NetworkError(
+            message = "Failed to place order: ${e.message}",
+            cause = e
+        )
     }
 }

@@ -12,6 +12,8 @@ import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.IdGenerator
 import ru.driics.aitrade.domain.services.OrderSizingPolicy
 import ru.driics.aitrade.domain.types.asSymbol
+import ru.driics.aitrade.domain.types.getOrNull
+import ru.driics.aitrade.domain.types.getOrThrow
 import ru.driics.aitrade.model.*
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -114,10 +116,10 @@ class ExecuteAiDecisionsUseCase(
         }
 
         val instId = "${symbol}-USDT-SWAP"
-        val inst = trading.loadInstrument(instId)
+        val inst = trading.loadInstrument(instId).getOrNull()
             ?: return PlanResult.Skip(symbol, "No instrument info")
 
-        val entryPx = trading.getLastPrice(instId)
+        val entryPx = trading.getLastPrice(instId).getOrNull()
             ?: return PlanResult.Skip(symbol, "No price available")
 
         val sl = args.stopLoss
@@ -191,7 +193,7 @@ class ExecuteAiDecisionsUseCase(
         )
 
         val marginMode = tradingProperties.getMarginMode()
-        val levOk = trading.setLeverage(plan.instId, sizing.leverage, marginMode)
+        val levOk = trading.setLeverage(plan.instId, sizing.leverage, marginMode).getOrThrow()
         if (!levOk) {
             return AiTradeExecutionResult(
                 symbol = plan.symbol,
@@ -214,7 +216,7 @@ class ExecuteAiDecisionsUseCase(
             clOrdId = clId,
             tag = tag,
             marginMode = marginMode
-        )
+        ).getOrThrow()
 
         return if (outcome.ok) {
             val orderDetails = buildString {
