@@ -3,6 +3,7 @@ package ru.driics.aitrade.infra.exchange
 import com.github.benmanes.caffeine.cache.Caffeine
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.plugins.ClientRequestException
+import io.micrometer.tracing.Tracer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
@@ -11,6 +12,7 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.springframework.stereotype.Service
+import ru.driics.aitrade.common.traced
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.MarginMode
 import ru.driics.aitrade.domain.ports.MarketDataPort
@@ -30,7 +32,8 @@ import java.util.concurrent.atomic.AtomicReference
 @Service
 class OkxExchangeAdapter(
     private val rest: OkxRestClient,
-    private val tradingProperties: TradingProperties
+    private val tradingProperties: TradingProperties,
+    private val tracer: Tracer
 ) : MarketDataPort, TradingPort {
     companion object {
         private val log = KotlinLogging.logger { }
@@ -68,7 +71,11 @@ class OkxExchangeAdapter(
             }
         }.mapValues { it.value.await() }
 
-        val positions = fetchPositions()
+
+        // fixme: Unresolved reference. None of the following candidates is applicable because of a receiver type mismatch: suspend fun <T> Tracer.traced(spanName: String, crossinline attributes: SpanAttributesBuilder.() -> Unit = ..., crossinline block: suspend (Span) -> T): T
+        val positions = async(Dispatchers.IO) {
+            tracer.traced<List<Position>>("fetch_positions") { fetchPositions() }
+        }.await()
         val account = fetchAccountInfo(positions)
 
         MarketState(

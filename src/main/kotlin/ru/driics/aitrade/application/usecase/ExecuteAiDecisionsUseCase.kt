@@ -2,9 +2,12 @@ package ru.driics.aitrade.application.usecase
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.util.isPositive
 import ru.driics.aitrade.domain.ports.MarketDataPort
@@ -32,7 +35,6 @@ class ExecuteAiDecisionsUseCase(
     private val maxLev = tradingProperties.maxLeverage
     private val minLev = tradingProperties.minLeverage
 
-    private val mapper = jacksonObjectMapper()
     private val sizingPolicy = OrderSizingPolicy(
         takerFeePct = tradingProperties.takerFeePct,
         marginBufferPct = tradingProperties.marginBufferPct
@@ -42,42 +44,28 @@ class ExecuteAiDecisionsUseCase(
         log.info { "Executing AI trading decisions" }
 
         val supported = tradingProperties.getCurrenciesList().map { it.asSymbol().value }.toSet()
-
         val state = market.loadMarketState(supported.toList())
+
         var remainingCashUsd = maxOf(state.account.availableCash, BigDecimal.ZERO)
 
         val planResults = decisions.values.map { env ->
-            async {
+            async(Dispatchers.Default) {
                 buildPlan(env.args, supported)
             }
         }.awaitAll()
 
         val results = mutableListOf<AiTradeExecutionResult>()
 
-        for (res in planResults) {
-            when (res) {
-                is PlanResult.Skip -> {
-                    log.debug { "${res.symbol}: ${res.reason}" }
-                    results += AiTradeExecutionResult(
-                        symbol = res.symbol,
-                        action = AIAction.SKIPPED,
-                        message = res.reason
-                    )
-                }
+        val semaphore = Semaphore(3)
 
-                is PlanResult.Ready -> {
-                    val plan = res.plan
-                    val result = executePlan(plan, remainingCashUsd)
-
-                    if (result.action == AIAction.PLACED) {
-                        val usedUsd = extractUsedUsd(result.message)
-                        remainingCashUsd = maxOf(remainingCashUsd - usedUsd, BigDecimal.ZERO)
-                    }
-
-                    results += result
+        // TODO: return calc remainingCashUsd and logging PlanResult.Skip
+        planResults.filterIsInstance<PlanResult.Ready>().map { ready ->
+            async(Dispatchers.IO) {
+                semaphore.withPermit {
+                    executePlan(ready.plan, state.account.availableCash)
                 }
             }
-        }
+        }.awaitAll()
 
         logExecutionSummary(results)
         return@coroutineScope results
