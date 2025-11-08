@@ -2,11 +2,10 @@ package ru.driics.aitrade.infra.exchange
 
 import com.github.benmanes.caffeine.cache.Caffeine
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.ktor.client.plugins.ClientRequestException
-import io.micrometer.tracing.Tracer
+import io.ktor.client.plugins.*
+import io.opentelemetry.api.trace.Tracer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -18,14 +17,13 @@ import ru.driics.aitrade.domain.model.MarginMode
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PlaceOrderOutcome
 import ru.driics.aitrade.domain.ports.TradingPort
-import ru.driics.aitrade.domain.util.quantize
 import ru.driics.aitrade.domain.services.IndicatorCalculator
 import ru.driics.aitrade.domain.types.TradeResult
+import ru.driics.aitrade.domain.util.quantize
 import ru.driics.aitrade.model.*
 import ru.driics.aitrade.service.OkxRestClient
 import java.math.BigDecimal
 import java.math.RoundingMode
-import java.time.Duration
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -72,18 +70,19 @@ class OkxExchangeAdapter(
         }.mapValues { it.value.await() }
 
 
-        // fixme: Unresolved reference. None of the following candidates is applicable because of a receiver type mismatch: suspend fun <T> Tracer.traced(spanName: String, crossinline attributes: SpanAttributesBuilder.() -> Unit = ..., crossinline block: suspend (Span) -> T): T
         val positions = async(Dispatchers.IO) {
-            tracer.traced<List<Position>>("fetch_positions") { fetchPositions() }
+            tracer.traced("fetch_positions") { fetchPositions() }
         }.await()
-        val account = fetchAccountInfo(positions)
+        val account = async(Dispatchers.IO) {
+            tracer.traced("fetch_account") { fetchAccountInfo(positions) }
+        }
 
         MarketState(
             timestamp = System.currentTimeMillis(),
             minutesSinceStart = (System.currentTimeMillis() - sessionStartTime.get()) / 60000,
             invocationCount = count,
             currencies = currencies,
-            account = account,
+            account = account.await(),
             positions = positions
         )
     }

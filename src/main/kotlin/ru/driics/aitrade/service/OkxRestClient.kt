@@ -19,6 +19,7 @@ import ru.driics.aitrade.common.timeOkx
 import ru.driics.aitrade.config.OkxHttpProperties
 import ru.driics.aitrade.config.OkxProperties
 import ru.driics.aitrade.domain.model.MarginMode
+import ru.driics.aitrade.infra.cache.SmartCacheStrategy
 import ru.driics.aitrade.model.*
 import java.math.BigDecimal
 

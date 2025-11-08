@@ -59,13 +59,13 @@ class ExecuteAiDecisionsUseCase(
         val semaphore = Semaphore(3)
 
         // TODO: return calc remainingCashUsd and logging PlanResult.Skip
-        planResults.filterIsInstance<PlanResult.Ready>().map { ready ->
+        results.addAll(planResults.filterIsInstance<PlanResult.Ready>().map { ready ->
             async(Dispatchers.IO) {
                 semaphore.withPermit {
                     executePlan(ready.plan, state.account.availableCash)
                 }
             }
-        }.awaitAll()
+        }.awaitAll())
 
         logExecutionSummary(results)
         return@coroutineScope results
