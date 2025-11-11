@@ -48,16 +48,20 @@ class SmartCacheStrategy {
         if (cached != null) return cached
 
         val mutex = locks.computeIfAbsent(key) { Mutex() }
-        return mutex.withLock {
-            // Double-check after acquiring the lock
-            @Suppress("UNCHECKED_CAST")
-            val secondCheck = cache.getIfPresent(key) as T?
-            if (secondCheck != null) return@withLock secondCheck
+        return try {
+            mutex.withLock {
+                // Double-check after acquiring the lock
+                @Suppress("UNCHECKED_CAST")
+                val secondCheck = cache.getIfPresent(key) as T?
+                if (secondCheck != null) return@withLock secondCheck
 
-            val loaded = fetcher()
-            // only cache non-null values
-            if (loaded != null) cache.put(key, loaded as Any)
-            loaded
+                val loaded = fetcher()
+                // only cache non-null values
+                if (loaded != null) cache.put(key, loaded as Any)
+                loaded
+            }
+        } finally {
+            locks.remove(key, mutex)
         }
     }
 

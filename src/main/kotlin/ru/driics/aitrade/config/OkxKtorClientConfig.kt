@@ -8,6 +8,8 @@ import io.ktor.client.plugins.logging.*
 import io.ktor.client.request.*
 import io.ktor.http.HttpHeaders.ContentEncoding
 import io.ktor.serialization.kotlinx.json.*
+import io.ktor.client.plugins.websocket.WebSockets
+import io.ktor.client.plugins.websocket.pingInterval
 import io.netty.handler.codec.compression.StandardCompressionOptions.deflate
 import io.netty.handler.codec.compression.StandardCompressionOptions.gzip
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -15,6 +17,7 @@ import kotlinx.coroutines.newFixedThreadPoolContext
 import kotlinx.serialization.json.Json
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import kotlin.time.Duration.Companion.seconds
 
 @Configuration
 class OkxKtorClientConfig {
@@ -35,6 +38,11 @@ class OkxKtorClientConfig {
 
                 // Threading
                 dispatcher = newFixedThreadPoolContext(8, "Ktor")
+            }
+
+            install(WebSockets) {
+                pingInterval = 20.seconds
+                maxFrameSize = Long.MAX_VALUE
             }
 
             // HTTP configuration

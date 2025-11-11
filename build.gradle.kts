@@ -36,6 +36,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-core-jvm")
 
     implementation(platform("io.ktor:ktor-bom:3.3.1"))
+    implementation("io.ktor:ktor-client-websockets")
     implementation("io.ktor:ktor-client-core")
     implementation("io.ktor:ktor-client-cio")
     implementation("io.ktor:ktor-client-content-negotiation")
@@ -45,7 +46,6 @@ dependencies {
 
     implementation("io.opentelemetry:opentelemetry-api:1.55.0")
     implementation("io.opentelemetry:opentelemetry-sdk:1.55.0")
-    implementation("io.opentelemetry:opentelemetry-exporter-otlp:1.55.0")
     implementation("io.opentelemetry.semconv:opentelemetry-semconv:1.37.0")
     implementation("io.opentelemetry.instrumentation:opentelemetry-spring-boot-starter:2.21.0")
     implementation("io.opentelemetry.instrumentation:opentelemetry-ktor-3.0:2.18.1-alpha")
@@ -55,7 +55,7 @@ dependencies {
     implementation("io.micrometer:micrometer-tracing-bridge-otel:1.6.0")
 
     // OTLP exporter (Jaeger/Tempo)
-    implementation("io.opentelemetry:opentelemetry-exporter-otlp:1.30.0")
+    implementation("io.opentelemetry:opentelemetry-exporter-otlp:1.55.0")
 
     implementation("io.github.resilience4j:resilience4j-spring-boot3:2.3.0")
     implementation("io.github.resilience4j:resilience4j-retry:2.3.0")
