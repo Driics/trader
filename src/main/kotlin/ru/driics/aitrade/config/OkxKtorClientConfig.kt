@@ -21,8 +21,8 @@ import kotlin.time.Duration.Companion.seconds
 
 @Configuration
 class OkxKtorClientConfig {
-    @OptIn(DelicateCoroutinesApi::class)
     @Bean
+    @OptIn(DelicateCoroutinesApi::class)
     fun okxKtorClient(okxHttpProps: OkxHttpProperties): HttpClient {
         return HttpClient(CIO) {
             // Connection pooling

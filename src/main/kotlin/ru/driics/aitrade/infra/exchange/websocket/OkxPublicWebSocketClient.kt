@@ -18,6 +18,7 @@ import kotlinx.coroutines.runBlocking
 import org.springframework.stereotype.Component
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 @Component
 class OkxPublicWebSocketClient(
@@ -26,6 +27,7 @@ class OkxPublicWebSocketClient(
     private val log = KotlinLogging.logger {}
     private val mapper = jacksonObjectMapper()
 
+    private val session = AtomicReference<DefaultClientWebSocketSession?>(null)
     private val connected = AtomicBoolean(false)
 
     private val _tickerFlow = MutableSharedFlow<Map<String, Any?>>(
@@ -54,6 +56,7 @@ class OkxPublicWebSocketClient(
                     path = "/ws/v5/public"
                 ) {
                     connected.set(true)
+                    session.set(this)
                     log.info { "Connected to OKX public WS" }
                     // Resubscribe
                     resubscribeAll()
@@ -68,6 +71,7 @@ class OkxPublicWebSocketClient(
                 }
             } catch (e: Exception) {
                 log.warn(e) { "Public WS disconnected, reconnecting in 5s..." }
+                session.set(null)
                 connected.set(false)
                 delay(5_000)
             }
@@ -172,14 +176,8 @@ class OkxPublicWebSocketClient(
     }
 
     private suspend fun send(payload: Map<String, Any?>) {
-        // If not connected, drop (will resub on reconnect)
-        if (!connected.get()) return
-        try {
-            // Session is thread-confined; send is called only from inside connect() block
-            // The enclosing session is the current DefaultClientWebSocketSession
-            // This method is invoked only when connected == true, inside session scope
-            // Therefore, we rethrow if send is not possible
-            // In practice, all send calls originate within the current session.
-        } catch (ignored: Throwable) { /* fallthrough */ }
+        val currentSession = session.get() ?: return
+        val json = mapper.writeValueAsString(payload)
+        currentSession.send(Frame.Text(json))
     }
 }

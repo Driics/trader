@@ -6,6 +6,7 @@ import jakarta.annotation.PreDestroy
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.config.TradingProperties
@@ -63,30 +64,49 @@ class OkxStreamingAdapter(
         publicWs.tickerFlow
             .filter { it["instId"] == instId }
             .map {
-                val price = (it["last"] as String).toBigDecimal()
-                val ts = (it["ts"] as? String)?.toLongOrNull() ?: System.currentTimeMillis()
+                val last = it["last"] as? String ?: run {
+                    log.warn { "Missing 'last' price in ticker for $instId" }
+                    return@map null
+                }
+                val price = last.toBigDecimalOrNull() ?: run {
+                    log.warn { "Invalid price format in ticker: $last" }
+                    return@map null
+                }
+                val ts = (it["ts"] as? String)?.toLongOrNull() ?: run {
+                    log.warn { "Missing timestamp in ticker for $instId" }
+                    return@map null
+                }
                 PriceUpdate(instId = instId, price = price, timestamp = Instant.ofEpochMilli(ts))
-            }
+            }.filterNotNull()
 
     override fun observeOrderUpdates(): Flow<OrderEvent> =
         privateWs.orderFlow.map {
-            val instId = it["instId"] as String
-            val ordId = it["ordId"] as String
+            val instId = it["instId"] as? String ?: return@map null
+            val ordId = it["ordId"] as? String ?: return@map null
             val clOrdId = it["clOrdId"] as? String
-            val state = it["state"] as String
-            val side = it["side"] as String
+            val state = it["state"] as? String ?: return@map null
+            val side = it["side"] as? String ?: return@map null
             val avgPx = (it["avgPx"] as? String)?.toBigDecimalOrNull()
-            val ts = (it["ts"] as? String)?.toLongOrNull() ?: 0L
+            val ts = (it["ts"] as? String)?.toLongOrNull() ?: run {
+                log.warn { "Missing timestamp in order event for $instId" }
+                return@map null
+            }
             OrderEvent(instId, ordId, clOrdId, state, side, avgPx, Instant.ofEpochMilli(ts))
-        }
+        }.filterNotNull()
 
     override fun observePositionUpdates(): Flow<PositionEvent> =
         privateWs.positionFlow.map {
-            val instId = it["instId"] as String
-            val pos = (it["pos"] as String).toBigDecimalOrNull() ?: BigDecimal.ZERO
-            val avgPx = (it["avgPx"] as String).toBigDecimalOrNull() ?: BigDecimal.ZERO
-            val upl = (it["upl"] as String).toBigDecimalOrNull() ?: BigDecimal.ZERO
-            val ts = (it["ts"] as? String)?.toLongOrNull() ?: 0L
+            val instId = it["instId"] as? String ?: return@map null
+            val posStr = it["pos"] as? String ?: return@map null
+            val pos = posStr.toBigDecimalOrNull() ?: return@map null
+            val avgPxStr = it["avgPx"] as? String ?: return@map null
+            val avgPx = avgPxStr.toBigDecimalOrNull() ?: return@map null
+            val uplStr = it["upl"] as? String ?: return@map null
+            val upl = uplStr.toBigDecimalOrNull() ?: return@map null
+            val ts = (it["ts"] as? String)?.toLongOrNull() ?: run {
+                log.warn { "Missing timestamp in position event for $instId" }
+                return@map null
+            }
             PositionEvent(instId, pos, avgPx, upl, Instant.ofEpochMilli(ts))
-        }
+        }.filterNotNull()
 }

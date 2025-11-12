@@ -65,15 +65,9 @@ class SmartCacheStrategy {
         }
     }
 
-    fun invalidate(key: String, level: CacheLevel) {
-        cacheFor(level).invalidate(key)
-        locks.remove(key)
-    }
+    fun invalidate(key: String, level: CacheLevel) = cacheFor(level).invalidate(key)
 
-    fun invalidateAll(level: CacheLevel) {
-        cacheFor(level).invalidateAll()
-        locks.clear()
-    }
+    fun invalidateAll(level: CacheLevel) = cacheFor(level).invalidateAll()
 
     private fun cacheFor(level: CacheLevel): Cache<String, Any> =
         when (level) {

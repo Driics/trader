@@ -48,7 +48,7 @@ dependencies {
     implementation("io.opentelemetry:opentelemetry-sdk:1.55.0")
     implementation("io.opentelemetry.semconv:opentelemetry-semconv:1.37.0")
     implementation("io.opentelemetry.instrumentation:opentelemetry-spring-boot-starter:2.21.0")
-    implementation("io.opentelemetry.instrumentation:opentelemetry-ktor-3.0:2.18.1-alpha")
+    implementation("io.opentelemetry.instrumentation:opentelemetry-ktor-3.0:2.21.0-alpha")
     implementation("io.opentelemetry:opentelemetry-extension-kotlin:1.55.0")
 
     // Micrometer bridge for OpenTelemetry
