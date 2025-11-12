@@ -16,13 +16,15 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.springframework.stereotype.Component
+import ru.driics.aitrade.config.OkxProperties
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 @Component
 class OkxPublicWebSocketClient(
-    private val httpClient: HttpClient
+    private val httpClient: HttpClient,
+    private val okxProperties: OkxProperties
 ) {
     private val log = KotlinLogging.logger {}
     private val mapper = jacksonObjectMapper()
@@ -50,23 +52,22 @@ class OkxPublicWebSocketClient(
     suspend fun connect() {
         while (true) {
             try {
-                httpClient.webSocket(
-                    host = "ws.okx.com",
-                    port = 8443,
-                    path = "/ws/v5/public"
-                ) {
+                val url = okxProperties.publicWsUrl()
+                httpClient.webSocket(urlString = url, request = {
+                    // Optional but can help with some edges/CDN
+                    headers.append("User-Agent", "AiTrader/1.0 (+okx ws)")
+                    headers.append("Accept", "application/json")
+                    headers.append("Origin", "https://www.okx.com")
+                }) {
                     connected.set(true)
-                    session.set(this)
-                    log.info { "Connected to OKX public WS" }
-                    // Resubscribe
-                    resubscribeAll()
-
-                    // Heartbeat and read loop
-                    val pingJob = launchPing()
+                    log.info { "Connected to OKX public WS: $url" }
                     try {
+                        resubscribeAll(this) // pass session to send
+                        val pingJob = launchPing()
                         readLoop()
-                    } finally {
                         pingJob.cancel()
+                    } finally {
+                        connected.set(false)
                     }
                 }
             } catch (e: Exception) {
@@ -156,22 +157,16 @@ class OkxPublicWebSocketClient(
         }
     }
 
-    private suspend fun resubscribeAll() {
+    private suspend fun resubscribeAll(session: DefaultClientWebSocketSession) {
         for (instId in tickerSubs) {
-            send(
-                mapOf(
-                    "op" to "subscribe",
-                    "args" to listOf(mapOf("channel" to "tickers", "instId" to instId))
-                )
-            )
+            session.send(Frame.Text(mapper.writeValueAsString(
+                mapOf("op" to "subscribe", "args" to listOf(mapOf("channel" to "tickers", "instId" to instId)))
+            )))
         }
         for ((instId, period) in candleSubs) {
-            send(
-                mapOf(
-                    "op" to "subscribe",
-                    "args" to listOf(mapOf("channel" to "candle$period", "instId" to instId))
-                )
-            )
+            session.send(Frame.Text(mapper.writeValueAsString(
+                mapOf("op" to "subscribe", "args" to listOf(mapOf("channel" to "candle$period", "instId" to instId)))
+            )))
         }
     }
 

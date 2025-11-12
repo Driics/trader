@@ -21,13 +21,13 @@ class OkxAuthService(
         val message = "$timestamp${method.uppercase()}$requestPath$body"
 
         val mac = Mac.getInstance("HmacSHA256")
-        val secretKey = SecretKeySpec(okxProperties.secret.toByteArray(Charsets.UTF_8), "HmacSHA256")
+        val secretKey = SecretKeySpec(okxProperties.secretKey.toByteArray(Charsets.UTF_8), "HmacSHA256")
         mac.init(secretKey)
 
         val signature = Base64.getEncoder().encodeToString(mac.doFinal(message.toByteArray(Charsets.UTF_8)))
 
         return mapOf(
-            "OK-ACCESS-KEY" to okxProperties.key,
+            "OK-ACCESS-KEY" to okxProperties.apiKey,
             "OK-ACCESS-SIGN" to signature,
             "OK-ACCESS-TIMESTAMP" to timestamp,
             "OK-ACCESS-PASSPHRASE" to okxProperties.passphrase,

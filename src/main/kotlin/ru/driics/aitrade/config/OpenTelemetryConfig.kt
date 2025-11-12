@@ -17,10 +17,9 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
 @Configuration
-class OpenTelemetryConfig(
-    @field:Value($$"${otel.service.name:trading-system}") private val serviceName: String,
-    @field:Value($$"${otel.exporter.otlp.endpoint:http://localhost:4317}") private val otlpEndpoint: String
-) {
+class OpenTelemetryConfig {
+    private val serviceName: String = "trading-system"
+    private val otlpEndpoint: String = "http://localhost:4317"
 
     @Bean
     fun openTelemetry(): OpenTelemetry {

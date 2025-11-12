@@ -49,11 +49,7 @@ class OkxPrivateWebSocketClient(
     suspend fun connect() {
         while (true) {
             try {
-                httpClient.webSocket(
-                    host = "ws.okx.com",
-                    port = 8443,
-                    path = "/ws/v5/private"
-                ) {
+                httpClient.webSocket(urlString = okxProperties.privateWsUrl()) {
                     if (!login()) {
                         log.error { "OKX private WS login failed" }
                         return@webSocket
@@ -87,12 +83,12 @@ class OkxPrivateWebSocketClient(
         val ts = clock.instant().epochSecond.toString()
         val method = "GET"
         val path = "/users/self/verify"
-        val sign = sign(ts + method + path, okxProperties.secret)
+        val sign = sign(ts + method + path, okxProperties.secretKey)
         val msg = mapOf(
             "op" to "login",
             "args" to listOf(
                 mapOf(
-                    "apiKey" to okxProperties.key,
+                    "apiKey" to okxProperties.apiKey,
                     "passphrase" to okxProperties.passphrase,
                     "timestamp" to ts,
                     "sign" to sign
@@ -108,6 +104,10 @@ class OkxPrivateWebSocketClient(
                     val code = response["code"] as? String
                     if (code == "0") return true
                     log.error { "Login failed: ${response["msg"]}" }
+                    return false
+                }
+                if (response["event"] == "error") {
+                    log.error { "Login failed: code=${response["code"]} msg=${response["msg"]}" }
                     return false
                 }
             }
@@ -128,6 +128,14 @@ class OkxPrivateWebSocketClient(
         for (frame in incoming) {
             when (frame) {
                 is Frame.Text -> handleText(frame.readText())
+                is Frame.Ping -> {
+                    try {
+                        send(Frame.Pong(frame.data))
+                    } catch (e: Exception) {
+                        log.warn(e) { "Pong wasn't send" }
+                        return
+                    }
+                }
                 is Frame.Close -> {
                     closeReason.await()?.let {
                         log.warn { "Private WS close: ${it.message}" }
@@ -150,14 +158,14 @@ class OkxPrivateWebSocketClient(
             val channel = arg?.get("channel") as? String ?: return
             val dataList = root["data"] as? List<*> ?: return
             if (dataList.isEmpty()) return
-            val payload = dataList.firstOrNull() as? Map<*, *> ?: return
-            @Suppress("UNCHECKED_CAST")
-            val typedPayload = payload as Map<String, Any?>
-
-            when (channel) {
-                "orders" -> _orderFlow.tryEmit(typedPayload)
-                "positions" -> _positionFlow.tryEmit(typedPayload)
-                "account" -> _accountFlow.tryEmit(typedPayload)
+            val payloads = dataList.mapNotNull { it as? Map<String, Any?> }
+            if (payloads.isEmpty()) return
+            payloads.forEach { payload ->
+                when (channel) {
+                    "orders" -> _orderFlow.tryEmit(payload)
+                    "positions" -> _positionFlow.tryEmit(payload)
+                    "account" -> _accountFlow.tryEmit(payload)
+                }
             }
         } catch (e: Exception) {
             log.debug(e) { "Failed to parse private WS message: ${text.take(200)}" }

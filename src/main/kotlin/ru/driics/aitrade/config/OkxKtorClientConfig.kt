@@ -5,25 +5,25 @@ import io.ktor.client.engine.cio.*
 import io.ktor.client.plugins.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.plugins.logging.*
+import io.ktor.client.plugins.websocket.*
 import io.ktor.client.request.*
 import io.ktor.http.HttpHeaders.ContentEncoding
 import io.ktor.serialization.kotlinx.json.*
-import io.ktor.client.plugins.websocket.WebSockets
-import io.ktor.client.plugins.websocket.pingInterval
 import io.netty.handler.codec.compression.StandardCompressionOptions.deflate
 import io.netty.handler.codec.compression.StandardCompressionOptions.gzip
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.newFixedThreadPoolContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.serialization.json.Json
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.core.env.Environment
 import kotlin.time.Duration.Companion.seconds
 
 @Configuration
 class OkxKtorClientConfig {
     @Bean
-    @OptIn(DelicateCoroutinesApi::class)
-    fun okxKtorClient(okxHttpProps: OkxHttpProperties): HttpClient {
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun okxKtorClient(okxHttpProps: OkxHttpProperties, env: Environment): HttpClient {
         return HttpClient(CIO) {
             // Connection pooling
             engine {
@@ -37,12 +37,12 @@ class OkxKtorClientConfig {
                 }
 
                 // Threading
-                dispatcher = newFixedThreadPoolContext(8, "Ktor")
+                dispatcher = Dispatchers.IO.limitedParallelism(8)
             }
 
             install(WebSockets) {
                 pingInterval = 20.seconds
-                maxFrameSize = Long.MAX_VALUE
+                maxFrameSize = 10 * 1024 * 1024
             }
 
             // HTTP configuration
@@ -68,7 +68,7 @@ class OkxKtorClientConfig {
             }
 
             // Logging (only in dev)
-            if (System.getenv("ENVIRONMENT") == "development") {
+            if (env.activeProfiles.contains("dev")) {
                 install(Logging) {
                     logger = Logger.DEFAULT
                     level = LogLevel.INFO
