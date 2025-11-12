@@ -59,6 +59,7 @@ class OkxPublicWebSocketClient(
                     headers.append("Accept", "application/json")
                     headers.append("Origin", "https://www.okx.com")
                 }) {
+                    session.set(this)
                     connected.set(true)
                     log.info { "Connected to OKX public WS: $url" }
                     try {
@@ -67,6 +68,7 @@ class OkxPublicWebSocketClient(
                         readLoop()
                         pingJob.cancel()
                     } finally {
+                        session.set(null)
                         connected.set(false)
                     }
                 }

@@ -14,8 +14,11 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.time.withTimeout
+import kotlinx.coroutines.withTimeout
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.config.OkxProperties
+import ru.driics.aitrade.service.OkxAuthService
 import java.time.Clock
 import java.util.Base64
 import javax.crypto.Mac
@@ -25,6 +28,7 @@ import javax.crypto.spec.SecretKeySpec
 class OkxPrivateWebSocketClient(
     private val httpClient: HttpClient,
     private val okxProperties: OkxProperties,
+    private val okxAuthService: OkxAuthService,
     private val clock: Clock
 ) {
     private val log = KotlinLogging.logger {}
@@ -49,7 +53,14 @@ class OkxPrivateWebSocketClient(
     suspend fun connect() {
         while (true) {
             try {
-                httpClient.webSocket(urlString = okxProperties.privateWsUrl()) {
+                httpClient.webSocket(
+                    urlString = okxProperties.privateWsUrl(),
+                    request = {
+                        headers.append("User-Agent", "AiTrader/1.0 (+okx ws)")
+                        headers.append("Accept", "application/json")
+                        headers.append("Origin", "https://www.okx.com")
+                    }
+                ) {
                     if (!login()) {
                         log.error { "OKX private WS login failed" }
                         return@webSocket
@@ -80,40 +91,52 @@ class OkxPrivateWebSocketClient(
     }
 
     private suspend fun DefaultClientWebSocketSession.login(): Boolean {
-        val ts = clock.instant().epochSecond.toString()
-        val method = "GET"
-        val path = "/users/self/verify"
-        val sign = sign(ts + method + path, okxProperties.secretKey)
-        val msg = mapOf(
+        val ts = (System.currentTimeMillis() / 1000.0).toString()
+        val sign = okxAuthService.sign(ts, "GET", "/users/self/verify", "")
+
+        val payload = mapOf(
             "op" to "login",
             "args" to listOf(
                 mapOf(
                     "apiKey" to okxProperties.apiKey,
-                    "passphrase" to okxProperties.passphrase,
+                    "passphrase" to okxProperties.passphrase, // do not trim here
                     "timestamp" to ts,
                     "sign" to sign
                 )
             )
         )
-        send(Frame.Text(mapper.writeValueAsString(msg)))
+        send(Frame.Text(mapper.writeValueAsString(payload)))
 
-        for (frame in incoming) {
-            if (frame is Frame.Text) {
-                val response: Map<String, Any?> = mapper.readValue(frame.readText())
-                if (response["event"] == "login") {
-                    val code = response["code"] as? String
-                    if (code == "0") return true
-                    log.error { "Login failed: ${response["msg"]}" }
-                    return false
-                }
-                if (response["event"] == "error") {
-                    log.error { "Login failed: code=${response["code"]} msg=${response["msg"]}" }
-                    return false
+        return try {
+            withTimeout(5_000) {
+                while (true) {
+                    when (val frame = this@login.incoming.receive()) {
+                        is Frame.Text -> {
+                            val text = frame.readText()
+                            val root: Map<String, Any?> = mapper.readValue(text)
+                            val event = root["event"] as? String
+                            if (event == "login") {
+                                val code = (root["code"] as? String) ?: "unknown"
+                                val msg = (root["msg"] as? String) ?: ""
+                                if (code == "0") {
+                                    log.info { "OKX private WS login success" }
+                                    return@withTimeout true
+                                } else {
+                                    log.error { "Login failed: code=$code msg=$msg" }
+                                    return@withTimeout false
+                                }
+                            }
+                            // ignore other frames before login ack
+                        }
+
+                        else -> { /* ignore */ }
+                    }
                 }
             }
-        }
-
-        return false
+        } catch (e: Exception) {
+            log.error(e) { "Login failed: no ack within timeout" }
+            false
+        } as Boolean
     }
 
     private suspend fun DefaultClientWebSocketSession.subscribe(channel: String, extra: Map<String, String>) {
