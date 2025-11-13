@@ -19,6 +19,7 @@ import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsOrderUpdate
 import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsPositionUpdate
 import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsTypeRefs
 import ru.driics.aitrade.service.OkxAuthService
+import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 import kotlin.random.Random
@@ -36,7 +37,8 @@ class OkxPrivateWebSocketClient(
     private val httpClient: HttpClient,
     private val okxProperties: OkxProperties,
     private val okxAuthService: OkxAuthService,
-    private val objectMapper: ObjectMapper
+    private val objectMapper: ObjectMapper,
+    private val clock: Clock,
 ) {
     private val log = KotlinLogging.logger {}
     private val connected = AtomicBoolean(false)
@@ -126,9 +128,8 @@ class OkxPrivateWebSocketClient(
         }
     }
 
-    // Reuse REST signer exactly to avoid drift.
     private suspend fun loginAndAwaitAck(session: DefaultClientWebSocketSession): Boolean {
-        val ts = (System.currentTimeMillis() / 1000.0).toString()
+        val ts = clock.instant().epochSecond.toString()
         val sign = okxAuthService.sign(ts, "GET", "/users/self/verify", "")
 
         val payload = mapOf(
@@ -220,8 +221,7 @@ class OkxPrivateWebSocketClient(
                 }
             }
         } catch (e: Exception) {
-            // Avoid chatty logs, keep at debug with snippet
-            // log.debug(e) { "Private WS parse failed: ${text.take(200)}" }
+            log.trace(e) { "Private WS parse failed: ${text.take(200)}" }
         }
     }
 }

@@ -18,6 +18,7 @@ import ru.driics.aitrade.config.OkxProperties
 import ru.driics.aitrade.infra.exchange.websocket.dto.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.min
 import kotlin.random.Random
 
@@ -55,6 +56,8 @@ class OkxPublicWebSocketClient(
     private val candleSubs = ConcurrentHashMap.newKeySet<Pair<String, String>>() // (instId, period)
 
     private val connected = AtomicBoolean(false)
+    private val activeSession = AtomicReference<DefaultClientWebSocketSession?>(null)
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     suspend fun connect() {
@@ -68,6 +71,7 @@ class OkxPublicWebSocketClient(
                     headers.append("Origin", "https://www.okx.com")
                 }) {
                     connected.set(true)
+                    activeSession.set(this)
                     log.info { "Connected to OKX PUBLIC WS: $url" }
                     attempt = 0 // reset backoff on success
 
@@ -107,6 +111,7 @@ class OkxPublicWebSocketClient(
                     } finally {
                         pingJob.cancel()
                         connected.set(false)
+                        activeSession.set(null)
                         log.warn { "Public WS disconnected" }
                     }
                 }
@@ -122,16 +127,17 @@ class OkxPublicWebSocketClient(
 
     suspend fun subscribeTicker(instId: String) {
         tickerSubs += instId
-        if (connected.get()) {
-            // Will be resent on reconnect; try immediate best-effort now if connected
-            // We can send only inside active session block; rely on resubscribeAll
+        activeSession.get()?.let { session ->
+            val payload = mapOf("op" to "subscribe", "args" to listOf(mapOf("channel" to "tickers", "instId" to instId)))
+            session.send(Frame.Text(objectMapper.writeValueAsString(payload)))
         }
     }
 
     suspend fun subscribeCandles(instId: String, period: String) {
         candleSubs += (instId to period)
-        if (connected.get()) {
-            // Same note as above
+        activeSession.get()?.let { session ->
+            val payload = mapOf("op" to "subscribe", "args" to listOf(mapOf("channel" to "candle$period", "instId" to instId)))
+            session.send(Frame.Text(objectMapper.writeValueAsString(payload)))
         }
     }
 
