@@ -1,16 +1,40 @@
 package ru.driics.aitrade.model
 
+import com.fasterxml.jackson.annotation.JsonCreator
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.annotation.JsonValue
 import java.math.BigDecimal
+
+// ---------- AI Signal Enum ----------
+
+enum class AiSignal(val value: String) {
+    BUY("buy"),
+    SELL("sell"),
+    HOLD("hold");
+
+    @JsonValue
+    fun toJson(): String = value
+
+    companion object {
+        @JsonCreator
+        @JvmStatic
+        fun fromJson(value: String): AiSignal = when (value.lowercase()) {
+            "buy" -> BUY
+            "sell" -> SELL
+            "hold" -> HOLD
+            else -> throw IllegalArgumentException("Unknown signal: $value")
+        }
+    }
+}
 
 // ---------- AI decision DTOs ----------
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class AiTradeSignalArgs(
     val coin: String,
-    val signal: String, // "buy" | "sell" | "hold"
-    val quantity: BigDecimal? = null, // coin units (e.g., ETH = 0.004). If 0 or null, we may size from risk_usd.
+    val signal: AiSignal,
+    val quantity: BigDecimal? = null,
     @JsonProperty("profit_target")
     val profitTarget: BigDecimal? = null,
     @JsonProperty("stop_loss")
@@ -30,7 +54,6 @@ data class AiTradeEnvelope(
     val args: AiTradeSignalArgs
 )
 
-// Convenience type for full AI JSON: { "BTC": {trade_signal_args:{...}}, ... }
 typealias AiTradeDecisionMap = Map<String, AiTradeEnvelope>
 
 // ---------- OKX: instruments we need ----------
@@ -39,11 +62,11 @@ typealias AiTradeDecisionMap = Map<String, AiTradeEnvelope>
 data class OkxInstrumentInfo(
     @JsonProperty("instId") val instId: String,
     @JsonProperty("instType") val instType: String?,
-    @JsonProperty("ctVal") val ctVal: String?,         // contract value (stringified decimal)
-    @JsonProperty("ctValCcy") val ctValCcy: String?,   // "USD" / "USDT" / "BTC" etc.
-    @JsonProperty("lotSz") val lotSz: String?,         // step for 'sz' (contracts)
-    @JsonProperty("minSz") val minSz: String?,         // minimum 'sz'
-    @JsonProperty("tickSz") val tickSz: String?        // price tick
+    @JsonProperty("ctVal") val ctVal: String?,
+    @JsonProperty("ctValCcy") val ctValCcy: String?,
+    @JsonProperty("lotSz") val lotSz: String?,
+    @JsonProperty("minSz") val minSz: String?,
+    @JsonProperty("tickSz") val tickSz: String?
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -62,7 +85,7 @@ data class OkxPublicInstrumentsApiResponse(
 data class OkxPlaceOrderData(
     @JsonProperty("ordId") val ordId: String? = null,
     @JsonProperty("clOrdId") val clOrdId: String? = null,
-    @JsonProperty("sCode") val sCode: String? = null,   // "0" for success
+    @JsonProperty("sCode") val sCode: String? = null,
     @JsonProperty("sMsg") val sMsg: String? = null,
 )
 

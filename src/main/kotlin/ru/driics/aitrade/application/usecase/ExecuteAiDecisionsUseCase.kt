@@ -2,24 +2,26 @@ package ru.driics.aitrade.application.usecase
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.github.oshai.kotlinlogging.KotlinLogging
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.util.isPositive
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.IdGenerator
 import ru.driics.aitrade.domain.services.OrderSizingPolicy
+import ru.driics.aitrade.domain.types.asSymbol
+import ru.driics.aitrade.domain.types.getOrNull
+import ru.driics.aitrade.domain.types.getOrThrow
 import ru.driics.aitrade.model.*
 import java.math.BigDecimal
 import java.math.RoundingMode
-import java.util.*
+import java.util.Locale
 
-/**
- * Use case: Execute AI trading decisions.
- * Uses domain services (OrderSizingPolicy, IdGenerator) and ports (TradingPort, MarketDataPort).
- */
 class ExecuteAiDecisionsUseCase(
     private val trading: TradingPort,
     private val market: MarketDataPort,
@@ -33,7 +35,6 @@ class ExecuteAiDecisionsUseCase(
     private val maxLev = tradingProperties.maxLeverage
     private val minLev = tradingProperties.minLeverage
 
-    private val mapper = jacksonObjectMapper()
     private val sizingPolicy = OrderSizingPolicy(
         takerFeePct = tradingProperties.takerFeePct,
         marginBufferPct = tradingProperties.marginBufferPct
@@ -42,43 +43,29 @@ class ExecuteAiDecisionsUseCase(
     suspend fun execute(decisions: AiTradeDecisionMap): List<AiTradeExecutionResult> = coroutineScope {
         log.info { "Executing AI trading decisions" }
 
-        val supported = tradingProperties.getCurrenciesList().map { it.uppercase(Locale.ROOT) }.toSet()
-
+        val supported = tradingProperties.getCurrenciesList().map { it.asSymbol().value }.toSet()
         val state = market.loadMarketState(supported.toList())
+
         var remainingCashUsd = maxOf(state.account.availableCash, BigDecimal.ZERO)
 
         val planResults = decisions.values.map { env ->
-            async {
+            async(Dispatchers.Default) {
                 buildPlan(env.args, supported)
             }
         }.awaitAll()
 
         val results = mutableListOf<AiTradeExecutionResult>()
 
-        for (res in planResults) {
-            when (res) {
-                is PlanResult.Skip -> {
-                    log.debug { "${res.symbol}: ${res.reason}" }
-                    results += AiTradeExecutionResult(
-                        symbol = res.symbol,
-                        action = AIAction.SKIPPED,
-                        message = res.reason
-                    )
-                }
+        val semaphore = Semaphore(3)
 
-                is PlanResult.Ready -> {
-                    val plan = res.plan
-                    val result = executePlan(plan, remainingCashUsd)
-
-                    if (result.action == AIAction.PLACED) {
-                        val usedUsd = extractUsedUsd(result.message)
-                        remainingCashUsd = maxOf(remainingCashUsd - usedUsd, BigDecimal.ZERO)
-                    }
-
-                    results += result
+        // TODO: return calc remainingCashUsd and logging PlanResult.Skip
+        results.addAll(planResults.filterIsInstance<PlanResult.Ready>().map { ready ->
+            async(Dispatchers.IO) {
+                semaphore.withPermit {
+                    executePlan(ready.plan, state.account.availableCash)
                 }
             }
-        }
+        }.awaitAll())
 
         logExecutionSummary(results)
         return@coroutineScope results
@@ -106,12 +93,10 @@ class ExecuteAiDecisionsUseCase(
     )
 
     private suspend fun buildPlan(args: AiTradeSignalArgs, supported: Set<String>): PlanResult {
-        val symbol = args.coin.uppercase(Locale.ROOT)
+        val symbol = args.coin.asSymbol().value
         if (symbol !in supported) return PlanResult.Skip(symbol, "Not in configured list")
 
-        val signal = args.signal.lowercase(Locale.ROOT)
-        if (signal == "hold") return PlanResult.Skip(symbol, "Hold signal")
-        if (signal !in setOf("buy", "sell")) return PlanResult.Skip(symbol, "Unsupported signal: ${args.signal}")
+        if (args.signal == AiSignal.HOLD) return PlanResult.Skip(symbol, "Hold signal")
 
         val confidence = args.confidence ?: BigDecimal.ZERO
         if (confidence < minConfidence) {
@@ -119,10 +104,10 @@ class ExecuteAiDecisionsUseCase(
         }
 
         val instId = "${symbol}-USDT-SWAP"
-        val inst = trading.loadInstrument(instId)
+        val inst = trading.loadInstrument(instId).getOrNull()
             ?: return PlanResult.Skip(symbol, "No instrument info")
 
-        val entryPx = trading.getLastPrice(instId)
+        val entryPx = trading.getLastPrice(instId).getOrNull()
             ?: return PlanResult.Skip(symbol, "No price available")
 
         val sl = args.stopLoss
@@ -150,7 +135,12 @@ class ExecuteAiDecisionsUseCase(
         val ctVal = inst.ctVal?.toBigDecimalOrNull()?.takeIf { it.isPositive() }
             ?: return PlanResult.Skip(symbol, "Invalid ctVal")
         val ccy = (inst.ctValCcy ?: "").uppercase(Locale.ROOT)
-        val side = if (signal == "buy") "buy" else "sell"
+
+        val side = when (args.signal) {
+            AiSignal.BUY -> "buy"
+            AiSignal.SELL -> "sell"
+            AiSignal.HOLD -> return PlanResult.Skip(symbol, "Hold signal")
+        }
 
         return PlanResult.Ready(
             OrderPlan(
@@ -191,7 +181,7 @@ class ExecuteAiDecisionsUseCase(
         )
 
         val marginMode = tradingProperties.getMarginMode()
-        val levOk = trading.setLeverage(plan.instId, sizing.leverage, marginMode)
+        val levOk = trading.setLeverage(plan.instId, sizing.leverage, marginMode).getOrThrow()
         if (!levOk) {
             return AiTradeExecutionResult(
                 symbol = plan.symbol,
@@ -214,7 +204,7 @@ class ExecuteAiDecisionsUseCase(
             clOrdId = clId,
             tag = tag,
             marginMode = marginMode
-        )
+        ).getOrThrow()
 
         return if (outcome.ok) {
             val orderDetails = buildString {

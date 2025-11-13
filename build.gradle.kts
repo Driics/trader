@@ -18,6 +18,10 @@ java {
 
 repositories {
     mavenCentral()
+    google()
+    maven {
+        url = uri("https://s01.oss.sonatype.org/content/repositories/snapshots")
+    }
 }
 
 dependencies {
@@ -32,12 +36,23 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-core-jvm")
 
     implementation(platform("io.ktor:ktor-bom:3.3.1"))
+    implementation("io.ktor:ktor-client-websockets")
     implementation("io.ktor:ktor-client-core")
     implementation("io.ktor:ktor-client-cio")
     implementation("io.ktor:ktor-client-content-negotiation")
     implementation("io.ktor:ktor-serialization-jackson")
 
     implementation("ai.koog:koog-spring-boot-starter:0.5.1")
+
+    implementation(platform("io.opentelemetry:opentelemetry-bom"))
+    implementation("io.opentelemetry:opentelemetry-api")
+    implementation("io.opentelemetry:opentelemetry-sdk")
+    implementation("io.opentelemetry:opentelemetry-exporter-otlp")
+    implementation("io.opentelemetry:opentelemetry-extension-kotlin")
+    implementation("io.opentelemetry.semconv:opentelemetry-semconv")
+
+    // Micrometer bridge for OpenTelemetry
+    implementation("io.micrometer:micrometer-tracing-bridge-otel:1.6.0")
 
     implementation("io.github.resilience4j:resilience4j-spring-boot3:2.3.0")
     implementation("io.github.resilience4j:resilience4j-retry:2.3.0")

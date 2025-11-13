@@ -1,10 +1,4 @@
 okx:
-  api:
-    key: ${OKX_API_KEY:your-okx-api-key}
-    secret: ${OKX_SECRET:your-okx-secret}
-    passphrase: ${OKX_PASSPHRASE:your-okx-passphrase}
-    base-url: https://www.okx.com
-
   http:
     client-type: ktor
     connect-timeout-ms: 5000
@@ -15,13 +9,27 @@ okx:
       pending-acquire-max-count: 2000
       pending-acquire-timeout-ms: 5000
 
+  api-key: ${OKX_API_KEY:your-okx-api-key}
+  secret-key: ${OKX_API_SECRET:your-okx-secret}
+  passphrase: ${OKX_API_PASSPHRASE:your-okx-passphrase}
+
 # Trading Configuration
 trading:
-  currencies: BTC,ETH,SOL,BNB,XRP,DOGE
+  currencies:
+    - BTC
+    - ETH
+    - SOL
+    - BNB
+    - XRP
+    - DOGE
   time-zone: UTC
   auto-execute: true
   max-concurrent-symbols: 10
-  instrument-cache-ttl-minutes: 60
+  instrument-cache-ttl: 10m
+
+otel:
+  service:
+    name: "trading-system"
 
 prompt.output-path: ./prompt.txt
 

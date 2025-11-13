@@ -1,5 +1,6 @@
 package ru.driics.aitrade.config
 
+import io.micrometer.core.instrument.MeterRegistry
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import ru.driics.aitrade.application.orchestrator.UpdateCycleOrchestrator
@@ -16,6 +17,9 @@ import java.time.Clock
 class ApplicationWiring(
     private val tradingProperties: TradingProperties
 ) {
+    @Bean
+    fun clock(): Clock = Clock.systemUTC()
+
     @Bean
     fun buildPromptUseCase(
         market: MarketDataPort,
@@ -36,16 +40,15 @@ class ApplicationWiring(
         build: BuildPromptUseCase,
         analyze: AnalyzePromptUseCase,
         execute: ExecuteAiDecisionsUseCase,
-        market: MarketDataPort
+        market: MarketDataPort,
+        meterRegistry: MeterRegistry
     ) = UpdateCycleOrchestrator(
         build = build,
         analyze = analyze,
         execute = execute,
         market = market,
+        meterRegistry = meterRegistry,
         autoExecute = tradingProperties.autoExecute,
         symbols = tradingProperties.getCurrenciesList()
     )
-
-    @Bean
-    fun clock(): Clock = Clock.systemUTC()
 }
