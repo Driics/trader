@@ -4,7 +4,6 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PromptOutputPort
 import ru.driics.aitrade.domain.services.PromptBuilder
-import ru.driics.aitrade.model.MarketState
 
 class BuildPromptUseCase(
     private val market: MarketDataPort,

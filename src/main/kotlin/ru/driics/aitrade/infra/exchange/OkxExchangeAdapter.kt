@@ -6,6 +6,7 @@ import io.ktor.client.plugins.*
 import io.opentelemetry.api.trace.Tracer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -13,14 +14,19 @@ import kotlinx.coroutines.withTimeout
 import org.springframework.stereotype.Service
 import ru.driics.aitrade.common.traced
 import ru.driics.aitrade.config.TradingProperties
+import ru.driics.aitrade.domain.model.AccountInfo
+import ru.driics.aitrade.domain.model.CurrencyMarketData
 import ru.driics.aitrade.domain.model.MarginMode
+import ru.driics.aitrade.domain.model.MarketState
+import ru.driics.aitrade.domain.model.OkxCandleResponse
+import ru.driics.aitrade.domain.model.OkxInstrumentInfo
+import ru.driics.aitrade.domain.model.Position
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PlaceOrderOutcome
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.IndicatorCalculator
 import ru.driics.aitrade.domain.types.TradeResult
 import ru.driics.aitrade.domain.util.quantize
-import ru.driics.aitrade.model.*
 import ru.driics.aitrade.service.OkxRestClient
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -87,7 +93,7 @@ class OkxExchangeAdapter(
         )
     }
 
-    private suspend fun fetchCurrencyData(symbol: String): CurrencyMarketData {
+    suspend fun fetchCurrencyData(symbol: String): CurrencyMarketData = coroutineScope {
         val instId = "${symbol}-USDT-SWAP"
 
         // Fetch current ticker
@@ -95,28 +101,30 @@ class OkxExchangeAdapter(
         val currentPrice = ticker?.bidPrice?.toBigDecimalOrNull() ?: BigDecimal.ZERO
 
         // Fetch 3-minute candles
-        val candles = rest.fetchCandles(instId, "3m", 100)
-        val prices = candles.mapNotNull { it.close.toBigDecimalOrNull() }
+        val candles = async { rest.fetchCandles(instId, "3m", 100) }.await()
+        val prices = async { candles.mapNotNull { it.close.toBigDecimalOrNull() } }.await()
 
         // Calculate current indicators
-        val ema20 = IndicatorCalculator.calculateEMA(prices, 20)
-        val macd = IndicatorCalculator.calculateMACD(prices)
-        val rsi7 = IndicatorCalculator.calculateRSI(prices, 7)
+        val ema20 = async(Dispatchers.Default) { IndicatorCalculator.calculateEMA(prices, 20) }
+        val macd = async(Dispatchers.Default) { IndicatorCalculator.calculateMACD(prices) }
+        val rsi7 = async(Dispatchers.Default) { IndicatorCalculator.calculateRSI(prices, 7) }
 
         // Calculate progressive indicators for intraday series
-        val intradayEma20 = IndicatorCalculator.calculateProgressiveEMA(prices, 20)
-        val intradayMacd = IndicatorCalculator.calculateProgressiveMACD(prices)
-        val intradayRsi7 = IndicatorCalculator.calculateProgressiveRSI(prices, 7)
-        val intradayRsi14 = IndicatorCalculator.calculateProgressiveRSI(prices, 14)
+        val intradayEma20 = async(Dispatchers.Default) { IndicatorCalculator.calculateProgressiveEMA(prices, 20) }
+        val intradayMacd = async(Dispatchers.Default) { IndicatorCalculator.calculateProgressiveMACD(prices) }
+        val intradayRsi7 = async(Dispatchers.Default) { IndicatorCalculator.calculateProgressiveRSI(prices, 7) }
+        val intradayRsi14 = async(Dispatchers.Default) { IndicatorCalculator.calculateProgressiveRSI(prices, 14) }
 
         // Fetch 4-hour candles for longer-term context
-        val candles4h = fetch4HCandlesWithCache(symbol, instId)
+        val candles4HDeferred = async { fetch4HCandlesWithCache(symbol, instId) }
+        val candles4h = candles4HDeferred.await()
+
         val prices4h = candles4h.mapNotNull { it.close.toBigDecimalOrNull() }
 
-        val ema20_4h = IndicatorCalculator.calculateEMA(prices4h, 20)
-        val ema50_4h = IndicatorCalculator.calculateEMA(prices4h, 50)
-        val atr3_4h = IndicatorCalculator.calculateATR(candles4h, 3)
-        val atr14_4h = IndicatorCalculator.calculateATR(candles4h, 14)
+        val ema20_4h = async(Dispatchers.Default) { IndicatorCalculator.calculateEMA(prices4h, 20) }
+        val ema50_4h = async(Dispatchers.Default) { IndicatorCalculator.calculateEMA(prices4h, 50) }
+        val atr3_4h = async(Dispatchers.Default) { IndicatorCalculator.calculateATR(candles4h, 3) }
+        val atr14_4h = async(Dispatchers.Default) { IndicatorCalculator.calculateATR(candles4h, 14) }
 
         val volume4h = candles4h.lastOrNull()?.volume?.toBigDecimalOrNull() ?: BigDecimal.ZERO
         val avgVolume4h = calculateAverageVolume(candles4h, last = 20)
@@ -143,26 +151,29 @@ class OkxExchangeAdapter(
         }
 
         // Fetch funding rate and open interest
-        val fundingRate = rest.fetchFundingRate(instId)
-        val openInterest = rest.fetchOpenInterest(instId)
+        val fundingRateDeferred = async { rest.fetchFundingRate(instId) }
+        val openInterestDeferred = async { rest.fetchOpenInterest(instId) }
 
-        return CurrencyMarketData(
+        val fundingRate = fundingRateDeferred.await()
+        val openInterest = openInterestDeferred.await()
+
+        return@coroutineScope CurrencyMarketData(
             symbol = symbol,
             currentPrice = currentPrice,
-            currentEma20 = ema20,
-            currentMacd = macd,
-            currentRsi7 = rsi7,
+            currentEma20 = ema20.await(),
+            currentMacd = macd.await(),
+            currentRsi7 = rsi7.await(),
             openInterest = openInterest,
             fundingRate = fundingRate,
             intradayPrices = prices.takeLast(10),
-            intradayEma20 = intradayEma20.takeLast(10),
-            intradayMacd = intradayMacd.takeLast(10),
-            intradayRsi7 = intradayRsi7.takeLast(10),
-            intradayRsi14 = intradayRsi14.takeLast(10),
-            ema20_4h = ema20_4h,
-            ema50_4h = ema50_4h,
-            atr3_4h = atr3_4h,
-            atr14_4h = atr14_4h,
+            intradayEma20 = intradayEma20.await().takeLast(10),
+            intradayMacd = intradayMacd.await().takeLast(10),
+            intradayRsi7 = intradayRsi7.await().takeLast(10),
+            intradayRsi14 = intradayRsi14.await().takeLast(10),
+            ema20_4h = ema20_4h.await(),
+            ema50_4h = ema50_4h.await(),
+            atr3_4h = atr3_4h.await(),
+            atr14_4h = atr14_4h.await(),
             volume4h = volume4h,
             avgVolume4h = avgVolume4h,
             macd4h = macd4hPadded,

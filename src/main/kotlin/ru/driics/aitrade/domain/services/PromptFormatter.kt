@@ -1,7 +1,7 @@
 package ru.driics.aitrade.domain.services
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import ru.driics.aitrade.model.Position
+import ru.driics.aitrade.domain.model.Position
 import java.math.BigDecimal
 import java.math.RoundingMode
 

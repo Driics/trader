@@ -9,8 +9,7 @@ import io.ktor.client.*
 import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
-import io.ktor.http.ContentType
-import io.ktor.http.contentType
+import io.ktor.http.*
 import io.micrometer.core.instrument.MeterRegistry
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
@@ -19,8 +18,19 @@ import ru.driics.aitrade.common.timeOkx
 import ru.driics.aitrade.config.OkxHttpProperties
 import ru.driics.aitrade.config.OkxProperties
 import ru.driics.aitrade.domain.model.MarginMode
-import ru.driics.aitrade.infra.cache.SmartCacheStrategy
-import ru.driics.aitrade.model.*
+import ru.driics.aitrade.domain.model.OkxAccountApiResponse
+import ru.driics.aitrade.domain.model.OkxAccountResponse
+import ru.driics.aitrade.domain.model.OkxApiResponse
+import ru.driics.aitrade.domain.model.OkxCandleResponse
+import ru.driics.aitrade.domain.model.OkxCandlesApiResponse
+import ru.driics.aitrade.domain.model.OkxFundingResponse
+import ru.driics.aitrade.domain.model.OkxInstrumentInfo
+import ru.driics.aitrade.domain.model.OkxOpenInterestResponse
+import ru.driics.aitrade.domain.model.OkxPlaceOrderApiResponse
+import ru.driics.aitrade.domain.model.OkxPlaceOrderData
+import ru.driics.aitrade.domain.model.OkxPositionResponse
+import ru.driics.aitrade.domain.model.OkxPublicInstrumentsApiResponse
+import ru.driics.aitrade.domain.model.OkxTickerResponse
 import java.math.BigDecimal
 
 @Service

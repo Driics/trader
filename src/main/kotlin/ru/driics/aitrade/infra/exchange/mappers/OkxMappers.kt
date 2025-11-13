@@ -2,7 +2,7 @@ package ru.driics.aitrade.infra.exchange.mappers
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import ru.driics.aitrade.domain.model.Candle
-import ru.driics.aitrade.model.OkxCandleResponse
+import ru.driics.aitrade.domain.model.OkxCandleResponse
 import java.math.BigDecimal
 
 private val logger = KotlinLogging.logger("OkxMapper")

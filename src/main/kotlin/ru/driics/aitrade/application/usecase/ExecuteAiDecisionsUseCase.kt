@@ -1,6 +1,5 @@
 package ru.driics.aitrade.application.usecase
 
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -8,7 +7,14 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.time.withTimeout
+import kotlinx.coroutines.withTimeout
 import ru.driics.aitrade.config.TradingProperties
+import ru.driics.aitrade.domain.model.AIAction
+import ru.driics.aitrade.domain.model.AiSignal
+import ru.driics.aitrade.domain.model.AiTradeDecisionMap
+import ru.driics.aitrade.domain.model.AiTradeExecutionResult
+import ru.driics.aitrade.domain.model.AiTradeSignalArgs
 import ru.driics.aitrade.domain.util.isPositive
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort
@@ -17,10 +23,10 @@ import ru.driics.aitrade.domain.services.OrderSizingPolicy
 import ru.driics.aitrade.domain.types.asSymbol
 import ru.driics.aitrade.domain.types.getOrNull
 import ru.driics.aitrade.domain.types.getOrThrow
-import ru.driics.aitrade.model.*
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.Locale
+import kotlin.time.Duration.Companion.seconds
 
 class ExecuteAiDecisionsUseCase(
     private val trading: TradingPort,
@@ -44,31 +50,55 @@ class ExecuteAiDecisionsUseCase(
         log.info { "Executing AI trading decisions" }
 
         val supported = tradingProperties.getCurrenciesList().map { it.asSymbol().value }.toSet()
-        val state = market.loadMarketState(supported.toList())
+        // Load current state with timeout
+        val state = withTimeout(30.seconds) {
+            market.loadMarketState(supported.toList())
+        }
 
-        var remainingCashUsd = maxOf(state.account.availableCash, BigDecimal.ZERO)
-
+        // Build plans in parallel with error handling
         val planResults = decisions.values.map { env ->
             async(Dispatchers.Default) {
-                buildPlan(env.args, supported)
+                runCatching {
+                    buildPlan(env.args, supported)
+                }.getOrElse { e ->
+                    log.error(e) { "Failed to build plan for ${env.args.coin}" }
+                    PlanResult.Skip(env.args.coin.asSymbol().value, "Plan build error: ${e.message}")
+                }
             }
         }.awaitAll()
 
         val results = mutableListOf<AiTradeExecutionResult>()
 
-        val semaphore = Semaphore(3)
+        // Log skipped plans
+        planResults.filterIsInstance<PlanResult.Skip>().forEach { skip ->
+            log.info { "Skipping ${skip.symbol}: ${skip.reason}" }
+        }
 
-        // TODO: return calc remainingCashUsd and logging PlanResult.Skip
-        results.addAll(planResults.filterIsInstance<PlanResult.Ready>().map { ready ->
+        val semaphore = Semaphore(tradingProperties.maxConcurrentSymbols)
+
+        // Execute ready plans in parallel with semaphore
+        val execResults = planResults.filterIsInstance<PlanResult.Ready>().map { ready ->
             async(Dispatchers.IO) {
                 semaphore.withPermit {
-                    executePlan(ready.plan, state.account.availableCash)
+                    runCatching {
+                        executePlan(ready.plan, state.account.availableCash)
+                    }.getOrElse { e ->
+                        log.error(e) { "Failed to execute plan for ${ready.plan.symbol}" }
+                        AiTradeExecutionResult(
+                            symbol = ready.plan.symbol,
+                            action = AIAction.SKIPPED,
+                            message = "Error:: ${e.message}",
+                            instId = ready.plan.instId,
+                            clOrdId = "",
+                            requestedContracts = BigDecimal.ZERO
+                        )
+                    }
                 }
             }
-        }.awaitAll())
+        }.awaitAll()
 
-        logExecutionSummary(results)
-        return@coroutineScope results
+        results.addAll(execResults)
+        results
     }
 
     private sealed class PlanResult {

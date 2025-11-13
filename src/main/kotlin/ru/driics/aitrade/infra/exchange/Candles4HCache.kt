@@ -1,7 +1,7 @@
 package ru.driics.aitrade.infra.exchange
 
 import com.github.benmanes.caffeine.cache.Caffeine
-import ru.driics.aitrade.model.OkxCandleResponse
+import ru.driics.aitrade.domain.model.OkxCandleResponse
 import java.time.Duration
 
 /**

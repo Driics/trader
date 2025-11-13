@@ -12,9 +12,9 @@ import ru.driics.aitrade.common.timedSuspend
 import ru.driics.aitrade.config.OpenRouterProperties
 import ru.driics.aitrade.domain.services.ApiKeyRotationPolicy
 import ru.driics.aitrade.infra.ai.RotatingOpenRouterClient
-import ru.driics.aitrade.model.AiAnalysisResponse
-import ru.driics.aitrade.model.AiService
-import ru.driics.aitrade.model.LastAiAnalysis
+import ru.driics.aitrade.domain.model.AiAnalysisResponse
+import ru.driics.aitrade.domain.model.AiService
+import ru.driics.aitrade.domain.model.LastAiAnalysis
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
 

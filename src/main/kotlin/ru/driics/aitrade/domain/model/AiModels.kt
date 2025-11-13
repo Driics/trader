@@ -1,4 +1,4 @@
-package ru.driics.aitrade.model
+package ru.driics.aitrade.domain.model
 
 interface AiService {
     suspend fun analyzePrompt(prompt: String): AiAnalysisResponse

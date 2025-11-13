@@ -2,8 +2,8 @@ package ru.driics.aitrade.infra.ai
 
 import org.springframework.stereotype.Service
 import ru.driics.aitrade.domain.ports.AiAnalysisPort
-import ru.driics.aitrade.model.AiAnalysisResponse
-import ru.driics.aitrade.model.LastAiAnalysis
+import ru.driics.aitrade.domain.model.AiAnalysisResponse
+import ru.driics.aitrade.domain.model.LastAiAnalysis
 import ru.driics.aitrade.service.KoogAiService
 
 @Service

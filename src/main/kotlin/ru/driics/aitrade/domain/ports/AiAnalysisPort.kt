@@ -1,7 +1,7 @@
 package ru.driics.aitrade.domain.ports
 
-import ru.driics.aitrade.model.AiAnalysisResponse
-import ru.driics.aitrade.model.LastAiAnalysis
+import ru.driics.aitrade.domain.model.AiAnalysisResponse
+import ru.driics.aitrade.domain.model.LastAiAnalysis
 
 interface AiAnalysisPort {
 

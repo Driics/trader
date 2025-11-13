@@ -2,7 +2,7 @@ package ru.driics.aitrade.domain.ports
 
 import ru.driics.aitrade.domain.model.MarginMode
 import ru.driics.aitrade.domain.types.TradeResult
-import ru.driics.aitrade.model.OkxInstrumentInfo
+import ru.driics.aitrade.domain.model.OkxInstrumentInfo
 import java.math.BigDecimal
 
 interface TradingPort {

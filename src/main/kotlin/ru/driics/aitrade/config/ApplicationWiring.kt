@@ -49,6 +49,7 @@ class ApplicationWiring(
         market = market,
         meterRegistry = meterRegistry,
         autoExecute = tradingProperties.autoExecute,
-        symbols = tradingProperties.getCurrenciesList()
+        symbols = tradingProperties.getCurrenciesList(),
+        clock()
     )
 }

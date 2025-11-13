@@ -8,11 +8,14 @@ import ru.driics.aitrade.application.usecase.AnalyzePromptUseCase
 import ru.driics.aitrade.application.usecase.BuildPromptUseCase
 import ru.driics.aitrade.application.usecase.ExecuteAiDecisionsUseCase
 import ru.driics.aitrade.common.timedSuspend
+import ru.driics.aitrade.domain.model.AIAction
 import ru.driics.aitrade.domain.ports.MarketDataPort
-import ru.driics.aitrade.model.AccountInfo
-import ru.driics.aitrade.model.AiTradeDecisionMap
-import ru.driics.aitrade.model.Position
+import ru.driics.aitrade.domain.model.AccountInfo
+import ru.driics.aitrade.domain.model.AiTradeDecisionMap
+import ru.driics.aitrade.domain.model.AiTradeExecutionResult
+import ru.driics.aitrade.domain.model.Position
 import java.security.MessageDigest
+import java.time.Clock
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -24,14 +27,15 @@ class UpdateCycleOrchestrator(
     private val market: MarketDataPort,
     private val meterRegistry: MeterRegistry,
     private val autoExecute: Boolean,
-    private val symbols: List<String>
+    private val symbols: List<String>,
+    private val clock: Clock
 ) {
     companion object {
         private val log = KotlinLogging.logger {}
     }
 
     private val mapper = jacksonObjectMapper()
-    private val sessionStartTime = AtomicLong(System.currentTimeMillis())
+    private val sessionStartTime = AtomicLong(clock.instant().toEpochMilli())
     private val invocationCount = AtomicLong(0L)
     private val lastUpdateTime = AtomicLong(0L)
     private val lastPromptHash = AtomicReference<String?>(null)
@@ -50,7 +54,7 @@ class UpdateCycleOrchestrator(
             doRunOnce(invocation)
         }
 
-        lastUpdateTime.set(System.currentTimeMillis())
+        lastUpdateTime.set(clock.instant().toEpochMilli())
 
         log.info { "═══ Update cycle #$invocation completed in ${took}ms ═══\n" }
 
@@ -124,7 +128,7 @@ class UpdateCycleOrchestrator(
 
         logAiDecisionsSummary(decisions)
 
-        var executionResults: List<ru.driics.aitrade.model.AiTradeExecutionResult>? = null
+        var executionResults: List<AiTradeExecutionResult>? = null
 
         // Stage 3: Execute decisions (if enabled)
         if (autoExecute) {
@@ -149,7 +153,7 @@ class UpdateCycleOrchestrator(
             message = "Success",
             executionTimeMs = 0,
             promptSize = prompt.length,
-            positionsPlaced = executionResults?.count { it.action == ru.driics.aitrade.model.AIAction.PLACED } ?: 0
+            positionsPlaced = executionResults?.count { it.action == AIAction.PLACED } ?: 0
         )
     }
 

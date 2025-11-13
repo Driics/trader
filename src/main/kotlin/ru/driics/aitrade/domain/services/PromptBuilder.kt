@@ -1,6 +1,6 @@
 package ru.driics.aitrade.domain.services
 
-import ru.driics.aitrade.model.MarketState
+import ru.driics.aitrade.domain.model.MarketState
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
