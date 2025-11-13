@@ -8,6 +8,7 @@ import io.ktor.client.plugins.websocket.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -92,6 +93,14 @@ class OkxPrivateWebSocketClient(
                         for (frame in incoming) {
                             when (frame) {
                                 is Frame.Text -> handleText(frame.readText())
+                                is Frame.Ping -> {
+                                    try {
+                                        send(Frame.Pong(frame.data))
+                                    } catch (e: Exception) {
+                                        log.warn(e) { "Pong wasn't send" }
+                                        break
+                                    }
+                                }
                                 is Frame.Close -> {
                                     closeReason.await()?.let {
                                         log.warn { "Private WS close: $it" }
@@ -119,16 +128,15 @@ class OkxPrivateWebSocketClient(
 
     // Reuse REST signer exactly to avoid drift.
     private suspend fun loginAndAwaitAck(session: DefaultClientWebSocketSession): Boolean {
-        val headers = okxAuthService.createAuthHeaders("GET", "/users/self/verify", "")
-        val ts = headers["OK-ACCESS-TIMESTAMP"] ?: return false.also { log.error { "Missing OK-ACCESS-TIMESTAMP" } }
-        val sign = headers["OK-ACCESS-SIGN"] ?: return false.also { log.error { "Missing OK-ACCESS-SIGN" } }
+        val ts = (System.currentTimeMillis() / 1000.0).toString()
+        val sign = okxAuthService.sign(ts, "GET", "/users/self/verify", "")
 
         val payload = mapOf(
             "op" to "login",
             "args" to listOf(
                 mapOf(
                     "apiKey" to okxProperties.apiKey,
-                    "passphrase" to okxProperties.passphrase,
+                    "passphrase" to okxProperties.passphrase, // do not trim here
                     "timestamp" to ts,
                     "sign" to sign
                 )
@@ -139,19 +147,33 @@ class OkxPrivateWebSocketClient(
         return try {
             withTimeout(12_000) {
                 while (true) {
-                    when (val frame = session.incoming.receive()) {
+                    val frame = try {
+                        session.incoming.receive()
+                    } catch (e: ClosedReceiveChannelException) {
+                        log.warn(e) { "WS incoming channel closed before login ack" }
+                        return@withTimeout false
+                    }
+                    when (frame) {
                         is Frame.Text -> {
                             val text = frame.readText()
                             val root: Map<String, Any?> = runCatching { objectMapper.readValue<Map<String, Any>>(text) }.getOrElse { emptyMap() }
                             val event = root["event"] as? String
-                            if (event == "login") {
-                                val code = (root["code"] as? String) ?: "unknown"
-                                val msg = (root["msg"] as? String) ?: ""
-                                if (code == "0") {
-                                    log.info { "OKX private WS login success" }
-                                    return@withTimeout true
-                                } else {
-                                    log.error { "Login failed: code=$code msg=$msg" }
+                            when (event) {
+                                "login" -> {
+                                    val code = (root["code"] as? String) ?: "unknown"
+                                    val msg = (root["msg"] as? String) ?: ""
+                                    if (code == "0") {
+                                        log.info { "OKX private WS login success" }
+                                        return@withTimeout true
+                                    } else {
+                                        log.error { "Login failed: code=$code msg=$msg" }
+                                        return@withTimeout false
+                                    }
+                                }
+                                "error" -> {
+                                    val code = (root["code"] as? String) ?: "unknown"
+                                    val msg = (root["msg"] as? String) ?: ""
+                                    log.error { "Login error event: code=$code msg=$msg payload=${text.take(200)}" }
                                     return@withTimeout false
                                 }
                             }

@@ -87,6 +87,14 @@ class OkxPublicWebSocketClient(
                         for (frame in incoming) {
                             when (frame) {
                                 is Frame.Text -> handleText(frame.readText())
+                                is Frame.Ping -> {
+                                    try {
+                                        send(Frame.Pong(frame.data))
+                                    } catch (e: Exception) {
+                                        log.warn(e) { "Pong wasn't send" }
+                                        break
+                                    }
+                                }
                                 is Frame.Close -> {
                                     closeReason.await()?.let {
                                         log.warn { "Public WS close: $it" }
@@ -156,13 +164,14 @@ class OkxPublicWebSocketClient(
             when {
                 channel == "tickers" -> {
                     val env = objectMapper.readValue(text, OkxWsTypeRefs.ticker)
-                    env.data?.firstOrNull()?.let { _tickerFlow.tryEmit(it) }
+                    env.data?.forEach { _tickerFlow.tryEmit(it) }
                 }
                 channel.startsWith("candle") -> {
                     // Candle payload can be object-shaped (supported here). If you see array form, see CandleArrayUtil below.
                     val env = objectMapper.readValue(text, OkxWsTypeRefs.candle)
-                    val c = env.data?.firstOrNull() ?: return
-                    if (instId != null) _candleFlow.tryEmit(instId to c)
+                    env.data?.forEach { c ->
+                        if (instId != null) _candleFlow.tryEmit(instId to c)
+                    }
                 }
             }
         } catch (e: Exception) {
