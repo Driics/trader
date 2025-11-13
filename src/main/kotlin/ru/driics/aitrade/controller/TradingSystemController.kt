@@ -10,6 +10,7 @@ import ru.driics.aitrade.application.orchestrator.UpdateCycleOrchestrator
 import ru.driics.aitrade.config.PromptProperties
 import ru.driics.aitrade.config.TradingProperties
 import java.io.File
+import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
@@ -24,7 +25,8 @@ import java.time.format.DateTimeFormatter
 class TradingSystemController(
     private val orchestrator: UpdateCycleOrchestrator,
     private val tradingProperties: TradingProperties,
-    private val promptProperties: PromptProperties
+    private val promptProperties: PromptProperties,
+    private val clock: Clock,
 ) {
     companion object {
         private val log = KotlinLogging.logger {}
@@ -63,7 +65,7 @@ class TradingSystemController(
                 val errorResponse = ErrorResponse(
                     status = "error",
                     message = result.message,
-                    timestamp = System.currentTimeMillis(),
+                    timestamp = clock.instant().toEpochMilli(),
                     errorDetails = "Update execution failed. Check logs for details.",
                     path = request.requestURI
                 )
@@ -78,7 +80,7 @@ class TradingSystemController(
             val response = UpdateResponse(
                 status = "success",
                 message = "Update cycle completed successfully",
-                timestamp = System.currentTimeMillis(),
+                timestamp = clock.instant().toEpochMilli(),
                 executionTimeMs = result.executionTimeMs,
                 data = UpdateData(
                     symbolsFetched = tradingProperties.getCurrenciesList().size,
@@ -99,7 +101,7 @@ class TradingSystemController(
             val errorResponse = ErrorResponse(
                 status = "error",
                 message = e.message ?: "Unknown error occurred",
-                timestamp = System.currentTimeMillis(),
+                timestamp = clock.instant().toEpochMilli(),
                 errorDetails = e.stackTraceToString().take(500),
                 path = request.requestURI
             )
