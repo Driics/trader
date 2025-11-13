@@ -1,119 +1,148 @@
 package ru.driics.aitrade.infra.exchange.websocket
 
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.ktor.client.HttpClient
+import io.ktor.client.*
 import io.ktor.client.plugins.websocket.*
 import io.ktor.websocket.*
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.yield
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.time.withTimeout
-import kotlinx.coroutines.withTimeout
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.config.OkxProperties
+import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsAccountUpdate
+import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsOrderUpdate
+import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsPositionUpdate
+import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsTypeRefs
 import ru.driics.aitrade.service.OkxAuthService
-import java.time.Clock
-import java.util.Base64
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.min
+import kotlin.random.Random
 
+/**
+ * Type-safe OKX private WebSocket client.
+ *
+ * - Uses REST signer parity (createAuthHeaders) and awaits "event":"login" ack
+ * - One reader; ping after login only
+ * - Explicit wss URL (paper/live) via OkxProperties.privateWsUrl()
+ * - Typed DTO streams
+ */
 @Component
 class OkxPrivateWebSocketClient(
     private val httpClient: HttpClient,
     private val okxProperties: OkxProperties,
     private val okxAuthService: OkxAuthService,
-    private val clock: Clock
+    private val objectMapper: ObjectMapper
 ) {
     private val log = KotlinLogging.logger {}
-    private val mapper = jacksonObjectMapper()
+    private val connected = AtomicBoolean(false)
 
-    private val _orderFlow = MutableSharedFlow<Map<String, Any?>>(
-        replay = 0, extraBufferCapacity = 256, onBufferOverflow = BufferOverflow.DROP_OLDEST
+    private val _orderFlow = MutableSharedFlow<OkxWsOrderUpdate>(
+        replay = 0, extraBufferCapacity = 512, onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
-    val orderFlow: SharedFlow<Map<String, Any?>> = _orderFlow.asSharedFlow()
+    val orderFlow: SharedFlow<OkxWsOrderUpdate> = _orderFlow.asSharedFlow()
 
-    private val _positionFlow = MutableSharedFlow<Map<String, Any?>>(
+    private val _positionFlow = MutableSharedFlow<OkxWsPositionUpdate>(
         replay = 1, extraBufferCapacity = 128, onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
-    val positionFlow: SharedFlow<Map<String, Any?>> = _positionFlow.asSharedFlow()
+    val positionFlow: SharedFlow<OkxWsPositionUpdate> = _positionFlow.asSharedFlow()
 
-    private val _accountFlow = MutableSharedFlow<Map<String, Any?>>(
+    private val _accountFlow = MutableSharedFlow<OkxWsAccountUpdate>(
         replay = 1, extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
-    val accountFlow: SharedFlow<Map<String, Any?>> = _accountFlow.asSharedFlow()
+    val accountFlow: SharedFlow<OkxWsAccountUpdate> = _accountFlow.asSharedFlow()
 
-    private var reconnectDelay = 1_000L
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     suspend fun connect() {
-        while (true) {
+        var attempt = 0
+        while (scope.isActive) {
             try {
-                httpClient.webSocket(
-                    urlString = okxProperties.privateWsUrl(),
-                    request = {
-                        headers.append("User-Agent", "AiTrader/1.0 (+okx ws)")
-                        headers.append("Accept", "application/json")
-                        headers.append("Origin", "https://www.okx.com")
-                    }
-                ) {
-                    if (!login()) {
+                val url = okxProperties.privateWsUrl()
+                httpClient.webSocket(urlString = url, request = {
+                    headers.append("User-Agent", "AiTrader/1.0 (+okx ws)")
+                    headers.append("Accept", "application/json")
+                    headers.append("Origin", "https://www.okx.com")
+                }) {
+                    connected.set(true)
+                    attempt = 0
+                    if (!loginAndAwaitAck(this)) {
                         log.error { "OKX private WS login failed" }
                         return@webSocket
                     }
-                    subscribe("orders", mapOf("instType" to "SWAP"))
-                    subscribe("positions", mapOf("instType" to "SWAP"))
-                    subscribe("account", emptyMap())
 
-                    val pingJob = launch { // heartbeat
+                    // Subscribe AFTER login ack
+                    subscribe(this, "orders", mapOf("instType" to "SWAP"))
+                    subscribe(this, "positions", mapOf("instType" to "SWAP"))
+                    subscribe(this, "account", emptyMap())
+
+                    // Heartbeat
+                    val pingJob = launch {
                         while (isActive) {
-                            try { send(Frame.Text("ping")) } catch (_: Exception) { break }
+                            try { send(Frame.Text("ping")) } catch (_: Throwable) { break }
                             delay(15_000)
                         }
                     }
+
+                    // Single reader
                     try {
-                        readLoop()
+                        for (frame in incoming) {
+                            when (frame) {
+                                is Frame.Text -> handleText(frame.readText())
+                                is Frame.Close -> {
+                                    closeReason.await()?.let {
+                                        log.warn { "Private WS close: $it" }
+                                    }
+                                    break
+                                }
+                                else -> Unit
+                            }
+                        }
                     } finally {
                         pingJob.cancel()
+                        connected.set(false)
+                        log.warn { "Private WS disconnected" }
                     }
                 }
-            } catch (e: Exception) {
-                log.warn(e) { "Private WS disconnected, reconnecting in ${reconnectDelay}ms..." }
-                delay(reconnectDelay)
-                reconnectDelay = (reconnectDelay * 2).coerceAtMost(30_000L)
+            } catch (t: Throwable) {
+                val base = min(30_000, (1_000 shl attempt))
+                val sleep = base + Random.nextInt(0, 1_000)
+                log.warn(t) { "Private WS reconnect in ${sleep}ms (attempt=$attempt)" }
+                delay(sleep.toLong())
+                attempt = (attempt + 1).coerceAtMost(15)
             }
-            yield()
         }
     }
 
-    private suspend fun DefaultClientWebSocketSession.login(): Boolean {
-        val ts = (System.currentTimeMillis() / 1000.0).toString()
-        val sign = okxAuthService.sign(ts, "GET", "/users/self/verify", "")
+    // Reuse REST signer exactly to avoid drift.
+    private suspend fun loginAndAwaitAck(session: DefaultClientWebSocketSession): Boolean {
+        val headers = okxAuthService.createAuthHeaders("GET", "/users/self/verify", "")
+        val ts = headers["OK-ACCESS-TIMESTAMP"] ?: return false.also { log.error { "Missing OK-ACCESS-TIMESTAMP" } }
+        val sign = headers["OK-ACCESS-SIGN"] ?: return false.also { log.error { "Missing OK-ACCESS-SIGN" } }
 
         val payload = mapOf(
             "op" to "login",
             "args" to listOf(
                 mapOf(
                     "apiKey" to okxProperties.apiKey,
-                    "passphrase" to okxProperties.passphrase, // do not trim here
+                    "passphrase" to okxProperties.passphrase,
                     "timestamp" to ts,
                     "sign" to sign
                 )
             )
         )
-        send(Frame.Text(mapper.writeValueAsString(payload)))
+        session.send(Frame.Text(objectMapper.writeValueAsString(payload)))
 
         return try {
-            withTimeout(5_000) {
+            withTimeout(12_000) {
                 while (true) {
-                    when (val frame = this@login.incoming.receive()) {
+                    when (val frame = session.incoming.receive()) {
                         is Frame.Text -> {
                             val text = frame.readText()
-                            val root: Map<String, Any?> = mapper.readValue(text)
+                            val root: Map<String, Any?> = runCatching { objectMapper.readValue<Map<String, Any>>(text) }.getOrElse { emptyMap() }
                             val event = root["event"] as? String
                             if (event == "login") {
                                 val code = (root["code"] as? String) ?: "unknown"
@@ -126,79 +155,51 @@ class OkxPrivateWebSocketClient(
                                     return@withTimeout false
                                 }
                             }
-                            // ignore other frames before login ack
                         }
-
-                        else -> { /* ignore */ }
+                        is Frame.Close -> {
+                            session.closeReason.await()?.let {
+                                log.error { "WS closed before login, reason=${it}" }
+                            }
+                            return@withTimeout false
+                        }
+                        else -> Unit
                     }
                 }
             }
-        } catch (e: Exception) {
-            log.error(e) { "Login failed: no ack within timeout" }
+        } catch (t: TimeoutCancellationException) {
+            log.error { "Login failed: no ack within timeout" }
             false
         } as Boolean
     }
 
-    private suspend fun DefaultClientWebSocketSession.subscribe(channel: String, extra: Map<String, String>) {
-        val payload = mapOf(
-            "op" to "subscribe",
-            "args" to listOf(mapOf("channel" to channel) + extra)
-        )
-        send(Frame.Text(mapper.writeValueAsString(payload)))
-    }
-
-    private suspend fun DefaultClientWebSocketSession.readLoop() {
-        for (frame in incoming) {
-            when (frame) {
-                is Frame.Text -> handleText(frame.readText())
-                is Frame.Ping -> {
-                    try {
-                        send(Frame.Pong(frame.data))
-                    } catch (e: Exception) {
-                        log.warn(e) { "Pong wasn't send" }
-                        return
-                    }
-                }
-                is Frame.Close -> {
-                    closeReason.await()?.let {
-                        log.warn { "Private WS close: ${it.message}" }
-                    }
-                    return
-                }
-                else -> {}
-            }
-        }
+    private suspend fun subscribe(session: DefaultClientWebSocketSession, channel: String, extra: Map<String, String>) {
+        val payload = mapOf("op" to "subscribe", "args" to listOf(mapOf("channel" to channel) + extra))
+        session.send(Frame.Text(objectMapper.writeValueAsString(payload)))
     }
 
     private fun handleText(text: String) {
         try {
-            val root: Map<String, Any?> = mapper.readValue(text)
+            val root: Map<String, Any?> = objectMapper.readValue(text)
+            val arg = root["arg"] as? Map<*, *> ?: return
+            val channel = arg["channel"] as? String ?: return
 
-            val event = root["event"] as? String
-            if (event == "subscribe" || event == "login" || text == "pong") return
-
-            val arg = root["arg"] as? Map<*, *>
-            val channel = arg?.get("channel") as? String ?: return
-            val dataList = root["data"] as? List<*> ?: return
-            if (dataList.isEmpty()) return
-            val payloads = dataList.mapNotNull { it as? Map<String, Any?> }
-            if (payloads.isEmpty()) return
-            payloads.forEach { payload ->
-                when (channel) {
-                    "orders" -> _orderFlow.tryEmit(payload)
-                    "positions" -> _positionFlow.tryEmit(payload)
-                    "account" -> _accountFlow.tryEmit(payload)
+            when (channel) {
+                "orders" -> {
+                    val env = objectMapper.readValue(text, OkxWsTypeRefs.orders)
+                    env.data?.forEach { _orderFlow.tryEmit(it) }
+                }
+                "positions" -> {
+                    val env = objectMapper.readValue(text,OkxWsTypeRefs.positions)
+                    env.data?.forEach { _positionFlow.tryEmit(it) }
+                }
+                "account" -> {
+                    val env = objectMapper.readValue(text, OkxWsTypeRefs.account)
+                    env.data?.forEach { _accountFlow.tryEmit(it) }
                 }
             }
         } catch (e: Exception) {
-            log.debug(e) { "Failed to parse private WS message: ${text.take(200)}" }
+            // Avoid chatty logs, keep at debug with snippet
+            // log.debug(e) { "Private WS parse failed: ${text.take(200)}" }
         }
-    }
-
-    private fun sign(message: String, secretKey: String): String {
-        val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(secretKey.toByteArray(Charsets.UTF_8), "HmacSHA256"))
-        val raw = mac.doFinal(message.toByteArray(Charsets.UTF_8))
-        return Base64.getEncoder().encodeToString(raw)
     }
 }

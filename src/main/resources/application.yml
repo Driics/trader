@@ -10,8 +10,8 @@ okx:
       pending-acquire-timeout-ms: 5000
 
   api-key: ${OKX_API_KEY:your-okx-api-key}
-  secret-key: ${OKX_SECRET:your-okx-secret}
-  passphrase: ${OKX_PASSPHRASE:your-okx-passphrase}
+  secret-key: ${OKX_API_SECRET:your-okx-secret}
+  passphrase: ${OKX_API_PASSPHRASE:your-okx-passphrase}
 
 # Trading Configuration
 trading:

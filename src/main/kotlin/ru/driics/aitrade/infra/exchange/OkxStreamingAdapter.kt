@@ -10,7 +10,10 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.config.TradingProperties
-import ru.driics.aitrade.domain.ports.*
+import ru.driics.aitrade.domain.ports.OrderEvent
+import ru.driics.aitrade.domain.ports.PositionEvent
+import ru.driics.aitrade.domain.ports.PriceUpdate
+import ru.driics.aitrade.domain.ports.StreamingMarketDataPort
 import ru.driics.aitrade.infra.exchange.websocket.OkxPrivateWebSocketClient
 import ru.driics.aitrade.infra.exchange.websocket.OkxPublicWebSocketClient
 import java.math.BigDecimal
@@ -47,8 +50,8 @@ class OkxStreamingAdapter(
             // Maintain last price cache
             launch {
                 publicWs.tickerFlow.collect { m ->
-                    val instId = (m["instId"] as? String) ?: return@collect
-                    val last = (m["last"] as? String)?.toBigDecimalOrNull() ?: return@collect
+                    val instId = m.instId
+                    val last = m.last.toBigDecimalOrNull() ?: return@collect
                     lastPrice[instId] = last
                 }
             }
@@ -62,17 +65,14 @@ class OkxStreamingAdapter(
 
     override fun observePriceUpdates(instId: String): Flow<PriceUpdate> =
         publicWs.tickerFlow
-            .filter { it["instId"] == instId }
+            .filter { it.instId == instId }
             .map {
-                val last = it["last"] as? String ?: run {
-                    log.warn { "Missing 'last' price in ticker for $instId" }
-                    return@map null
-                }
+                val last = it.last
                 val price = last.toBigDecimalOrNull() ?: run {
                     log.warn { "Invalid price format in ticker: $last" }
                     return@map null
                 }
-                val ts = (it["ts"] as? String)?.toLongOrNull() ?: run {
+                val ts = it.ts.toLongOrNull() ?: run {
                     log.warn { "Missing timestamp in ticker for $instId" }
                     return@map null
                 }
@@ -81,13 +81,13 @@ class OkxStreamingAdapter(
 
     override fun observeOrderUpdates(): Flow<OrderEvent> =
         privateWs.orderFlow.map {
-            val instId = it["instId"] as? String ?: return@map null
-            val ordId = it["ordId"] as? String ?: return@map null
-            val clOrdId = it["clOrdId"] as? String
-            val state = it["state"] as? String ?: return@map null
-            val side = it["side"] as? String ?: return@map null
-            val avgPx = (it["avgPx"] as? String)?.toBigDecimalOrNull()
-            val ts = (it["ts"] as? String)?.toLongOrNull() ?: run {
+            val instId = it.instId
+            val ordId = it.ordId
+            val clOrdId = it.clOrdId
+            val state = it.state
+            val side = it.side
+            val avgPx = it.avgPx?.toBigDecimalOrNull()
+            val ts = it.ts.toLongOrNull() ?: run {
                 log.warn { "Missing timestamp in order event for $instId" }
                 return@map null
             }
@@ -96,14 +96,14 @@ class OkxStreamingAdapter(
 
     override fun observePositionUpdates(): Flow<PositionEvent> =
         privateWs.positionFlow.map {
-            val instId = it["instId"] as? String ?: return@map null
-            val posStr = it["pos"] as? String ?: return@map null
+            val instId = it.instId
+            val posStr = it.pos
             val pos = posStr.toBigDecimalOrNull() ?: return@map null
-            val avgPxStr = it["avgPx"] as? String ?: return@map null
+            val avgPxStr = it.avgPx
             val avgPx = avgPxStr.toBigDecimalOrNull() ?: return@map null
-            val uplStr = it["upl"] as? String ?: return@map null
+            val uplStr = it.upl
             val upl = uplStr.toBigDecimalOrNull() ?: return@map null
-            val ts = (it["ts"] as? String)?.toLongOrNull() ?: run {
+            val ts = it.ts.toLongOrNull() ?: run {
                 log.warn { "Missing timestamp in position event for $instId" }
                 return@map null
             }
