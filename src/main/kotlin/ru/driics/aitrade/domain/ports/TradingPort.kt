@@ -1,19 +1,27 @@
 package ru.driics.aitrade.domain.ports
 
 import ru.driics.aitrade.domain.model.MarginMode
-import ru.driics.aitrade.domain.types.TradeResult
 import ru.driics.aitrade.domain.model.OkxInstrumentInfo
+import ru.driics.aitrade.domain.types.InstrumentId
+import ru.driics.aitrade.domain.types.TradeResult
 import java.math.BigDecimal
 
+/**
+ * Port for trading operations.
+ */
 interface TradingPort {
-    suspend fun loadInstrument(instId: String): TradeResult<OkxInstrumentInfo>
+    suspend fun loadInstrument(instrumentId: InstrumentId): TradeResult<OkxInstrumentInfo>
 
-    suspend fun getLastPrice(instId: String): TradeResult<BigDecimal?>
+    suspend fun getLastPrice(instrumentId: InstrumentId): TradeResult<BigDecimal?>
 
-    suspend fun setLeverage(instId: String, leverage: Int, marginMode: MarginMode): TradeResult<Boolean>
+    suspend fun setLeverage(
+        instrumentId: InstrumentId,
+        leverage: Int,
+        marginMode: MarginMode
+    ): TradeResult<Boolean>
 
     suspend fun placeMarketOrderWithTpSl(
-        instId: String,
+        instrumentId: InstrumentId,
         side: String,
         contracts: BigDecimal,
         tp: BigDecimal?,

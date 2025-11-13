@@ -4,27 +4,19 @@ import com.github.benmanes.caffeine.cache.Caffeine
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.plugins.*
 import io.opentelemetry.api.trace.Tracer
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
 import org.springframework.stereotype.Service
 import ru.driics.aitrade.common.traced
 import ru.driics.aitrade.config.TradingProperties
-import ru.driics.aitrade.domain.model.AccountInfo
-import ru.driics.aitrade.domain.model.CurrencyMarketData
-import ru.driics.aitrade.domain.model.MarginMode
-import ru.driics.aitrade.domain.model.MarketState
-import ru.driics.aitrade.domain.model.OkxCandleResponse
-import ru.driics.aitrade.domain.model.OkxInstrumentInfo
-import ru.driics.aitrade.domain.model.Position
+import ru.driics.aitrade.domain.model.*
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PlaceOrderOutcome
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.IndicatorCalculator
+import ru.driics.aitrade.domain.types.InstrumentId
+import ru.driics.aitrade.domain.types.Symbol
 import ru.driics.aitrade.domain.types.TradeResult
 import ru.driics.aitrade.domain.util.quantize
 import ru.driics.aitrade.service.OkxRestClient
@@ -54,21 +46,24 @@ class OkxExchangeAdapter(
 
     private val candles4HCache = Candles4HCache()
 
-    override suspend fun loadMarketState(symbols: List<String>): MarketState = withContext(Dispatchers.IO) {
+    override suspend fun loadMarketState(symbols: List<Symbol>): MarketState = withContext(Dispatchers.IO) {
         val count = invocationCount.incrementAndGet()
         log.debug { "Loading market state for ${symbols.size} symbols (invocation #$count)" }
 
         val semaphore = Semaphore(tradingProperties.maxConcurrentSymbols)
 
-        val currencies = symbols.associateWith { symbol ->
+        // Convert Symbol to String for internal processing
+        val symbolStrings = symbols.map { it.value }
+
+        val currencies = symbolStrings.associateWith { symbolStr ->
             async(Dispatchers.IO) {
                 semaphore.withPermit {
                     withTimeout(5000) {
                         runCatching {
-                            fetchCurrencyData(symbol)
+                            fetchCurrencyData(symbolStr)
                         }.getOrElse { e ->
-                            log.error(e) { "Failed to fetch data for $symbol" }
-                            createEmptyCurrencyData(symbol)
+                            log.error(e) { "Failed to fetch data for $symbolStr" }
+                            createEmptyCurrencyData(symbolStr)
                         }
                     }
                 }
@@ -295,37 +290,47 @@ class OkxExchangeAdapter(
         }
     }
 
-    override suspend fun loadInstrument(instId: String): TradeResult<OkxInstrumentInfo> {
+    override suspend fun loadInstrument(instrumentId: InstrumentId): TradeResult<OkxInstrumentInfo> {
+        val instIdStr = instrumentId.value
         return try {
-            val cached = instrumentCache.getIfPresent(instId)
+            val cached = instrumentCache.getIfPresent(instIdStr)
+            if (cached != null) {
+                return TradeResult.Success(cached)
+            }
+
+            val info = rest.getSwapInstrument(instIdStr)
+            if (info != null) {
+                instrumentCache.put(instIdStr, info)
+            }
             if (cached != null)
                 return TradeResult.Success(cached)
 
-            val instrumentInfo = rest.getSwapInstrument(instId)
+            val instrumentInfo = rest.getSwapInstrument(instIdStr)
                 ?: return TradeResult.Failure.ApiError(
                     code = "INSTRUMENT_NOT_FOUND",
-                    message = "Instrument $instId not found"
+                    message = "Instrument $instIdStr not found"
                 )
 
-            instrumentCache.put(instId, instrumentInfo)
+            instrumentCache.put(instIdStr, instrumentInfo)
             TradeResult.Success(instrumentInfo)
         } catch (e: ClientRequestException) {
             TradeResult.Failure.NetworkError(
-                message = "HTTP ${e.response.status.value} fetching instrument $instId",
+                message = "HTTP ${e.response.status.value} fetching instrument $instIdStr",
                 cause = e
             )
         } catch (e: Exception) {
             TradeResult.Failure.ApiError(
                 code = "UNKNOWN_ERROR",
-                message = "Error loading instrument $instId: ${e.message}",
+                message = "Error loading instrument $instIdStr: ${e.message}",
                 cause = e
             )
         }
     }
 
-    override suspend fun getLastPrice(instId: String): TradeResult<BigDecimal?> {
+    override suspend fun getLastPrice(instrumentId: InstrumentId): TradeResult<BigDecimal?> {
+        val instIdStr = instrumentId.value
         return try {
-            val t = rest.fetchTicker(instId)
+            val t = rest.fetchTicker(instIdStr)
             val lastPrice = t?.lastPrice?.toBigDecimalOrNull()
                 ?: t?.askPrice?.toBigDecimalOrNull()
                 ?: t?.bidPrice?.toBigDecimalOrNull()
@@ -334,31 +339,37 @@ class OkxExchangeAdapter(
         } catch (e: Exception) {
             TradeResult.Failure.ApiError(
                 code = "UNKOWN_ERROR",
-                message = "Error loading instrument $instId: ${e.message}",
+                message = "Error loading instrument $instIdStr: ${e.message}",
                 cause = e
             )
         }
     }
 
-    override suspend fun setLeverage(instId: String, leverage: Int, marginMode: MarginMode): TradeResult<Boolean> =
-        try {
-            val leverage = rest.setLeverage(
-                instId,
+    override suspend fun setLeverage(
+        instrumentId: InstrumentId,
+        leverage: Int,
+        marginMode: MarginMode
+    ): TradeResult<Boolean> {
+        val instIdStr = instrumentId.value
+        return try {
+            val success = rest.setLeverage(
+                instId = instIdStr,
                 leverage,
                 marginMode
             )
 
-            TradeResult.Success(leverage)
+            TradeResult.Success(success)
         } catch (e: Exception) {
             TradeResult.Failure.ApiError(
                 code = "UNKNOWN_ERROR",
-                message = "Failed to set leverage $leverage for $instId in ${marginMode.asOkxApiValue} mode",
+                message = "Failed to set leverage $leverage for $instIdStr in ${marginMode.asOkxApiValue} mode",
                 cause = e
             )
         }
+    }
 
     override suspend fun placeMarketOrderWithTpSl(
-        instId: String,
+        instrumentId: InstrumentId,
         side: String,
         contracts: BigDecimal,
         tp: BigDecimal?,
@@ -367,45 +378,48 @@ class OkxExchangeAdapter(
         clOrdId: String,
         tag: String?,
         marginMode: MarginMode
-    ): TradeResult<PlaceOrderOutcome> = try {
-        val tpStr = tp?.quantize(tickSz)?.toPlainString()
-        val slStr = sl?.quantize(tickSz)?.toPlainString()
+    ): TradeResult<PlaceOrderOutcome> {
+        val instIdStr = instrumentId.value
+        return try {
+            val tpStr = tp?.quantize(tickSz)?.toPlainString()
+            val slStr = sl?.quantize(tickSz)?.toPlainString()
 
-        val res = rest.placeMarketOrderWithAttach(
-            instId = instId,
-            side = side,
-            tdMode = marginMode.asOkxApiValue,
-            szContracts = contracts.stripTrailingZeros().toPlainString(),
-            tpPx = tpStr,
-            slPx = slStr,
-            posSide = null,
-            clOrdId = clOrdId,
-            tag = tag
-        )
-
-        when {
-            res == null -> TradeResult.Failure.ApiError(
-                code = "ORDER_REJECTED",
-                message = "Order placement failed"
+            val res = rest.placeMarketOrderWithAttach(
+                instId = instIdStr,
+                side = side,
+                tdMode = marginMode.asOkxApiValue,
+                szContracts = contracts.stripTrailingZeros().toPlainString(),
+                tpPx = tpStr,
+                slPx = slStr,
+                posSide = null,
+                clOrdId = clOrdId,
+                tag = tag
             )
 
-            res.sCode == "0" -> TradeResult.Success(
-                PlaceOrderOutcome(
-                    ok = true,
-                    ordId = res.ordId,
-                    message = "Order placed successfully"
+            when {
+                res == null -> TradeResult.Failure.ApiError(
+                    code = "ORDER_REJECTED",
+                    message = "Order placement failed"
                 )
-            )
 
-            else -> TradeResult.Failure.ApiError(
-                code = res.sCode ?: "UNKNOWN",
-                message = res.sMsg ?: "Order rejected"
+                res.sCode == "0" -> TradeResult.Success(
+                    PlaceOrderOutcome(
+                        ok = true,
+                        ordId = res.ordId,
+                        message = "Order placed successfully"
+                    )
+                )
+
+                else -> TradeResult.Failure.ApiError(
+                    code = res.sCode ?: "UNKNOWN",
+                    message = res.sMsg ?: "Order rejected"
+                )
+            }
+        } catch (e: Exception) {
+            TradeResult.Failure.NetworkError(
+                message = "Failed to place order: ${e.message}",
+                cause = e
             )
         }
-    } catch (e: Exception) {
-        TradeResult.Failure.NetworkError(
-            message = "Failed to place order: ${e.message}",
-            cause = e
-        )
     }
 }

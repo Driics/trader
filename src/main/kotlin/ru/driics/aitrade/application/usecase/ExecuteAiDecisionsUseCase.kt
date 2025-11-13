@@ -1,31 +1,23 @@
 package ru.driics.aitrade.application.usecase
 
 import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.time.withTimeout
-import kotlinx.coroutines.withTimeout
 import ru.driics.aitrade.config.TradingProperties
-import ru.driics.aitrade.domain.model.AIAction
-import ru.driics.aitrade.domain.model.AiSignal
-import ru.driics.aitrade.domain.model.AiTradeDecisionMap
-import ru.driics.aitrade.domain.model.AiTradeExecutionResult
-import ru.driics.aitrade.domain.model.AiTradeSignalArgs
-import ru.driics.aitrade.domain.util.isPositive
+import ru.driics.aitrade.domain.model.*
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.IdGenerator
 import ru.driics.aitrade.domain.services.OrderSizingPolicy
+import ru.driics.aitrade.domain.types.InstrumentId
 import ru.driics.aitrade.domain.types.asSymbol
 import ru.driics.aitrade.domain.types.getOrNull
 import ru.driics.aitrade.domain.types.getOrThrow
+import ru.driics.aitrade.domain.util.isPositive
 import java.math.BigDecimal
 import java.math.RoundingMode
-import java.util.Locale
+import java.util.*
 import kotlin.time.Duration.Companion.seconds
 
 class ExecuteAiDecisionsUseCase(
@@ -49,10 +41,10 @@ class ExecuteAiDecisionsUseCase(
     suspend fun execute(decisions: AiTradeDecisionMap): List<AiTradeExecutionResult> = coroutineScope {
         log.info { "Executing AI trading decisions" }
 
-        val supported = tradingProperties.getCurrenciesList().map { it.asSymbol().value }.toSet()
+        val supported = tradingProperties.getCurrenciesList().map { it }.toSet()
         // Load current state with timeout
         val state = withTimeout(30.seconds) {
-            market.loadMarketState(supported.toList())
+            market.loadMarketState(supported.map { it.asSymbol() })
         }
 
         // Build plans in parallel with error handling
@@ -62,7 +54,7 @@ class ExecuteAiDecisionsUseCase(
                     buildPlan(env.args, supported)
                 }.getOrElse { e ->
                     log.error(e) { "Failed to build plan for ${env.args.coin}" }
-                    PlanResult.Skip(env.args.coin.asSymbol().value, "Plan build error: ${e.message}")
+                    PlanResult.Skip(env.args.coin, "Plan build error: ${e.message}")
                 }
             }
         }.awaitAll()
@@ -123,7 +115,7 @@ class ExecuteAiDecisionsUseCase(
     )
 
     private suspend fun buildPlan(args: AiTradeSignalArgs, supported: Set<String>): PlanResult {
-        val symbol = args.coin.asSymbol().value
+        val symbol = args.coin
         if (symbol !in supported) return PlanResult.Skip(symbol, "Not in configured list")
 
         if (args.signal == AiSignal.HOLD) return PlanResult.Skip(symbol, "Hold signal")
@@ -133,11 +125,10 @@ class ExecuteAiDecisionsUseCase(
             return PlanResult.Skip(symbol, "Confidence $confidence < $minConfidence")
         }
 
-        val instId = "${symbol}-USDT-SWAP"
-        val inst = trading.loadInstrument(instId).getOrNull()
-            ?: return PlanResult.Skip(symbol, "No instrument info")
+        val instrumentId = InstrumentId.fromSymbol(symbol)
+        val inst = trading.loadInstrument(instrumentId).getOrThrow()
 
-        val entryPx = trading.getLastPrice(instId).getOrNull()
+        val entryPx = trading.getLastPrice(instrumentId).getOrNull()
             ?: return PlanResult.Skip(symbol, "No price available")
 
         val sl = args.stopLoss
@@ -175,7 +166,7 @@ class ExecuteAiDecisionsUseCase(
         return PlanResult.Ready(
             OrderPlan(
                 symbol = symbol,
-                instId = instId,
+                instId = instrumentId.value,
                 side = side,
                 leverage = lev,
                 coinQty = coinQty,
@@ -211,7 +202,7 @@ class ExecuteAiDecisionsUseCase(
         )
 
         val marginMode = tradingProperties.getMarginMode()
-        val levOk = trading.setLeverage(plan.instId, sizing.leverage, marginMode).getOrThrow()
+        val levOk = trading.setLeverage(InstrumentId.fromSymbol(plan.instId), sizing.leverage, marginMode).getOrThrow()
         if (!levOk) {
             return AiTradeExecutionResult(
                 symbol = plan.symbol,
@@ -225,7 +216,7 @@ class ExecuteAiDecisionsUseCase(
         val tag = IdGenerator.safeTag("ai-signal")
 
         val outcome = trading.placeMarketOrderWithTpSl(
-            instId = plan.instId,
+            instrumentId = InstrumentId.fromSymbol(plan.instId),
             side = plan.side,
             contracts = sizing.roundedContracts,
             tp = plan.tpPx,

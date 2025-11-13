@@ -14,6 +14,7 @@ import ru.driics.aitrade.domain.model.AccountInfo
 import ru.driics.aitrade.domain.model.AiTradeDecisionMap
 import ru.driics.aitrade.domain.model.AiTradeExecutionResult
 import ru.driics.aitrade.domain.model.Position
+import ru.driics.aitrade.domain.types.asSymbol
 import java.security.MessageDigest
 import java.time.Clock
 import java.util.Locale
@@ -157,9 +158,9 @@ class UpdateCycleOrchestrator(
         )
     }
 
-    suspend fun getAccountInfo(): AccountInfo = market.loadMarketState(symbols).account
+    suspend fun getAccountInfo(): AccountInfo = market.loadMarketState(symbols.map { it.asSymbol() }).account
 
-    suspend fun getPositions(): List<Position> = market.loadMarketState(symbols).positions
+    suspend fun getPositions(): List<Position> = market.loadMarketState(symbols.map { it.asSymbol() }).positions
 
     fun getSessionStartTime(): Long = sessionStartTime.get()
 
