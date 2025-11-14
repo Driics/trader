@@ -11,26 +11,17 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.micrometer.core.instrument.MeterRegistry
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.withTimeout
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
 import org.springframework.stereotype.Service
 import ru.driics.aitrade.common.timeOkx
+import ru.driics.aitrade.common.withTimeoutAndLog
 import ru.driics.aitrade.config.OkxHttpProperties
 import ru.driics.aitrade.config.OkxProperties
-import ru.driics.aitrade.domain.model.MarginMode
-import ru.driics.aitrade.domain.model.OkxAccountApiResponse
-import ru.driics.aitrade.domain.model.OkxAccountResponse
-import ru.driics.aitrade.domain.model.OkxApiResponse
-import ru.driics.aitrade.domain.model.OkxCandleResponse
-import ru.driics.aitrade.domain.model.OkxCandlesApiResponse
-import ru.driics.aitrade.domain.model.OkxFundingResponse
-import ru.driics.aitrade.domain.model.OkxInstrumentInfo
-import ru.driics.aitrade.domain.model.OkxOpenInterestResponse
-import ru.driics.aitrade.domain.model.OkxPlaceOrderApiResponse
-import ru.driics.aitrade.domain.model.OkxPlaceOrderData
-import ru.driics.aitrade.domain.model.OkxPositionResponse
-import ru.driics.aitrade.domain.model.OkxPublicInstrumentsApiResponse
-import ru.driics.aitrade.domain.model.OkxTickerResponse
+import ru.driics.aitrade.config.TradingProperties
+import ru.driics.aitrade.domain.model.*
 import java.math.BigDecimal
 
 @Service
@@ -40,7 +31,8 @@ class OkxRestClient(
     private val okxKtorClient: HttpClient,
     private val okxAuthService: OkxAuthService,
     private val meterRegistry: MeterRegistry,
-    private val objectMapper: ObjectMapper
+    private val objectMapper: ObjectMapper,
+    private val tradingProperties: TradingProperties
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -52,22 +44,27 @@ class OkxRestClient(
 
         return meterRegistry.timeOkx("fetchTicker", { arrayOf("status", status) }) {
             try {
-                val url = "${okxProperties.baseUrl}/api/v5/market/ticker?instId=$instId"
-                val response: HttpResponse = okxKtorClient.get(url)
-                val body = response.bodyAsText()
-                val apiResponse = objectMapper.readValue<OkxApiResponse<OkxTickerResponse>>(body)
+                withTimeoutAndLog(tradingProperties.okxTimeouts.ticker.toMillis(), null, "fetchTicker($instId)") {
+                    val url = "${okxProperties.baseUrl}/api/v5/market/ticker?instId=$instId"
+                    val response: HttpResponse = okxKtorClient.get(url)
+                    val body = response.bodyAsText()
+                    val apiResponse = objectMapper.readValue<OkxApiResponse<OkxTickerResponse>>(body)
 
-                if (!apiResponse.isSuccess()) {
-                    status = "api_error_${apiResponse.code}"
-                    log.warn("OKX API error for ticker $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
-                    return@timeOkx null
-                }
+                    if (!apiResponse.isSuccess()) {
+                        status = "api_error_${apiResponse.code}"
+                        log.warn("OKX API error for ticker $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
+                        return@withTimeoutAndLog null
+                    }
 
-                apiResponse.getFirstOrNull() ?: run {
-                    status = "empty_data"
-                    log.warn("No ticker data found for $instId")
-                    null
+                    apiResponse.getFirstOrNull() ?: run {
+                        status = "empty_data"
+                        log.warn("No ticker data found for $instId")
+                        null
+                    }
                 }
+            } catch (e: TimeoutCancellationException) {
+                status = "timeout"
+                null
             } catch (e: ClientRequestException) {
                 status = "http_${e.response.status.value}"
                 log.error("HTTP error fetching ticker for $instId: ${e.response.status}", e)
@@ -93,18 +90,24 @@ class OkxRestClient(
 
         return meterRegistry.timeOkx("fetchCandles", { arrayOf("period", period, "status", status) }) {
             try {
-                val url = "${okxProperties.baseUrl}/api/v5/market/candles?instId=$instId&bar=$period&limit=$limit"
-                val response: HttpResponse = okxKtorClient.get(url)
-                val body = response.bodyAsText()
-                val apiResponse = objectMapper.readValue<OkxCandlesApiResponse>(body)
+                withTimeout(tradingProperties.okxTimeouts.candles.toMillis()) {
 
-                if (!apiResponse.isSuccess()) {
-                    status = "api_error_${apiResponse.code}"
-                    log.warn("OKX API error for candles $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
-                    return@timeOkx emptyList()
+                    val url = "${okxProperties.baseUrl}/api/v5/market/candles?instId=$instId&bar=$period&limit=$limit"
+                    val response: HttpResponse = okxKtorClient.get(url)
+                    val body = response.bodyAsText()
+                    val apiResponse = objectMapper.readValue<OkxCandlesApiResponse>(body)
+
+                    if (!apiResponse.isSuccess()) {
+                        status = "api_error_${apiResponse.code}"
+                        log.warn("OKX API error for candles $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
+                        return@withTimeout emptyList()
+                    }
+
+                    apiResponse.toCandles().sortedBy { it.timestamp.toLongOrNull() ?: Long.MAX_VALUE }
+
                 }
-
-                apiResponse.toCandles().sortedBy { it.timestamp.toLongOrNull() ?: Long.MAX_VALUE }
+            } catch (e: TimeoutCancellationException) {
+                status = "timeout"; emptyList()
             } catch (e: ClientRequestException) {
                 status = "http_${e.response.status.value}"
                 log.error("HTTP error fetching candles for $instId, period: $period: ${e.response.status}", e)
@@ -130,21 +133,23 @@ class OkxRestClient(
 
         return meterRegistry.timeOkx("fetchFundingRate", { arrayOf("status", status) }) {
             try {
-                val url = "${okxProperties.baseUrl}/api/v5/public/funding-rate?instId=$instId"
-                val response: HttpResponse = okxKtorClient.get(url)
-                val body = response.bodyAsText()
-                val apiResponse = objectMapper.readValue<OkxApiResponse<OkxFundingResponse>>(body)
+                withTimeout(tradingProperties.okxTimeouts.funding.toMillis()) {
+                    val url = "${okxProperties.baseUrl}/api/v5/public/funding-rate?instId=$instId"
+                    val response: HttpResponse = okxKtorClient.get(url)
+                    val body = response.bodyAsText()
+                    val apiResponse = objectMapper.readValue<OkxApiResponse<OkxFundingResponse>>(body)
 
-                if (!apiResponse.isSuccess()) {
-                    status = "api_error_${apiResponse.code}"
-                    log.warn("OKX API error for funding rate $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
-                    return@timeOkx null
-                }
+                    if (!apiResponse.isSuccess()) {
+                        status = "api_error_${apiResponse.code}"
+                        log.warn("OKX API error for funding rate $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
+                        return@withTimeout null
+                    }
 
-                apiResponse.getFirstOrNull()?.fundingRate?.toBigDecimalOrNull() ?: run {
-                    status = "empty_data"
-                    log.debug("No funding rate data for $instId")
-                    null
+                    apiResponse.getFirstOrNull()?.fundingRate?.toBigDecimalOrNull() ?: run {
+                        status = "empty_data"
+                        log.debug("No funding rate data for $instId")
+                        null
+                    }
                 }
             } catch (e: Exception) {
                 status = "error"
@@ -162,21 +167,23 @@ class OkxRestClient(
 
         return meterRegistry.timeOkx("fetchOpenInterest", { arrayOf("status", status) }) {
             try {
-                val url = "${okxProperties.baseUrl}/api/v5/public/open-interest?instId=$instId"
-                val response: HttpResponse = okxKtorClient.get(url)
-                val body = response.bodyAsText()
-                val apiResponse = objectMapper.readValue<OkxApiResponse<OkxOpenInterestResponse>>(body)
+                withTimeout(tradingProperties.okxTimeouts.funding.toMillis()) {
+                    val url = "${okxProperties.baseUrl}/api/v5/public/open-interest?instId=$instId"
+                    val response: HttpResponse = okxKtorClient.get(url)
+                    val body = response.bodyAsText()
+                    val apiResponse = objectMapper.readValue<OkxApiResponse<OkxOpenInterestResponse>>(body)
 
-                if (!apiResponse.isSuccess()) {
-                    status = "api_error_${apiResponse.code}"
-                    log.warn("OKX API error for open interest $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
-                    return@timeOkx null
-                }
+                    if (!apiResponse.isSuccess()) {
+                        status = "api_error_${apiResponse.code}"
+                        log.warn("OKX API error for open interest $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
+                        return@withTimeout null
+                    }
 
-                apiResponse.getFirstOrNull()?.openInterest?.toBigDecimalOrNull() ?: run {
-                    status = "empty_data"
-                    log.debug("No open interest data for $instId")
-                    null
+                    apiResponse.getFirstOrNull()?.openInterest?.toBigDecimalOrNull() ?: run {
+                        status = "empty_data"
+                        log.debug("No open interest data for $instId")
+                        null
+                    }
                 }
             } catch (e: Exception) {
                 status = "error"
@@ -194,43 +201,45 @@ class OkxRestClient(
 
         return meterRegistry.timeOkx("fetchAccount", { arrayOf("status", status) }) {
             try {
-                val path = "/api/v5/account/balance"
-                val url = "${okxProperties.baseUrl}$path"
-                val authHeaders = okxAuthService.createAuthHeaders("GET", path)
+                withTimeout(tradingProperties.okxTimeouts.account.toMillis()) {
+                    val path = "/api/v5/account/balance"
+                    val url = "${okxProperties.baseUrl}$path"
+                    val authHeaders = okxAuthService.createAuthHeaders("GET", path)
 
-                val response: HttpResponse = okxKtorClient.get(url) {
-                    authHeaders.forEach { (key, value) -> header(key, value) }
+                    val response: HttpResponse = okxKtorClient.get(url) {
+                        authHeaders.forEach { (key, value) -> header(key, value) }
+                    }
+
+                    val body = response.bodyAsText()
+                    val apiResponse = objectMapper.readValue<OkxAccountApiResponse>(body)
+
+                    if (!apiResponse.isSuccess()) {
+                        status = "api_error_${apiResponse.code}"
+                        log.warn("OKX API error for account - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
+                        return@withTimeout OkxAccountResponse("0", "0", "0", "0")
+                    }
+
+                    val data = apiResponse.getFirstOrNull()
+                        ?: return@withTimeout OkxAccountResponse("0", "0", "0", "0")
+
+                    val totalEq = data.totalEquity.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                    val availEqUsd = data.availableEquityUsd.toBigDecimalOrNull() ?: BigDecimal.ZERO
+                    val usdtAvailBal = data.details.firstOrNull { it.currency.equals("USDT", ignoreCase = true) }
+                        ?.availableBalance?.toBigDecimalOrNull()
+
+                    val derivedAvailable = when {
+                        availEqUsd > BigDecimal.ZERO -> availEqUsd
+                        usdtAvailBal != null -> usdtAvailBal
+                        else -> BigDecimal.ZERO
+                    }
+
+                    OkxAccountResponse(
+                        totalEquity = totalEq.toPlainString(),
+                        availableBalance = derivedAvailable.toPlainString(),
+                        cashBalance = data.cashBalance,
+                        unrealizedPnl = data.unrealizedPnl
+                    )
                 }
-
-                val body = response.bodyAsText()
-                val apiResponse = objectMapper.readValue<OkxAccountApiResponse>(body)
-
-                if (!apiResponse.isSuccess()) {
-                    status = "api_error_${apiResponse.code}"
-                    log.warn("OKX API error for account - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
-                    return@timeOkx OkxAccountResponse("0", "0", "0", "0")
-                }
-
-                val data = apiResponse.getFirstOrNull()
-                    ?: return@timeOkx OkxAccountResponse("0", "0", "0", "0")
-
-                val totalEq = data.totalEquity.toBigDecimalOrNull() ?: BigDecimal.ZERO
-                val availEqUsd = data.availableEquityUsd.toBigDecimalOrNull() ?: BigDecimal.ZERO
-                val usdtAvailBal = data.details.firstOrNull { it.currency.equals("USDT", ignoreCase = true) }
-                    ?.availableBalance?.toBigDecimalOrNull()
-
-                val derivedAvailable = when {
-                    availEqUsd > BigDecimal.ZERO -> availEqUsd
-                    usdtAvailBal != null -> usdtAvailBal
-                    else -> BigDecimal.ZERO
-                }
-
-                OkxAccountResponse(
-                    totalEquity = totalEq.toPlainString(),
-                    availableBalance = derivedAvailable.toPlainString(),
-                    cashBalance = data.cashBalance,
-                    unrealizedPnl = data.unrealizedPnl
-                )
             } catch (e: Exception) {
                 status = "error"
                 log.error("Error fetching account info", e)
@@ -247,28 +256,30 @@ class OkxRestClient(
 
         return meterRegistry.timeOkx("fetchOpenPositions", { arrayOf("status", status) }) {
             try {
-                val path = "/api/v5/account/positions?instType=SWAP"
-                val url = "${okxProperties.baseUrl}$path"
-                val authHeaders = okxAuthService.createAuthHeaders("GET", path)
+                withTimeout(tradingProperties.okxTimeouts.account.toMillis()) {
+                    val path = "/api/v5/account/positions?instType=SWAP"
+                    val url = "${okxProperties.baseUrl}$path"
+                    val authHeaders = okxAuthService.createAuthHeaders("GET", path)
 
-                val response: HttpResponse = okxKtorClient.get(url) {
-                    authHeaders.forEach { (key, value) -> header(key, value) }
+                    val response: HttpResponse = okxKtorClient.get(url) {
+                        authHeaders.forEach { (key, value) -> header(key, value) }
+                    }
+
+                    val body = response.bodyAsText()
+                    val apiResponse = objectMapper.readValue<OkxApiResponse<OkxPositionResponse>>(body)
+
+                    if (!apiResponse.isSuccess()) {
+                        status = "api_error_${apiResponse.code}"
+                        log.warn("OKX API error for positions - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
+                        return@withTimeout emptyList()
+                    }
+
+                    apiResponse.data.ifEmpty {
+                        log.debug("No open positions found")
+                    }
+
+                    apiResponse.data
                 }
-
-                val body = response.bodyAsText()
-                val apiResponse = objectMapper.readValue<OkxApiResponse<OkxPositionResponse>>(body)
-
-                if (!apiResponse.isSuccess()) {
-                    status = "api_error_${apiResponse.code}"
-                    log.warn("OKX API error for positions - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
-                    return@timeOkx emptyList()
-                }
-
-                apiResponse.data.ifEmpty {
-                    log.debug("No open positions found")
-                }
-
-                apiResponse.data
             } catch (e: Exception) {
                 status = "error"
                 log.error("Error fetching open positions", e)
@@ -284,17 +295,19 @@ class OkxRestClient(
 
         return meterRegistry.timeOkx("getSwapInstrument", { arrayOf("status", status) }) {
             try {
-                val url = "${okxProperties.baseUrl}/api/v5/public/instruments?instType=SWAP&instId=$instId"
-                val response: HttpResponse = okxKtorClient.get(url)
-                val body = response.bodyAsText()
-                val apiResponse = objectMapper.readValue<OkxPublicInstrumentsApiResponse>(body)
+                withTimeout(tradingProperties.okxTimeouts.instruments.toMillis()) {
+                    val url = "${okxProperties.baseUrl}/api/v5/public/instruments?instType=SWAP&instId=$instId"
+                    val response: HttpResponse = okxKtorClient.get(url)
+                    val body = response.bodyAsText()
+                    val apiResponse = objectMapper.readValue<OkxPublicInstrumentsApiResponse>(body)
 
-                if (!apiResponse.isSuccess()) {
-                    status = "api_error"
-                    log.warn("Instruments fetch failed for $instId - code=${apiResponse.code}, msg=${apiResponse.msg}")
-                    null
-                } else {
-                    apiResponse.firstOrNull()
+                    if (!apiResponse.isSuccess()) {
+                        status = "api_error"
+                        log.warn("Instruments fetch failed for $instId - code=${apiResponse.code}, msg=${apiResponse.msg}")
+                        null
+                    } else {
+                        apiResponse.firstOrNull()
+                    }
                 }
             } catch (e: Exception) {
                 status = "error"
@@ -312,32 +325,34 @@ class OkxRestClient(
 
         return meterRegistry.timeOkx("setLeverage", { arrayOf("status", status) }) {
             try {
-                val path = "/api/v5/account/set-leverage"
-                val url = "${okxProperties.baseUrl}$path"
-                val payload = mutableMapOf(
-                    "instId" to instId,
-                    "lever" to leverage.toString(),
-                    "mgnMode" to marginMode.asOkxApiValue
-                )
-                posSide?.let { payload["posSide"] = it }
-                val bodyJson = objectMapper.writeValueAsString(payload)
-                val authHeaders = okxAuthService.createAuthHeaders("POST", path, bodyJson)
+                withTimeout(tradingProperties.okxTimeouts.setLeverage.toMillis()) {
+                    val path = "/api/v5/account/set-leverage"
+                    val url = "${okxProperties.baseUrl}$path"
+                    val payload = mutableMapOf(
+                        "instId" to instId,
+                        "lever" to leverage.toString(),
+                        "mgnMode" to marginMode.asOkxApiValue
+                    )
+                    posSide?.let { payload["posSide"] = it }
+                    val bodyJson = objectMapper.writeValueAsString(payload)
+                    val authHeaders = okxAuthService.createAuthHeaders("POST", path, bodyJson)
 
-                val response: HttpResponse = okxKtorClient.post(url) {
-                    authHeaders.forEach { (key, value) -> header(key, value) }
-                    contentType(ContentType.Application.Json)
-                    setBody(bodyJson)
+                    val response: HttpResponse = okxKtorClient.post(url) {
+                        authHeaders.forEach { (key, value) -> header(key, value) }
+                        contentType(ContentType.Application.Json)
+                        setBody(bodyJson)
+                    }
+
+                    val responseBody = response.bodyAsText()
+                    val responseMap = objectMapper.readValue<Map<String, Any>>(responseBody)
+                    val ok = (responseMap["code"]?.toString() == "0")
+
+                    if (!ok) {
+                        status = "failed"
+                        log.warn("Set leverage failed for $instId: body=$responseBody")
+                    }
+                    ok
                 }
-
-                val responseBody = response.bodyAsText()
-                val responseMap = objectMapper.readValue<Map<String, Any>>(responseBody)
-                val ok = (responseMap["code"]?.toString() == "0")
-
-                if (!ok) {
-                    status = "failed"
-                    log.warn("Set leverage failed for $instId: body=$responseBody")
-                }
-                ok
             } catch (e: Exception) {
                 status = "error"
                 log.error("Error setting leverage for $instId", e)
@@ -364,58 +379,60 @@ class OkxRestClient(
 
         return meterRegistry.timeOkx("placeOrder", { arrayOf("side", side, "status", status) }) {
             try {
-                clOrdId?.let { MDC.put("clOrdId", it) }
-                MDC.put("instId", instId)
-                MDC.put("side", side)
+                withTimeout(tradingProperties.okxTimeouts.placeOrder.toMillis()) {
+                    clOrdId?.let { MDC.put("clOrdId", it) }
+                    MDC.put("instId", instId)
+                    MDC.put("side", side)
 
-                val path = "/api/v5/trade/order"
-                val url = "${okxProperties.baseUrl}$path"
+                    val path = "/api/v5/trade/order"
+                    val url = "${okxProperties.baseUrl}$path"
 
-                val payload = mutableMapOf<String, Any>(
-                    "instId" to instId,
-                    "tdMode" to tdMode,
-                    "side" to side,
-                    "ordType" to "market",
-                    "sz" to szContracts
-                )
-                clOrdId?.let { payload["clOrdId"] = it }
-                tag?.let { payload["tag"] = it }
-                posSide?.let { payload["posSide"] = it }
-
-                val attach = mutableListOf<MutableMap<String, String>>()
-                if (!tpPx.isNullOrBlank()) {
-                    attach += mutableMapOf(
-                        "tpTriggerPx" to tpPx,
-                        "tpOrdPx" to tpPx,
-                        "tpOrdKind" to "limit"
+                    val payload = mutableMapOf<String, Any>(
+                        "instId" to instId,
+                        "tdMode" to tdMode,
+                        "side" to side,
+                        "ordType" to "market",
+                        "sz" to szContracts
                     )
+                    clOrdId?.let { payload["clOrdId"] = it }
+                    tag?.let { payload["tag"] = it }
+                    posSide?.let { payload["posSide"] = it }
+
+                    val attach = mutableListOf<MutableMap<String, String>>()
+                    if (!tpPx.isNullOrBlank()) {
+                        attach += mutableMapOf(
+                            "tpTriggerPx" to tpPx,
+                            "tpOrdPx" to tpPx,
+                            "tpOrdKind" to "limit"
+                        )
+                    }
+                    if (!slPx.isNullOrBlank()) {
+                        attach += mutableMapOf(
+                            "slTriggerPx" to slPx,
+                            "slOrdPx" to "-1"
+                        )
+                    }
+                    if (attach.isNotEmpty()) payload["attachAlgoOrds"] = attach
+
+                    val bodyJson = objectMapper.writeValueAsString(payload)
+                    val authHeaders = okxAuthService.createAuthHeaders("POST", path, bodyJson)
+
+                    val response: HttpResponse = okxKtorClient.post(url) {
+                        authHeaders.forEach { (key, value) -> header(key, value) }
+                        contentType(ContentType.Application.Json)
+                        setBody(bodyJson)
+                    }
+
+                    val responseBody = response.bodyAsText()
+                    val apiResponse = objectMapper.readValue<OkxPlaceOrderApiResponse>(responseBody)
+
+                    if (!apiResponse.isSuccess()) {
+                        status = "rejected"
+                        log.warn("Order rejected $clOrdId: code=${apiResponse.code}, msg=${apiResponse.msg}, data=${apiResponse.data}")
+                    }
+
+                    apiResponse.firstOrNull()
                 }
-                if (!slPx.isNullOrBlank()) {
-                    attach += mutableMapOf(
-                        "slTriggerPx" to slPx,
-                        "slOrdPx" to "-1"
-                    )
-                }
-                if (attach.isNotEmpty()) payload["attachAlgoOrds"] = attach
-
-                val bodyJson = objectMapper.writeValueAsString(payload)
-                val authHeaders = okxAuthService.createAuthHeaders("POST", path, bodyJson)
-
-                val response: HttpResponse = okxKtorClient.post(url) {
-                    authHeaders.forEach { (key, value) -> header(key, value) }
-                    contentType(ContentType.Application.Json)
-                    setBody(bodyJson)
-                }
-
-                val responseBody = response.bodyAsText()
-                val apiResponse = objectMapper.readValue<OkxPlaceOrderApiResponse>(responseBody)
-
-                if (!apiResponse.isSuccess()) {
-                    status = "rejected"
-                    log.warn("Order rejected $clOrdId: code=${apiResponse.code}, msg=${apiResponse.msg}, data=${apiResponse.data}")
-                }
-
-                apiResponse.firstOrNull()
             } catch (e: Exception) {
                 status = "error"
                 log.error("Error placing order $clOrdId", e)
