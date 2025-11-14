@@ -167,7 +167,7 @@ class OkxRestClient(
 
         return meterRegistry.timeOkx("fetchOpenInterest", { arrayOf("status", status) }) {
             try {
-                withTimeout(tradingProperties.okxTimeouts.funding.toMillis()) {
+                withTimeout(tradingProperties.okxTimeouts.openInterest.toMillis()) {
                     val url = "${okxProperties.baseUrl}/api/v5/public/open-interest?instId=$instId"
                     val response: HttpResponse = okxKtorClient.get(url)
                     val body = response.bodyAsText()
