@@ -4,6 +4,9 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import ru.driics.aitrade.application.ai.ActionGuard
+import ru.driics.aitrade.application.ai.ConfidenceCalibrator
+import ru.driics.aitrade.application.ai.IdempotencyService
 import ru.driics.aitrade.common.logging.BusinessEventLogger
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.*
@@ -18,13 +21,15 @@ import ru.driics.aitrade.domain.types.getOrThrow
 import ru.driics.aitrade.domain.util.isPositive
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.time.Clock
 import java.util.*
 import kotlin.time.Duration.Companion.seconds
 
 class ExecuteAiDecisionsUseCase(
     private val trading: TradingPort,
     private val market: MarketDataPort,
-    private val tradingProperties: TradingProperties
+    private val tradingProperties: TradingProperties,
+    private val clock: Clock
 ) {
     companion object {
         private val log = KotlinLogging.logger {}
@@ -38,6 +43,10 @@ class ExecuteAiDecisionsUseCase(
         takerFeePct = tradingProperties.takerFeePct,
         marginBufferPct = tradingProperties.marginBufferPct
     )
+
+    private val actionGuard = ActionGuard(tradingProperties)
+    private val idempotencyService = IdempotencyService(clock)
+    private val confidenceCalibrator = ConfidenceCalibrator(tradingProperties, clock)
 
     suspend fun execute(decisions: AiTradeDecisionMap): List<AiTradeExecutionResult> = coroutineScope {
         log.info { "Executing AI trading decisions" }
@@ -81,7 +90,7 @@ class ExecuteAiDecisionsUseCase(
                             symbol = ready.plan.symbol,
                             action = AIAction.SKIPPED,
                             message = "Error:: ${e.message}",
-                            instId = ready.plan.instId,
+                            instId = ready.plan.instrumentId.value,
                             clOrdId = "",
                             requestedContracts = BigDecimal.ZERO
                         )
@@ -101,7 +110,7 @@ class ExecuteAiDecisionsUseCase(
 
     private data class OrderPlan(
         val symbol: String,
-        val instId: String,
+        val instrumentId: InstrumentId,
         val side: String,
         val leverage: Int,
         val coinQty: BigDecimal,
@@ -129,58 +138,80 @@ class ExecuteAiDecisionsUseCase(
         val instrumentId = InstrumentId.fromSymbol(symbol)
         val inst = trading.loadInstrument(instrumentId).getOrThrow()
 
-        val entryPx = trading.getLastPrice(instrumentId).getOrNull()
+        val lastPrice = trading.getLastPrice(instrumentId).getOrNull()
             ?: return PlanResult.Skip(symbol, "No price available")
 
-        val sl = args.stopLoss
-        val tp = args.profitTarget
-
-        val coinQty = when {
-            (args.quantity ?: BigDecimal.ZERO) > BigDecimal.ZERO -> args.quantity!!
-            args.riskUsd != null && sl != null && sl > BigDecimal.ZERO -> {
-                val riskPerUnit = (entryPx - sl).abs()
-                if (riskPerUnit > BigDecimal.ZERO)
-                    args.riskUsd.divide(riskPerUnit, 8, RoundingMode.HALF_UP)
-                else BigDecimal.ZERO
-            }
-            else -> BigDecimal.ZERO
+        // Check idempotency (deduplication)
+        val signalKey = idempotencyService.signalKey(symbol, args, lastPrice)
+        if (idempotencyService.isDuplicate(signalKey)) {
+            return PlanResult.Skip(symbol, "Duplicate signal (idempotency check)")
         }
 
-        if (coinQty <= BigDecimal.ZERO) {
-            return PlanResult.Skip(symbol, "Zero/unknown quantity")
-        }
-
-        val lev = (args.leverage ?: 10).coerceIn(minLev, maxLev)
-        val tick = inst.tickSz?.toBigDecimalOrNull()?.takeIf { it.isPositive() } ?: BigDecimal("0.01")
-        val lot = inst.lotSz?.toBigDecimalOrNull()?.takeIf { it.isPositive() } ?: BigDecimal.ONE
-        val min = inst.minSz?.toBigDecimalOrNull()?.takeIf { it.isPositive() } ?: lot
-        val ctVal = inst.ctVal?.toBigDecimalOrNull()?.takeIf { it.isPositive() }
-            ?: return PlanResult.Skip(symbol, "Invalid ctVal")
-        val ccy = (inst.ctValCcy ?: "").uppercase(Locale.ROOT)
-
-        val side = when (args.signal) {
-            AiSignal.BUY -> "buy"
-            AiSignal.SELL -> "sell"
-            AiSignal.HOLD -> return PlanResult.Skip(symbol, "Hold signal")
-        }
-
-        return PlanResult.Ready(
-            OrderPlan(
-                symbol = symbol,
-                instId = instrumentId.value,
-                side = side,
-                leverage = lev,
-                coinQty = coinQty,
-                entryPx = entryPx,
-                ctVal = ctVal,
-                ctValCcy = ccy,
-                minSz = min,
-                lotSz = lot,
-                tickSz = tick,
-                tpPx = tp,
-                slPx = sl
-            )
+        // Apply guardrails validation
+        val validation = actionGuard.validate(
+            plan = args,
+            instrumentInfo = inst,
+            lastPrice = lastPrice
         )
+
+        when (validation) {
+            is ActionGuard.ValidationResult.Rejected -> {
+                BusinessEventLogger.orderRejected(
+                    symbol = symbol,
+                    clOrdId = null,
+                    reason = validation.reason,
+                    errorCode = "GUARD_VIOLATION"
+                )
+                return PlanResult.Skip(symbol, "Guard violation: ${validation.reason}")
+            }
+            is ActionGuard.ValidationResult.Valid -> {
+                // Use validated and quantized values
+                val tick = inst.tickSz?.toBigDecimalOrNull()?.takeIf { it.isPositive() } ?: BigDecimal("0.01")
+                val lot = inst.lotSz?.toBigDecimalOrNull()?.takeIf { it.isPositive() } ?: BigDecimal.ONE
+                val min = inst.minSz?.toBigDecimalOrNull()?.takeIf { it.isPositive() } ?: lot
+                val ctVal = inst.ctVal?.toBigDecimalOrNull()?.takeIf { it.isPositive() }
+                    ?: return PlanResult.Skip(symbol, "Invalid ctVal")
+                val ccy = (inst.ctValCcy ?: "").uppercase(Locale.ROOT)
+
+                // Calculate quantity if not provided
+                val coinQty = validation.quantizedQuantity ?: run {
+                    val sl = validation.quantizedSl
+                    if (args.riskUsd != null && sl != null && sl > BigDecimal.ZERO) {
+                        val riskPerUnit = (validation.quantizedEntry - sl).abs()
+                        if (riskPerUnit > BigDecimal.ZERO)
+                            args.riskUsd.divide(riskPerUnit, 8, RoundingMode.HALF_UP)
+                        else BigDecimal.ZERO
+                    } else {
+                        BigDecimal.ZERO
+                    }
+                }
+
+                if (coinQty <= BigDecimal.ZERO) {
+                    return PlanResult.Skip(symbol, "Zero/unknown quantity")
+                }
+
+                // Record signal for idempotency
+                idempotencyService.recordSignal(signalKey)
+
+                return PlanResult.Ready(
+                    OrderPlan(
+                        symbol = symbol,
+                        instrumentId = instrumentId,
+                        side = validation.normalizedSignal,
+                        leverage = validation.leverage,
+                        coinQty = coinQty,
+                        entryPx = validation.quantizedEntry,
+                        ctVal = ctVal,
+                        ctValCcy = ccy,
+                        minSz = min,
+                        lotSz = lot,
+                        tickSz = tick,
+                        tpPx = validation.quantizedTp,
+                        slPx = validation.quantizedSl
+                    )
+                )
+            }
+        }
     }
 
     private suspend fun executePlan(plan: OrderPlan, availableUsd: BigDecimal): AiTradeExecutionResult {
@@ -199,25 +230,35 @@ class ExecuteAiDecisionsUseCase(
             symbol = plan.symbol,
             action = AIAction.SKIPPED,
             message = "Insufficient margin",
-            instId = plan.instId
+            instId = plan.instrumentId.value
         )
 
         val marginMode = tradingProperties.getMarginMode()
-        val levOk = trading.setLeverage(InstrumentId.fromSymbol(plan.instId), sizing.leverage, marginMode).getOrThrow()
+        val levOk = trading.setLeverage(plan.instrumentId, sizing.leverage, marginMode).getOrThrow()
         if (!levOk) {
             return AiTradeExecutionResult(
                 symbol = plan.symbol,
                 action = AIAction.SKIPPED,
                 message = "Failed to set leverage ${sizing.leverage} (${marginMode.asOkxApiValue})",
-                instId = plan.instId
+                instId = plan.instrumentId.value
             )
         }
 
-        val clId = IdGenerator.clOrdId(plan.symbol)
+        // Generate deterministic clOrdId for idempotency
+        val timestamp = clock.instant().toEpochMilli()
+        val signalArgs = AiTradeSignalArgs(
+            coin = plan.symbol,
+            signal = if (plan.side == "buy") AiSignal.BUY else AiSignal.SELL,
+            quantity = plan.coinQty,
+            profitTarget = plan.tpPx,
+            stopLoss = plan.slPx,
+            leverage = plan.leverage
+        )
+        val clId = idempotencyService.generateClOrdId(plan.symbol, signalArgs, plan.entryPx, timestamp)
         val tag = IdGenerator.safeTag("ai-signal")
 
         val outcome = trading.placeMarketOrderWithTpSl(
-            instrumentId = InstrumentId.fromSymbol(plan.instId),
+            instrumentId = plan.instrumentId,
             side = plan.side,
             contracts = sizing.roundedContracts,
             tp = plan.tpPx,
@@ -229,6 +270,9 @@ class ExecuteAiDecisionsUseCase(
         ).getOrThrow()
 
         return if (outcome.ok) {
+            // Record trade for cooldown tracking
+            confidenceCalibrator.recordTrade(plan.symbol)
+
             // Log structured business event
             BusinessEventLogger.orderPlaced(
                 symbol = plan.symbol,
@@ -247,7 +291,7 @@ class ExecuteAiDecisionsUseCase(
                 symbol = plan.symbol,
                 action = AIAction.PLACED,
                 message = "Order placed (${sizing.totalUsd.setScale(2, RoundingMode.HALF_UP)} USD)",
-                instId = plan.instId,
+                instId = plan.instrumentId.value,
                 clOrdId = clId,
                 ordId = outcome.ordId,
                 requestedContracts = sizing.requestedContracts,
@@ -265,7 +309,7 @@ class ExecuteAiDecisionsUseCase(
                 symbol = plan.symbol,
                 action = AIAction.SKIPPED,
                 message = "Rejected: ${outcome.message}",
-                instId = plan.instId,
+                instId = plan.instrumentId.value,
                 clOrdId = clId,
                 requestedContracts = sizing.requestedContracts
             )

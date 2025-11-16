@@ -3,7 +3,11 @@ package ru.driics.aitrade.application.orchestrator
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import io.github.oshai.kotlinlogging.KotlinLogging
+import ru.driics.aitrade.application.ai.AiSchemaValidator
+import ru.driics.aitrade.application.ai.ConfidenceCalibrator
+import ru.driics.aitrade.application.ai.SignalNormalizer
 import ru.driics.aitrade.common.logging.BusinessEventLogger
+import ru.driics.aitrade.config.TradingProperties
 import io.micrometer.core.instrument.MeterRegistry
 import ru.driics.aitrade.application.usecase.AnalyzePromptUseCase
 import ru.driics.aitrade.application.usecase.BuildPromptUseCase
@@ -13,6 +17,7 @@ import ru.driics.aitrade.domain.model.AIAction
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.model.AccountInfo
 import ru.driics.aitrade.domain.model.AiTradeDecisionMap
+import ru.driics.aitrade.domain.model.AiTradeEnvelope
 import ru.driics.aitrade.domain.model.AiTradeExecutionResult
 import ru.driics.aitrade.domain.model.Position
 import ru.driics.aitrade.domain.types.asSymbol
@@ -30,7 +35,9 @@ class UpdateCycleOrchestrator(
     private val meterRegistry: MeterRegistry,
     private val autoExecute: Boolean,
     private val symbols: List<String>,
-    private val clock: Clock
+    private val clock: Clock,
+    private val schemaValidator: AiSchemaValidator,
+    private val tradingProperties: TradingProperties
 ) {
     companion object {
         private val log = KotlinLogging.logger {}
@@ -116,17 +123,74 @@ class UpdateCycleOrchestrator(
 
         log.info { "AI analysis completed successfully" }
 
-        val decisions: AiTradeDecisionMap = try {
-            mapper.readValue(aiResult.response)
-        } catch (e: Exception) {
-            log.error(e) { "Failed to parse AI decisions" }
+        // Validate and parse AI response using schema validator
+        val validationResult = schemaValidator.validateAndParse(aiResult.response)
+        val rawDecisions: AiTradeDecisionMap = when (validationResult) {
+            is AiSchemaValidator.ValidationResult.Valid -> {
+                validationResult.decisions
+            }
+            is AiSchemaValidator.ValidationResult.Rejected -> {
+                log.error { "AI response validation failed: ${validationResult.reason}" }
+                BusinessEventLogger.error(
+                    event = "ai_response_validation_failed",
+                    error = IllegalArgumentException(validationResult.reason),
+                    "response" to aiResult.response.take(500) // Log first 500 chars
+                )
+                return UpdateCycleResult(
+                    success = false,
+                    message = "Error: AI response validation failed - ${validationResult.reason}",
+                    executionTimeMs = 0,
+                    promptSize = prompt.length
+                )
+            }
+        }
+
+        // Normalize and calibrate signals (P2.2, P2.3)
+        val normalizer = SignalNormalizer()
+        val calibrator = ConfidenceCalibrator(
+            tradingProperties = tradingProperties,
+            clock = clock
+        )
+        
+        val normalizedDecisions = mutableMapOf<String, AiTradeEnvelope>()
+        var normalizedCount = 0
+        var rejectedCount = 0
+
+        for ((symbol, envelope) in rawDecisions) {
+            val normalized = normalizer.normalize(envelope.args)
+            if (normalized == null) {
+                rejectedCount++
+                log.warn { "Signal normalization failed for $symbol" }
+                continue
+            }
+
+            val calibration = calibrator.shouldAccept(normalized.toAiTradeSignalArgs())
+            when (calibration) {
+                is ConfidenceCalibrator.CalibrationResult.Accepted -> {
+                    normalizedDecisions[symbol] = AiTradeEnvelope(
+                        args = normalized.toAiTradeSignalArgs()
+                    )
+                    normalizedCount++
+                }
+                is ConfidenceCalibrator.CalibrationResult.Rejected -> {
+                    rejectedCount++
+                    log.info { "Signal rejected for $symbol: ${calibration.reason}" }
+                }
+            }
+        }
+
+        if (normalizedDecisions.isEmpty()) {
+            log.warn { "All signals rejected after normalization/calibration ($rejectedCount total)" }
             return UpdateCycleResult(
                 success = false,
-                message = "Error: Failed to parse AI decisions - ${e.message}",
+                message = "All signals rejected: $rejectedCount normalized, $rejectedCount rejected",
                 executionTimeMs = 0,
                 promptSize = prompt.length
             )
         }
+
+        log.info { "Signal processing: $normalizedCount accepted, $rejectedCount rejected" }
+        val decisions = normalizedDecisions
 
         logAiDecisionsSummary(decisions)
 

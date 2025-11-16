@@ -42,7 +42,13 @@ data class TradingProperties(
 
     var instrumentCacheTtl: Duration = Duration.ofHours(1), // Changed to 1 hour for aggressive caching
 
-    var okxTimeouts: OkxTimeouts = OkxTimeouts()
+    var okxTimeouts: OkxTimeouts = OkxTimeouts(),
+
+    // AI call configuration
+    var aiTimeoutMs: Long = 60_000, // 60 seconds default timeout
+    var aiMaxRetries: Int = 2, // Retries for transient errors
+    var aiBudgetPerMinute: Long = 10, // Max AI requests per minute
+    var aiCooldownMs: Duration? = Duration.ofMinutes(5) // Cooldown between trades per symbol
 ) {
     fun getCurrenciesList(): List<String> =
         currencies.map { it.trim().uppercase(Locale.ROOT) }

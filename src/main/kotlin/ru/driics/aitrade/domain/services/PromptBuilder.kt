@@ -9,6 +9,9 @@ import java.util.concurrent.TimeUnit
 /**
  * Pure domain service for building trading prompts.
  * No infrastructure dependencies.
+ * 
+ * Note: For template-based prompts, use PromptTemplateService in application layer.
+ * This builder is kept for backward compatibility and direct prompt construction.
  */
 object PromptBuilder {
 
@@ -26,6 +29,24 @@ object PromptBuilder {
         return buildString {
             appendHeader(minutesSinceStart, currentTime, invocationCount)
             appendMarketData(marketState)
+            appendAccountInfo(marketState)
+        }
+    }
+
+    /**
+     * Builds market data section as string (for template rendering).
+     */
+    fun buildMarketDataSection(marketState: MarketState): String {
+        return buildString {
+            appendMarketData(marketState)
+        }
+    }
+
+    /**
+     * Builds account info section as string (for template rendering).
+     */
+    fun buildAccountInfoSection(marketState: MarketState): String {
+        return buildString {
             appendAccountInfo(marketState)
         }
     }
