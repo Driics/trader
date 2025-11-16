@@ -109,7 +109,7 @@ class IndicatorCache {
      * Calculate ATR with caching.
      */
     fun calculateATR(candles: List<ru.driics.aitrade.domain.model.OkxCandleResponse>, period: Int): BigDecimal {
-        val key = generateKey("atr", candles.map { it.close }, period)
+        val key = generateKey("atr", candles.mapNotNull { it.close.toBigDecimalOrNull() }, period)
         return atrCache.get(key) { IndicatorCalculator.calculateATR(candles, period) }
     }
 

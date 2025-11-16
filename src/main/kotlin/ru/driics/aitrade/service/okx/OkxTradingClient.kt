@@ -30,7 +30,7 @@ class OkxTradingClient(
     okxKtorClient: HttpClient,
     okxAuthService: OkxAuthService,
     meterRegistry: MeterRegistry,
-    private val objectMapper: ObjectMapper,
+    objectMapper: ObjectMapper,
     tradingProperties: TradingProperties
 ) : OkxClientBase(
     okxProperties, okxKtorClient, okxAuthService, meterRegistry, objectMapper, tradingProperties,
