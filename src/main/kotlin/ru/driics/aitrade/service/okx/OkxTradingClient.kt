@@ -98,6 +98,7 @@ class OkxTradingClient(
         var status = "success"
 
         return meterRegistry.timeOkx("placeOrder", { arrayOf("side", side, "status", status) }) {
+            val previous = MDC.getCopyOfContextMap()
             try {
                 withTimeout(tradingProperties.okxTimeouts.placeOrder.toMillis()) {
                     clOrdId?.let { MDC.put("clOrdId", it) }
@@ -132,7 +133,9 @@ class OkxTradingClient(
                 log.error("Error placing order $clOrdId", e)
                 null
             } finally {
-                MDC.clear()
+                if (previous.isNotEmpty())
+                    MDC.setContextMap(previous)
+                else MDC.clear()
             }
         }
     }

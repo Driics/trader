@@ -32,11 +32,14 @@ class TradingSystemController(
 
     @GetMapping("/health")
     fun health(): ResponseEntity<HealthResponse> {
-        val now = Instant.now().toEpochMilli()
+        val now = clock.millis()
         val sessionStart = orchestrator.getSessionStartTime()
         val uptimeSeconds = (now - sessionStart) / 1000
 
-        val response = TradingSystemResponseMapper.mapToHealthResponse(orchestrator, uptimeSeconds)
+        val response = TradingSystemResponseMapper.mapToHealthResponse(
+            orchestrator,
+            uptimeSeconds
+        )
 
         log.debug { "Health check - Status: UP, Invocations: ${response.invocationCount}" }
         return ResponseEntity.ok(response)
@@ -91,7 +94,7 @@ class TradingSystemController(
 
     @GetMapping("/status")
     fun getStatus(): ResponseEntity<StatusResponse> {
-        val nextExecutionEstimate = TradingSystemUtils.estimateNextExecution(orchestrator)
+        val nextExecutionEstimate = TradingSystemUtils.estimateNextExecution(orchestrator, clock)
         val response = TradingSystemResponseMapper.mapToStatusResponse(
             orchestrator = orchestrator,
             tradingProperties = tradingProperties,
