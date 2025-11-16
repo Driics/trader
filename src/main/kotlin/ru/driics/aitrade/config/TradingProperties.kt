@@ -40,7 +40,7 @@ data class TradingProperties(
     @field:Min(value = 1, message = "Max concurrent symbols must be at least 1")
     var maxConcurrentSymbols: Int = 4,
 
-    var instrumentCacheTtl: Duration = Duration.ofMinutes(10),
+    var instrumentCacheTtl: Duration = Duration.ofHours(1), // Changed to 1 hour for aggressive caching
 
     var okxTimeouts: OkxTimeouts = OkxTimeouts()
 ) {

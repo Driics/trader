@@ -9,12 +9,10 @@ import org.springframework.web.bind.annotation.*
 import ru.driics.aitrade.application.orchestrator.UpdateCycleOrchestrator
 import ru.driics.aitrade.config.PromptProperties
 import ru.driics.aitrade.config.TradingProperties
-import java.io.File
+import ru.driics.aitrade.controller.mapper.TradingSystemResponseMapper
+import ru.driics.aitrade.controller.util.TradingSystemUtils
 import java.time.Clock
-import java.time.Duration
 import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 
 /**
  * REST controller for trading system monitoring and control.
@@ -30,8 +28,6 @@ class TradingSystemController(
 ) {
     companion object {
         private val log = KotlinLogging.logger {}
-        private val dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
-            .withZone(ZoneId.of("UTC"))
     }
 
     @GetMapping("/health")
@@ -40,15 +36,7 @@ class TradingSystemController(
         val sessionStart = orchestrator.getSessionStartTime()
         val uptimeSeconds = (now - sessionStart) / 1000
 
-        val response = HealthResponse(
-            status = "UP",
-            message = "AI Trading System is running and healthy",
-            timestamp = now,
-            uptime = formatDuration(uptimeSeconds),
-            lastUpdateTime = orchestrator.getLastUpdateTime(),
-            invocationCount = orchestrator.getInvocationCount(),
-            sessionStartTime = sessionStart
-        )
+        val response = TradingSystemResponseMapper.mapToHealthResponse(orchestrator, uptimeSeconds)
 
         log.debug { "Health check - Status: UP, Invocations: ${response.invocationCount}" }
         return ResponseEntity.ok(response)
@@ -62,12 +50,11 @@ class TradingSystemController(
             val result = runBlocking { orchestrator.runOnce() }
 
             if (!result.success) {
-                val errorResponse = ErrorResponse(
-                    status = "error",
+                val errorResponse = TradingSystemResponseMapper.mapToErrorResponse(
                     message = result.message,
-                    timestamp = clock.instant().toEpochMilli(),
                     errorDetails = "Update execution failed. Check logs for details.",
-                    path = request.requestURI
+                    path = request.requestURI,
+                    clock = clock
                 )
                 log.warn { "Update failed in ${result.executionTimeMs}ms: ${result.message}" }
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse)
@@ -77,19 +64,13 @@ class TradingSystemController(
             val account = runBlocking { orchestrator.getAccountInfo() }
             val positions = runBlocking { orchestrator.getPositions() }
 
-            val response = UpdateResponse(
-                status = "success",
-                message = "Update cycle completed successfully",
-                timestamp = clock.instant().toEpochMilli(),
-                executionTimeMs = result.executionTimeMs,
-                data = UpdateData(
-                    symbolsFetched = tradingProperties.getCurrenciesList().size,
-                    positionsCount = positions.size,
-                    positionsPlaced = result.positionsPlaced,
-                    accountValueUsd = account.accountValue.toPlainString(),
-                    promptSizeBytes = result.promptSize,
-                    fileWritten = File(promptProperties.outputPath).exists()
-                )
+            val response = TradingSystemResponseMapper.mapToUpdateResponse(
+                result = result,
+                account = account,
+                positions = positions,
+                tradingProperties = tradingProperties,
+                promptProperties = promptProperties,
+                clock = clock
             )
 
             log.info { "Update completed in ${result.executionTimeMs}ms - Symbols: ${response.data?.symbolsFetched}, Positions: ${response.data?.positionsPlaced}" }
@@ -98,12 +79,11 @@ class TradingSystemController(
         } catch (e: Exception) {
             log.error(e) { "Error during update" }
 
-            val errorResponse = ErrorResponse(
-                status = "error",
+            val errorResponse = TradingSystemResponseMapper.mapToErrorResponse(
                 message = e.message ?: "Unknown error occurred",
-                timestamp = clock.instant().toEpochMilli(),
                 errorDetails = e.stackTraceToString().take(500),
-                path = request.requestURI
+                path = request.requestURI,
+                clock = clock
             )
             ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse)
         }
@@ -111,42 +91,12 @@ class TradingSystemController(
 
     @GetMapping("/status")
     fun getStatus(): ResponseEntity<StatusResponse> {
-        val now = Instant.now().toEpochMilli()
-        val sessionStart = orchestrator.getSessionStartTime()
-        val uptimeSeconds = (now - sessionStart) / 1000
-        val minutesSinceStart = (now - sessionStart) / 60000
-
-        val response = StatusResponse(
-            status = "running",
-            service = "AI Trading System",
-            version = "2.0.0-clean-architecture",
-            uptime = UptimeInfo(
-                startTime = sessionStart,
-                startTimeFormatted = dateFormatter.format(Instant.ofEpochMilli(sessionStart)),
-                uptimeSeconds = uptimeSeconds,
-                uptimeFormatted = formatDuration(uptimeSeconds)
-            ),
-            session = SessionInfo(
-                invocationCount = orchestrator.getInvocationCount(),
-                lastUpdateTime = orchestrator.getLastUpdateTime(),
-                lastUpdateFormatted = orchestrator.getLastUpdateTime()?.let {
-                    dateFormatter.format(Instant.ofEpochMilli(it))
-                },
-                minutesSinceStart = minutesSinceStart
-            ),
-            scheduler = SchedulerInfo(
-                enabled = true,
-                intervalMs = 180000,
-                intervalFormatted = "3 minutes",
-                nextExecutionEstimate = estimateNextExecution()
-            ),
-            trading = TradingInfo(
-                autoExecuteEnabled = tradingProperties.autoExecute,
-                symbolsCount = tradingProperties.getCurrenciesList().size,
-                symbols = tradingProperties.getCurrenciesList()
-            )
+        val nextExecutionEstimate = TradingSystemUtils.estimateNextExecution(orchestrator)
+        val response = TradingSystemResponseMapper.mapToStatusResponse(
+            orchestrator = orchestrator,
+            tradingProperties = tradingProperties,
+            nextExecutionEstimate = nextExecutionEstimate
         )
-
         return ResponseEntity.ok(response)
     }
 
@@ -155,24 +105,8 @@ class TradingSystemController(
         try {
             val account = orchestrator.getAccountInfo()
             val positions = orchestrator.getPositions()
-
-            ResponseEntity.ok(mapOf(
-                "accountValue" to account.accountValue.toPlainString(),
-                "availableCash" to account.availableCash.toPlainString(),
-                "totalReturn" to account.totalReturn.toPlainString(),
-                "sharpeRatio" to (account.sharpeRatio?.toPlainString() ?: "N/A"),
-                "positionsCount" to positions.size,
-                "positions" to positions.map { pos ->
-                    mapOf(
-                        "symbol" to pos.symbol,
-                        "quantity" to pos.quantity.toPlainString(),
-                        "entryPrice" to pos.entryPrice.toPlainString(),
-                        "currentPrice" to pos.currentPrice.toPlainString(),
-                        "unrealizedPnl" to pos.unrealizedPnl.toPlainString(),
-                        "leverage" to pos.leverage
-                    )
-                }
-            ))
+            val response = TradingSystemResponseMapper.mapToAccountResponse(account, positions)
+            ResponseEntity.ok(response)
         } catch (e: Exception) {
             log.error(e) { "Failed to fetch account info" }
             ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(mapOf(
@@ -183,88 +117,31 @@ class TradingSystemController(
 
     @GetMapping("/stats")
     fun getSessionStats(): ResponseEntity<SessionStatsResponse> {
-        val now = Instant.now().toEpochMilli()
-        val sessionStart = orchestrator.getSessionStartTime()
-        val minutesSinceStart = (now - sessionStart) / 60000
-
-        val response = SessionStatsResponse(
-            sessionStartTime = sessionStart,
-            invocationCount = orchestrator.getInvocationCount(),
-            minutesSinceStart = minutesSinceStart,
-            currencies = tradingProperties.getCurrenciesList(),
-            scheduledUpdateInterval = "180 seconds (3 minutes)",
-            outputPath = promptProperties.outputPath,
-            autoExecuteEnabled = tradingProperties.autoExecute
+        val response = TradingSystemResponseMapper.mapToSessionStatsResponse(
+            orchestrator = orchestrator,
+            tradingProperties = tradingProperties,
+            promptProperties = promptProperties
         )
-
         return ResponseEntity.ok(response)
     }
 
     @GetMapping("/prompt-info")
     fun getPromptInfo(): ResponseEntity<Map<String, Any>> {
-        val promptFile = File(promptProperties.outputPath)
-
-        return if (promptFile.exists()) {
-            ResponseEntity.ok(mapOf(
-                "exists" to true,
-                "path" to promptProperties.outputPath,
-                "sizeBytes" to promptFile.length(),
-                "lastModified" to promptFile.lastModified(),
-                "lastModifiedFormatted" to dateFormatter.format(
-                    Instant.ofEpochMilli(promptFile.lastModified())
-                ),
-                "lineCount" to promptFile.useLines { it.count() },
-                "readable" to promptFile.canRead()
-            ))
-        } else {
-            ResponseEntity.ok(mapOf(
-                "exists" to false,
-                "path" to promptProperties.outputPath,
-                "message" to "Prompt file not yet created"
-            ))
-        }
+        val response = TradingSystemResponseMapper.mapToPromptInfoResponse(promptProperties)
+        return ResponseEntity.ok(response)
     }
 
     @ExceptionHandler(Exception::class)
     fun handleException(e: Exception, request: HttpServletRequest): ResponseEntity<ErrorResponse> {
         log.error(e) { "Unhandled exception in controller" }
 
-        val errorResponse = ErrorResponse(
-            status = "error",
+        val errorResponse = TradingSystemResponseMapper.mapToErrorResponse(
             message = e.message ?: "Internal server error",
-            timestamp = System.currentTimeMillis(),
             errorDetails = e.stackTraceToString().take(500),
-            path = request.requestURI
+            path = request.requestURI,
+            clock = clock
         )
 
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse)
-    }
-
-    private fun formatDuration(seconds: Long): String {
-        val duration = Duration.ofSeconds(seconds)
-        val days = duration.toDays()
-        val hours = duration.toHours() % 24
-        val minutes = duration.toMinutes() % 60
-        val secs = duration.seconds % 60
-
-        return buildString {
-            if (days > 0) append("${days}d ")
-            if (hours > 0) append("${hours}h ")
-            if (minutes > 0) append("${minutes}m ")
-            append("${secs}s")
-        }.trim()
-    }
-
-    private fun estimateNextExecution(): String {
-        val lastUpdate = orchestrator.getLastUpdateTime() ?: orchestrator.getSessionStartTime()
-        val nextExecution = lastUpdate + 180000 // 3 minutes
-        val now = System.currentTimeMillis()
-
-        return if (nextExecution > now) {
-            val secondsUntil = (nextExecution - now) / 1000
-            "in ${formatDuration(secondsUntil)}"
-        } else {
-            "overdue (should trigger soon)"
-        }
     }
 }

@@ -25,7 +25,16 @@ trading:
   time-zone: UTC
   auto-execute: true
   max-concurrent-symbols: 10
-  instrument-cache-ttl: 10m
+  instrument-cache-ttl: 1h  # Aggressive caching: 1 hour TTL
+
+# Cache Configuration
+cache:
+  warming:
+    enabled: true  # Enable cache warming at startup
+
+# Redis Configuration (optional - for distributed caching)
+redis:
+  enabled: false  # Set to true and add spring-boot-starter-data-redis dependency to enable Redis L2 cache
 
 otel:
   service:
