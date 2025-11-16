@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.runBlocking
+import org.springframework.context.event.ContextClosedEvent
+import org.springframework.context.event.EventListener
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.config.OkxProperties
 import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsAccountUpdate
@@ -25,6 +27,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import jakarta.annotation.PreDestroy
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.min
 import kotlin.random.Random
 
@@ -135,10 +139,13 @@ class OkxPrivateWebSocketClient(
                     log.info { "Private WS stopping, not reconnecting" }
                     break
                 }
-                val base = min(30_000, (1_000 shl attempt))
-                val sleep = base + Random.nextInt(0, 1_000)
-                log.warn(t) { "Private WS reconnect in ${sleep}ms (attempt=$attempt)" }
-                delay(sleep.toLong())
+                // Only log reconnect message if not stopping
+                if (!stopping.get()) {
+                    val base = min(30_000, (1_000 shl attempt))
+                    val sleep = base + Random.nextInt(0, 1_000)
+                    log.warn(t) { "Private WS reconnect in ${sleep}ms (attempt=$attempt)" }
+                    delay(sleep.toLong())
+                }
                 attempt = (attempt + 1).coerceAtMost(15)
             }
         }
@@ -248,12 +255,22 @@ class OkxPrivateWebSocketClient(
         activeSession.get()?.let { session ->
             try {
                 runBlocking {
-                    session.close()
+                    withTimeoutOrNull(5_000) {
+                        session.close()
+                    } ?: log.warn { "Private WS session close timed out" }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 log.warn(e) { "Error closing private WS session" }
             }
         }
         log.info { "Private WS client destroyed" }
+    }
+
+    @EventListener(ContextClosedEvent::class)
+    fun onContextClosed() {
+        log.info { "Context closed, shutting down private WS client" }
+        destroy()
     }
 }

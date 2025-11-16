@@ -11,6 +11,7 @@ import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.micrometer.core.instrument.MeterRegistry
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
@@ -42,7 +43,7 @@ class OkxTradingClient(
     @RateLimiter(name = "okxTrade")
     @CircuitBreaker(name = "okxTrade")
     suspend fun setLeverage(instId: String, leverage: Int, marginMode: MarginMode, posSide: String? = null): Boolean {
-        var status = "success"
+        var status = "ok"
 
         return meterRegistry.timeOkx("setLeverage", { arrayOf("status", status) }) {
             try {
@@ -69,11 +70,28 @@ class OkxTradingClient(
                     val ok = (responseMap["code"]?.toString() == "0")
 
                     if (!ok) {
-                        status = "failed"
+                        val statusCode = response.status.value
+                        status = when {
+                            statusCode in 400..499 -> "http_4xx"
+                            statusCode >= 500 -> "http_5xx"
+                            else -> "api_error"
+                        }
                         log.warn("Set leverage failed for $instId: body=$responseBody")
                     }
                     ok
                 }
+            } catch (e: TimeoutCancellationException) {
+                status = "timeout"
+                false
+            } catch (e: ClientRequestException) {
+                val statusCode = e.response.status.value
+                status = when {
+                    statusCode in 400..499 -> "http_4xx"
+                    statusCode >= 500 -> "http_5xx"
+                    else -> "http_error"
+                }
+                log.error("HTTP error setting leverage for $instId: ${e.response.status}", e)
+                false
             } catch (e: Exception) {
                 status = "error"
                 log.error("Error setting leverage for $instId", e)
@@ -96,7 +114,7 @@ class OkxTradingClient(
         clOrdId: String? = null,
         tag: String? = "ai-signal"
     ): OkxPlaceOrderData? {
-        var status = "success"
+        var status = "ok"
 
         return meterRegistry.timeOkx("placeOrder", { arrayOf("side", side, "status", status) }) {
             try {
@@ -122,7 +140,12 @@ class OkxTradingClient(
                     val apiResponse = objectMapper.readValue<OkxPlaceOrderApiResponse>(responseBody)
 
                     if (!apiResponse.isSuccess()) {
-                        status = "rejected"
+                        val statusCode = response.status.value
+                        status = when {
+                            statusCode in 400..499 -> "http_4xx"
+                            statusCode >= 500 -> "http_5xx"
+                            else -> "api_error"
+                        }
                         val instIdSymbol = instId.substringBefore("-")
                         BusinessEventLogger.orderRejected(
                             symbol = instIdSymbol,
@@ -135,6 +158,19 @@ class OkxTradingClient(
 
                     apiResponse.firstOrNull()
                 }
+            } catch (e: TimeoutCancellationException) {
+                status = "timeout"
+                log.error("Timeout placing order $clOrdId", e)
+                null
+            } catch (e: ClientRequestException) {
+                val statusCode = e.response.status.value
+                status = when {
+                    statusCode in 400..499 -> "http_4xx"
+                    statusCode >= 500 -> "http_5xx"
+                    else -> "http_error"
+                }
+                log.error("HTTP error placing order $clOrdId: ${e.response.status}", e)
+                null
             } catch (e: Exception) {
                 status = "error"
                 log.error("Error placing order $clOrdId", e)

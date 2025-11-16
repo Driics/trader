@@ -80,6 +80,8 @@ class AnalyzePromptUseCase(
                         return response
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: TimeoutCancellationException) {
                 timeoutCounter.increment()
                 lastError = e

@@ -14,6 +14,7 @@ import ru.driics.aitrade.application.orchestrator.UpdateCycleOrchestrator
 import ru.driics.aitrade.application.usecase.AnalyzePromptUseCase
 import ru.driics.aitrade.application.usecase.BuildPromptUseCase
 import ru.driics.aitrade.application.usecase.ExecuteAiDecisionsUseCase
+import io.opentelemetry.api.trace.Tracer
 import ru.driics.aitrade.domain.ports.AiAnalysisPort
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PromptOutputPort
@@ -86,13 +87,15 @@ class ApplicationWiring(
         trading: TradingPort,
         market: MarketDataPort,
         clock: Clock,
-        confidenceCalibrator: ConfidenceCalibrator
+        confidenceCalibrator: ConfidenceCalibrator,
+        meterRegistry: MeterRegistry
     ) = ExecuteAiDecisionsUseCase(
         trading = trading,
         market = market,
         tradingProperties = tradingProperties,
         clock = clock,
-        confidenceCalibrator = confidenceCalibrator
+        confidenceCalibrator = confidenceCalibrator,
+        meterRegistry = meterRegistry
     )
 
     @Bean
@@ -109,7 +112,8 @@ class ApplicationWiring(
         market: MarketDataPort,
         meterRegistry: MeterRegistry,
         schemaValidator: AiSchemaValidator,
-        confidenceCalibrator: ConfidenceCalibrator
+        confidenceCalibrator: ConfidenceCalibrator,
+        tracer: Tracer
     ) = UpdateCycleOrchestrator(
         build = build,
         analyze = analyze,
@@ -121,6 +125,7 @@ class ApplicationWiring(
         clock(),
         schemaValidator,
         tradingProperties,
-        confidenceCalibrator
+        confidenceCalibrator,
+        tracer
     )
 }

@@ -90,7 +90,7 @@ class TradingSystemController(
 
     @GetMapping("/status")
     fun getStatus(): ResponseEntity<StatusResponse> {
-        val nextExecutionEstimate = TradingSystemUtils.estimateNextExecution(orchestrator)
+        val nextExecutionEstimate = TradingSystemUtils.estimateNextExecution(orchestrator, clock)
         val response = TradingSystemResponseMapper.mapToStatusResponse(
             orchestrator = orchestrator,
             tradingProperties = tradingProperties,

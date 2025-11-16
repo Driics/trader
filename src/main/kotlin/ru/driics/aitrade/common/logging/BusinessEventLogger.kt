@@ -5,6 +5,7 @@ import java.math.BigDecimal
 /**
  * Business event logger for important trading system events.
  * All events are logged with structured JSON format for easy parsing and analysis.
+ * CorrelationId is automatically included from MDC context.
  */
 object BusinessEventLogger {
     private val log = structuredLogger("BusinessEvents")
@@ -22,7 +23,8 @@ object BusinessEventLogger {
         tp: BigDecimal? = null,
         sl: BigDecimal? = null,
         leverage: Int? = null,
-        costUsd: BigDecimal? = null
+        costUsd: BigDecimal? = null,
+        correlationId: String? = CorrelationId.get()
     ) {
         log.info(
             event = "order_placed",
@@ -35,7 +37,8 @@ object BusinessEventLogger {
             "takeProfit" to tp?.toPlainString(),
             "stopLoss" to sl?.toPlainString(),
             "leverage" to leverage,
-            "costUsd" to costUsd?.toPlainString()
+            "costUsd" to costUsd?.toPlainString(),
+            "correlationId" to correlationId
         )
     }
 
@@ -46,14 +49,16 @@ object BusinessEventLogger {
         symbol: String,
         clOrdId: String?,
         reason: String,
-        errorCode: String? = null
+        errorCode: String? = null,
+        correlationId: String? = CorrelationId.get()
     ) {
         log.warn(
             event = "order_rejected",
             "symbol" to symbol,
             "clOrdId" to clOrdId,
             "reason" to reason,
-            "errorCode" to errorCode
+            "errorCode" to errorCode,
+            "correlationId" to correlationId
         )
     }
 
@@ -123,7 +128,8 @@ object BusinessEventLogger {
         signal: String,
         confidence: BigDecimal?,
         leverage: Int?,
-        riskUsd: BigDecimal?
+        riskUsd: BigDecimal?,
+        correlationId: String? = CorrelationId.get()
     ) {
         log.info(
             event = "ai_decision",
@@ -131,7 +137,8 @@ object BusinessEventLogger {
             "signal" to signal,
             "confidence" to confidence?.toPlainString(),
             "leverage" to leverage,
-            "riskUsd" to riskUsd?.toPlainString()
+            "riskUsd" to riskUsd?.toPlainString(),
+            "correlationId" to correlationId
         )
     }
 

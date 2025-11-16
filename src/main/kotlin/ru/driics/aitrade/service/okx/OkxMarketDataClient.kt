@@ -42,7 +42,7 @@ class OkxMarketDataClient(
     @RateLimiter(name = "okxMarket")
     @CircuitBreaker(name = "okxMarket", fallbackMethod = "fetchTickerFallback")
     suspend fun fetchTicker(instId: String): OkxTickerResponse? {
-        var status = "success"
+        var status = "ok"
 
         return meterRegistry.timeOkx("fetchTicker", { arrayOf("status", status) }) {
             try {
@@ -53,13 +53,18 @@ class OkxMarketDataClient(
                     val apiResponse = objectMapper.readValue<OkxApiResponse<OkxTickerResponse>>(body)
 
                     if (!apiResponse.isSuccess()) {
-                        status = "api_error_${apiResponse.code}"
+                        val statusCode = response.status.value
+                        status = when {
+                            statusCode in 400..499 -> "http_4xx"
+                            statusCode >= 500 -> "http_5xx"
+                            else -> "api_error"
+                        }
                         log.warn("OKX API error for ticker $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
                         return@withTimeoutAndLog null
                     }
 
                     apiResponse.getFirstOrNull() ?: run {
-                        status = "empty_data"
+                        status = "ok" // Empty data is still OK, just no result
                         log.warn("No ticker data found for $instId")
                         null
                     }
@@ -68,7 +73,12 @@ class OkxMarketDataClient(
                 status = "timeout"
                 null
             } catch (e: ClientRequestException) {
-                status = "http_${e.response.status.value}"
+                val statusCode = e.response.status.value
+                status = when {
+                    statusCode in 400..499 -> "http_4xx"
+                    statusCode >= 500 -> "http_5xx"
+                    else -> "http_error"
+                }
                 log.error("HTTP error fetching ticker for $instId: ${e.response.status}", e)
                 null
             } catch (e: Exception) {
@@ -88,7 +98,7 @@ class OkxMarketDataClient(
     @RateLimiter(name = "okxMarket")
     @CircuitBreaker(name = "okxMarket", fallbackMethod = "fetchCandlesFallback")
     suspend fun fetchCandles(instId: String, period: String, limit: Int): List<OkxCandleResponse> {
-        var status = "success"
+        var status = "ok"
 
         return meterRegistry.timeOkx("fetchCandles", { arrayOf("period", period, "status", status) }) {
             try {
@@ -99,7 +109,12 @@ class OkxMarketDataClient(
                     val apiResponse = objectMapper.readValue<OkxCandlesApiResponse>(body)
 
                     if (!apiResponse.isSuccess()) {
-                        status = "api_error_${apiResponse.code}"
+                        val statusCode = response.status.value
+                        status = when {
+                            statusCode in 400..499 -> "http_4xx"
+                            statusCode >= 500 -> "http_5xx"
+                            else -> "api_error"
+                        }
                         log.warn("OKX API error for candles $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
                         return@withTimeout emptyList()
                     }
@@ -107,9 +122,15 @@ class OkxMarketDataClient(
                     apiResponse.toCandles().sortedBy { it.timestamp.toLongOrNull() ?: Long.MAX_VALUE }
                 }
             } catch (e: TimeoutCancellationException) {
-                status = "timeout"; emptyList()
+                status = "timeout"
+                emptyList()
             } catch (e: ClientRequestException) {
-                status = "http_${e.response.status.value}"
+                val statusCode = e.response.status.value
+                status = when {
+                    statusCode in 400..499 -> "http_4xx"
+                    statusCode >= 500 -> "http_5xx"
+                    else -> "http_error"
+                }
                 log.error("HTTP error fetching candles for $instId, period: $period: ${e.response.status}", e)
                 emptyList()
             } catch (e: Exception) {
@@ -129,7 +150,7 @@ class OkxMarketDataClient(
     @RateLimiter(name = "okxMarket")
     @CircuitBreaker(name = "okxMarket")
     suspend fun fetchFundingRate(instId: String): BigDecimal? {
-        var status = "success"
+        var status = "ok"
 
         return meterRegistry.timeOkx("fetchFundingRate", { arrayOf("status", status) }) {
             try {
@@ -140,17 +161,34 @@ class OkxMarketDataClient(
                     val apiResponse = objectMapper.readValue<OkxApiResponse<OkxFundingResponse>>(body)
 
                     if (!apiResponse.isSuccess()) {
-                        status = "api_error_${apiResponse.code}"
+                        val statusCode = response.status.value
+                        status = when {
+                            statusCode in 400..499 -> "http_4xx"
+                            statusCode >= 500 -> "http_5xx"
+                            else -> "api_error"
+                        }
                         log.warn("OKX API error for funding rate $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
                         return@withTimeout null
                     }
 
                     apiResponse.getFirstOrNull()?.fundingRate?.toBigDecimalOrNull() ?: run {
-                        status = "empty_data"
+                        status = "ok" // Empty data is still OK
                         log.debug("No funding rate data for $instId")
                         null
                     }
                 }
+            } catch (e: TimeoutCancellationException) {
+                status = "timeout"
+                null
+            } catch (e: ClientRequestException) {
+                val statusCode = e.response.status.value
+                status = when {
+                    statusCode in 400..499 -> "http_4xx"
+                    statusCode >= 500 -> "http_5xx"
+                    else -> "http_error"
+                }
+                log.error("HTTP error fetching funding rate for $instId: ${e.response.status}", e)
+                null
             } catch (e: Exception) {
                 status = "error"
                 log.error("Error fetching funding rate for $instId", e)
@@ -163,28 +201,45 @@ class OkxMarketDataClient(
     @RateLimiter(name = "okxMarket")
     @CircuitBreaker(name = "okxMarket")
     suspend fun fetchOpenInterest(instId: String): BigDecimal? {
-        var status = "success"
+        var status = "ok"
 
         return meterRegistry.timeOkx("fetchOpenInterest", { arrayOf("status", status) }) {
             try {
-                withTimeout(tradingProperties.okxTimeouts.funding.toMillis()) {
+                withTimeout(tradingProperties.okxTimeouts.openInterest.toMillis()) {
                     val url = "$baseUrl/api/v5/public/open-interest?instId=$instId"
                     val response: HttpResponse = okxKtorClient.get(url)
                     val body = response.bodyAsText()
                     val apiResponse = objectMapper.readValue<OkxApiResponse<OkxOpenInterestResponse>>(body)
 
                     if (!apiResponse.isSuccess()) {
-                        status = "api_error_${apiResponse.code}"
+                        val statusCode = response.status.value
+                        status = when {
+                            statusCode in 400..499 -> "http_4xx"
+                            statusCode >= 500 -> "http_5xx"
+                            else -> "api_error"
+                        }
                         log.warn("OKX API error for open interest $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
                         return@withTimeout null
                     }
 
                     apiResponse.getFirstOrNull()?.openInterest?.toBigDecimalOrNull() ?: run {
-                        status = "empty_data"
+                        status = "ok" // Empty data is still OK
                         log.debug("No open interest data for $instId")
                         null
                     }
                 }
+            } catch (e: TimeoutCancellationException) {
+                status = "timeout"
+                null
+            } catch (e: ClientRequestException) {
+                val statusCode = e.response.status.value
+                status = when {
+                    statusCode in 400..499 -> "http_4xx"
+                    statusCode >= 500 -> "http_5xx"
+                    else -> "http_error"
+                }
+                log.error("HTTP error fetching open interest for $instId: ${e.response.status}", e)
+                null
             } catch (e: Exception) {
                 status = "error"
                 log.error("Error fetching open interest for $instId", e)
@@ -196,7 +251,7 @@ class OkxMarketDataClient(
     @Retry(name = "okxMarket")
     @RateLimiter(name = "okxMarket")
     suspend fun getSwapInstrument(instId: String): OkxInstrumentInfo? {
-        var status = "success"
+        var status = "ok"
 
         return meterRegistry.timeOkx("getSwapInstrument", { arrayOf("status", status) }) {
             try {
@@ -207,13 +262,30 @@ class OkxMarketDataClient(
                     val apiResponse = objectMapper.readValue<OkxPublicInstrumentsApiResponse>(body)
 
                     if (!apiResponse.isSuccess()) {
-                        status = "api_error"
+                        val statusCode = response.status.value
+                        status = when {
+                            statusCode in 400..499 -> "http_4xx"
+                            statusCode >= 500 -> "http_5xx"
+                            else -> "api_error"
+                        }
                         log.warn("Instruments fetch failed for $instId - code=${apiResponse.code}, msg=${apiResponse.msg}")
                         null
                     } else {
                         apiResponse.firstOrNull()
                     }
                 }
+            } catch (e: TimeoutCancellationException) {
+                status = "timeout"
+                null
+            } catch (e: ClientRequestException) {
+                val statusCode = e.response.status.value
+                status = when {
+                    statusCode in 400..499 -> "http_4xx"
+                    statusCode >= 500 -> "http_5xx"
+                    else -> "http_error"
+                }
+                log.error("HTTP error getting instrument $instId: ${e.response.status}", e)
+                null
             } catch (e: Exception) {
                 status = "error"
                 log.error("Error getting instrument {}", instId, e)

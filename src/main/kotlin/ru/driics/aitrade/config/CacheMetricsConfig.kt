@@ -66,6 +66,22 @@ class CacheMetricsConfig(
             .tags(tags)
             .description("The total time spent loading new values in seconds")
             .register(meterRegistry)
+        
+        // Cache hit rate: hits / (hits + misses)
+        Gauge.builder("cache.hit_rate", cache) {
+            val stats = it.stats()
+            val hits = stats.hitCount()
+            val misses = stats.missCount()
+            val total = hits + misses
+            if (total > 0) {
+                hits.toDouble() / total.toDouble()
+            } else {
+                0.0
+            }
+        }
+            .tags(tags)
+            .description("Cache hit rate (hits / (hits + misses))")
+            .register(meterRegistry)
     }
 }
 

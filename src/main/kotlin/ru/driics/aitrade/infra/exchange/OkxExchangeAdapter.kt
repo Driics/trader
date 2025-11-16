@@ -30,6 +30,7 @@ import ru.driics.aitrade.domain.util.quantize
 import ru.driics.aitrade.service.OkxRestClient
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.time.Clock
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -39,7 +40,8 @@ class OkxExchangeAdapter(
     private val tradingProperties: TradingProperties,
     private val tracer: Tracer,
     private val smartCache: SmartCacheStrategy,
-    private val cachedIndicatorCalculator: CachedIndicatorCalculator
+    private val cachedIndicatorCalculator: CachedIndicatorCalculator,
+    private val clock: Clock
 ) : MarketDataPort, TradingPort {
     companion object {
         private val log = KotlinLogging.logger { }
@@ -64,7 +66,7 @@ class OkxExchangeAdapter(
         private const val RETURN_CALCULATION_SCALE = 6
     }
 
-    private val sessionStartTime = AtomicLong(System.currentTimeMillis())
+    private val sessionStartTime = AtomicLong(clock.instant().toEpochMilli())
     private val invocationCount = AtomicLong(0L)
     private val initialAccountEquity = AtomicReference<BigDecimal?>(null)
 
@@ -90,8 +92,8 @@ class OkxExchangeAdapter(
         }
 
         MarketState(
-            timestamp = System.currentTimeMillis(),
-            minutesSinceStart = (System.currentTimeMillis() - sessionStartTime.get()) / MILLIS_PER_MINUTE,
+            timestamp = clock.instant().toEpochMilli(),
+            minutesSinceStart = (clock.instant().toEpochMilli() - sessionStartTime.get()) / MILLIS_PER_MINUTE,
             invocationCount = count,
             currencies = currencies,
             account = account.await(),

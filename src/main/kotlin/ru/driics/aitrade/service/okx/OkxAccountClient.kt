@@ -10,6 +10,7 @@ import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.micrometer.core.instrument.MeterRegistry
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
@@ -40,7 +41,7 @@ class OkxAccountClient(
     @RateLimiter(name = "okxAccount")
     @CircuitBreaker(name = "okxAccount")
     suspend fun fetchAccount(): OkxAccountResponse {
-        var status = "success"
+        var status = "ok"
 
         return meterRegistry.timeOkx("fetchAccount", { arrayOf("status", status) }) {
             try {
@@ -57,7 +58,12 @@ class OkxAccountClient(
                     val apiResponse = objectMapper.readValue<OkxAccountApiResponse>(body)
 
                     if (!apiResponse.isSuccess()) {
-                        status = "api_error_${apiResponse.code}"
+                        val statusCode = response.status.value
+                        status = when {
+                            statusCode in 400..499 -> "http_4xx"
+                            statusCode >= 500 -> "http_5xx"
+                            else -> "api_error"
+                        }
                         log.warn("OKX API error for account - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
                         return@withTimeout OkxAccountResponse("0", "0", "0", "0")
                     }
@@ -83,6 +89,18 @@ class OkxAccountClient(
                         unrealizedPnl = data.unrealizedPnl
                     )
                 }
+            } catch (e: TimeoutCancellationException) {
+                status = "timeout"
+                OkxAccountResponse("0", "0", "0", "0")
+            } catch (e: ClientRequestException) {
+                val statusCode = e.response.status.value
+                status = when {
+                    statusCode in 400..499 -> "http_4xx"
+                    statusCode >= 500 -> "http_5xx"
+                    else -> "http_error"
+                }
+                log.error("HTTP error fetching account info: ${e.response.status}", e)
+                OkxAccountResponse("0", "0", "0", "0")
             } catch (e: Exception) {
                 status = "error"
                 log.error("Error fetching account info", e)
@@ -95,11 +113,11 @@ class OkxAccountClient(
     @RateLimiter(name = "okxAccount")
     @CircuitBreaker(name = "okxAccount")
     suspend fun fetchOpenPositions(): List<OkxPositionResponse> {
-        var status = "success"
+        var status = "ok"
 
         return meterRegistry.timeOkx("fetchOpenPositions", { arrayOf("status", status) }) {
             try {
-                withTimeout(tradingProperties.okxTimeouts.account.toMillis()) {
+                withTimeout(tradingProperties.okxTimeouts.positions.toMillis()) {
                     val path = "/api/v5/account/positions?instType=SWAP"
                     val url = "$baseUrl$path"
                     val authHeaders = okxAuthService.createAuthHeaders("GET", path)
@@ -112,7 +130,12 @@ class OkxAccountClient(
                     val apiResponse = objectMapper.readValue<OkxApiResponse<OkxPositionResponse>>(body)
 
                     if (!apiResponse.isSuccess()) {
-                        status = "api_error_${apiResponse.code}"
+                        val statusCode = response.status.value
+                        status = when {
+                            statusCode in 400..499 -> "http_4xx"
+                            statusCode >= 500 -> "http_5xx"
+                            else -> "api_error"
+                        }
                         log.warn("OKX API error for positions - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
                         return@withTimeout emptyList()
                     }
@@ -123,6 +146,18 @@ class OkxAccountClient(
 
                     apiResponse.data
                 }
+            } catch (e: TimeoutCancellationException) {
+                status = "timeout"
+                emptyList()
+            } catch (e: ClientRequestException) {
+                val statusCode = e.response.status.value
+                status = when {
+                    statusCode in 400..499 -> "http_4xx"
+                    statusCode >= 500 -> "http_5xx"
+                    else -> "http_error"
+                }
+                log.error("HTTP error fetching open positions: ${e.response.status}", e)
+                emptyList()
             } catch (e: Exception) {
                 status = "error"
                 log.error("Error fetching open positions", e)

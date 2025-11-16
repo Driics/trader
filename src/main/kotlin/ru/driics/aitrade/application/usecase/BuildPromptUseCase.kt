@@ -36,7 +36,7 @@ class BuildPromptUseCase(
             buildTemplatePrompt(state, sessionStartMs, invocation)
         } catch (e: Exception) {
             log.warn(e) { "Failed to build template prompt, falling back to legacy builder" }
-            PromptBuilder.build(state, sessionStartMs, invocation)
+            PromptBuilder.build(state, sessionStartMs, invocation, clock)
         }
 
         val written = outputPort.write(prompt)

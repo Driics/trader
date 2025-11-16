@@ -18,7 +18,12 @@ import ru.driics.aitrade.domain.types.asSymbol
 import ru.driics.aitrade.application.usecase.AnalyzePromptUseCase
 import ru.driics.aitrade.application.usecase.BuildPromptUseCase
 import ru.driics.aitrade.application.usecase.ExecuteAiDecisionsUseCase
+import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.MeterRegistry
+import ru.driics.aitrade.common.timedSuspend
+import ru.driics.aitrade.common.traced
+import ru.driics.aitrade.common.logging.CorrelationId
+import io.opentelemetry.api.trace.Tracer
 import java.security.MessageDigest
 import java.time.Clock
 import java.util.Locale
@@ -36,7 +41,8 @@ class UpdateCycleOrchestrator(
     private val clock: Clock,
     private val schemaValidator: AiSchemaValidator,
     private val tradingProperties: TradingProperties,
-    private val confidenceCalibrator: ConfidenceCalibrator
+    private val confidenceCalibrator: ConfidenceCalibrator,
+    private val tracer: Tracer
 ) {
     companion object {
         private val log = logger<UpdateCycleOrchestrator>()
@@ -47,19 +53,36 @@ class UpdateCycleOrchestrator(
     private val invocationCount = AtomicLong(0L)
     private val lastUpdateTime = AtomicLong(0L)
     private val lastPromptHash = AtomicReference<String?>(null)
+    
+    // Metrics for AI response validation rejections
+    private fun getValidationRejectionCounter(reason: String): Counter {
+        // Normalize reason for metric tag (remove special chars, limit length)
+        val normalizedReason = reason
+            .take(50)
+            .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+            .lowercase()
+        return meterRegistry.counter("ai.response.validation.rejected", "reason", normalizedReason)
+    }
 
     suspend fun runOnce(): UpdateCycleResult {
         val invocation = invocationCount.incrementAndGet()
+        val correlationId = CorrelationId.generate()
 
         log.info { "╔══════════════════════════════════════════════════════" }
         log.info { "║ Update Cycle #$invocation" }
         log.info { "╚══════════════════════════════════════════════════════" }
 
-        val (result, took) = meterRegistry.timedSuspend(
-            "update.cycle",
-            "autoExecute", autoExecute.toString()
-        ) {
-            doRunOnce(invocation)
+        val (result, took) = tracer.traced("update.cycle", {
+            attr("cycleNumber", invocation)
+            attr("autoExecute", autoExecute)
+            attr("correlationId", correlationId)
+        }) { span ->
+            meterRegistry.timedSuspend(
+                "update.cycle",
+                "autoExecute", autoExecute.toString()
+            ) {
+                doRunOnce(invocation, correlationId)
+            }
         }
 
         lastUpdateTime.set(clock.instant().toEpochMilli())
@@ -69,9 +92,15 @@ class UpdateCycleOrchestrator(
         return result.copy(executionTimeMs = took)
     }
 
-    private suspend fun doRunOnce(invocation: Long): UpdateCycleResult {
+    private suspend fun doRunOnce(invocation: Long, correlationId: String): UpdateCycleResult {
         // Stage 1: Build prompt
-        val prompt = buildPrompt(invocation) ?: return errorResult("Failed to build prompt", 0)
+        val (prompt, buildPromptTime) = tracer.traced("update.cycle.build_prompt", {
+            attr("correlationId", correlationId)
+        }) { span ->
+            meterRegistry.timedSuspend("update.cycle.build_prompt") {
+                buildPrompt(invocation)
+            }
+        } ?: return errorResult("Failed to build prompt", 0)
 
         // Check if prompt changed
         if (isPromptUnchanged(prompt)) {
@@ -79,16 +108,24 @@ class UpdateCycleOrchestrator(
             return UpdateCycleResult(
                 success = true,
                 message = "Skipped (prompt unchanged)",
-                executionTimeMs = 0,
+                executionTimeMs = buildPromptTime,
                 promptSize = prompt.length,
                 positionsPlaced = 0
             )
         }
 
         // Stage 2: AI analysis
-        val aiResult = analyzePrompt(prompt) ?: return errorResult("Failed to analyze prompt", prompt.length)
+        val (aiResult, aiCallTime) = tracer.traced("update.cycle.ai_call", {
+            attr("correlationId", correlationId)
+            attr("promptSize", prompt.length.toLong())
+        }) { span ->
+            meterRegistry.timedSuspend("update.cycle.ai_call") {
+                analyzePrompt(prompt)
+            }
+        } ?: return errorResult("Failed to analyze prompt", prompt.length)
         
         if (!aiResult.isSuccess) {
+            meterRegistry.counter("update.cycle.ai_call.error").increment()
             log.error { "AI analysis failed: ${aiResult.errorMessage}" }
             return errorResult("AI analysis failed - ${aiResult.errorMessage}", prompt.length)
         }
@@ -96,24 +133,52 @@ class UpdateCycleOrchestrator(
         log.info { "AI analysis completed successfully" }
 
         // Stage 3: Validate and parse AI response
-        val rawDecisions = validateAndParseResponse(aiResult.response, prompt.length)
-            ?: return errorResult("AI response validation failed", prompt.length)
+        val (rawDecisions, parseTime) = tracer.traced("update.cycle.parse", {
+            attr("correlationId", correlationId)
+            attr("responseSize", aiResult.response.length.toLong())
+        }) { span ->
+            meterRegistry.timedSuspend("update.cycle.parse") {
+                validateAndParseResponse(aiResult.response, prompt.length)
+            }
+        } ?: run {
+            meterRegistry.counter("update.cycle.parse.error").increment()
+            return errorResult("AI response validation failed", prompt.length)
+        }
 
-        // Stage 4: Normalize and calibrate signals
-        val decisions = normalizeAndCalibrateSignals(rawDecisions, prompt.length)
-            ?: return errorResult("All signals rejected after normalization/calibration", prompt.length)
+        // Stage 4: Normalize and calibrate signals (guard/calibration happens in ExecuteAiDecisionsUseCase)
+        val (decisions, guardTime) = tracer.traced("update.cycle.guard", {
+            attr("correlationId", correlationId)
+            attr("rawDecisionsCount", rawDecisions.size.toLong())
+        }) { span ->
+            meterRegistry.timedSuspend("update.cycle.guard") {
+                normalizeAndCalibrateSignals(rawDecisions, prompt.length)
+            }
+        } ?: run {
+            meterRegistry.counter("update.cycle.guard.error").increment()
+            return errorResult("All signals rejected after normalization/calibration", prompt.length)
+        }
 
         logAiDecisionsSummary(decisions)
 
         // Stage 5: Execute decisions (if enabled)
-        val executionResults = if (autoExecute) {
-            executeDecisions(decisions, invocation) ?: return errorResult(
-                "AI succeeded but execution failed",
-                prompt.length
-            )
+        val (executionResults, executeTime) = if (autoExecute) {
+            tracer.traced("update.cycle.execute", {
+                attr("correlationId", correlationId)
+                attr("decisionsCount", decisions.size.toLong())
+            }) { span ->
+                meterRegistry.timedSuspend("update.cycle.execute") {
+                    executeDecisions(decisions, invocation)
+                }
+            } ?: run {
+                meterRegistry.counter("update.cycle.execute.error").increment()
+                return errorResult(
+                    "AI succeeded but execution failed",
+                    prompt.length
+                )
+            }
         } else {
             log.info { "Auto-execution disabled, skipping trade placement" }
-            null
+            null to 0L
         }
 
         val positionsPlaced = executionResults?.count { it.action == AIAction.PLACED } ?: 0
@@ -138,7 +203,10 @@ class UpdateCycleOrchestrator(
 
     private suspend fun buildPrompt(invocation: Long): String? = try {
         build.execute(symbols, sessionStartTime.get(), invocation)
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
     } catch (e: Exception) {
+        meterRegistry.counter("update.cycle.build_prompt.error").increment()
         log.error(e) { "Failed to build prompt" }
         null
     }
@@ -153,7 +221,10 @@ class UpdateCycleOrchestrator(
 
     private suspend fun analyzePrompt(prompt: String) = try {
         analyze.execute(prompt)
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
     } catch (e: Exception) {
+        meterRegistry.counter("update.cycle.ai_call.error").increment()
         log.error(e) { "Failed to analyze prompt" }
         null
     }
@@ -166,6 +237,9 @@ class UpdateCycleOrchestrator(
         return when (validationResult) {
             is AiSchemaValidator.ValidationResult.Valid -> validationResult.decisions
             is AiSchemaValidator.ValidationResult.Rejected -> {
+                // Record validation rejection metric
+                getValidationRejectionCounter(validationResult.reason).increment()
+                
                 log.error { "AI response validation failed: ${validationResult.reason}" }
                 BusinessEventLogger.error(
                     event = "ai_response_validation_failed",
@@ -225,7 +299,10 @@ class UpdateCycleOrchestrator(
         val results = execute.execute(decisions)
         log.info { "Trade execution completed: ${results.size} decisions processed" }
         results
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
     } catch (e: Exception) {
+        meterRegistry.counter("update.cycle.execute.error").increment()
         BusinessEventLogger.error(
             event = "update_cycle_execution_failed",
             error = e,

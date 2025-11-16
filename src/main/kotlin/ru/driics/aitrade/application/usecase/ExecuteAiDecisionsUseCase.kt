@@ -3,6 +3,8 @@ package ru.driics.aitrade.application.usecase
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.MeterRegistry
 import ru.driics.aitrade.application.ai.ActionGuard
 import ru.driics.aitrade.application.ai.ConfidenceCalibrator
 import ru.driics.aitrade.application.ai.IdempotencyService
@@ -32,7 +34,8 @@ class ExecuteAiDecisionsUseCase(
     private val market: MarketDataPort,
     private val tradingProperties: TradingProperties,
     private val clock: Clock,
-    private val confidenceCalibrator: ConfidenceCalibrator
+    private val confidenceCalibrator: ConfidenceCalibrator,
+    private val meterRegistry: MeterRegistry
 ) {
     companion object {
         private val log = logger<ExecuteAiDecisionsUseCase>()
@@ -50,6 +53,16 @@ class ExecuteAiDecisionsUseCase(
 
     private val actionGuard = ActionGuard(tradingProperties)
     private val idempotencyService = IdempotencyService(clock)
+    
+    // Metrics for guardrail rejections
+    private fun getGuardRejectionCounter(reason: String): Counter {
+        // Normalize reason for metric tag (remove special chars, limit length)
+        val normalizedReason = reason
+            .take(50)
+            .replace(Regex("[^a-zA-Z0-9_\\-]"), "_")
+            .lowercase()
+        return meterRegistry.counter("guard.rejected", "reason", normalizedReason)
+    }
 
     suspend fun execute(decisions: AiTradeDecisionMap): List<AiTradeExecutionResult> = coroutineScope {
         log.info { "Executing AI trading decisions" }
@@ -149,6 +162,9 @@ class ExecuteAiDecisionsUseCase(
 
         when (validation) {
             is ActionGuard.ValidationResult.Rejected -> {
+                // Record guardrail rejection metric
+                getGuardRejectionCounter(validation.reason).increment()
+                
                 BusinessEventLogger.orderRejected(
                     symbol = symbol,
                     clOrdId = null,

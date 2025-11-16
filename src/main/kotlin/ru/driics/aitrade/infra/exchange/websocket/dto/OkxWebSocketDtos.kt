@@ -47,7 +47,7 @@ data class OkxWsTickerUpdate(
     @field:JsonProperty("ts") val ts: String
 ) {
     fun priceOrNull(): BigDecimal? = last.toBigDecimalOrNull()
-    fun tsMillisOrNow(): Long = ts.toLongOrNull() ?: System.currentTimeMillis()
+    fun tsMillisOrNow(clock: java.time.Clock = java.time.Clock.systemUTC()): Long = ts.toLongOrNull() ?: clock.instant().toEpochMilli()
 }
 
 // ----- Public: candles (object-shaped payload) -----

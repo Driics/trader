@@ -4,13 +4,15 @@ import io.github.oshai.kotlinlogging.KLogger
 import io.github.oshai.kotlinlogging.KotlinLogging
 import org.slf4j.MDC
 import java.math.BigDecimal
+import java.time.Clock
 
 /**
  * Structured logger that outputs JSON-compatible log entries.
  * All logs include correlation ID and structured fields for easy parsing.
  */
 class StructuredLogger(
-    private val logger: KLogger
+    private val logger: KLogger,
+    private val clock: Clock = Clock.systemUTC()
 ) {
 
     /**
@@ -61,7 +63,7 @@ class StructuredLogger(
     private fun buildStructuredContext(event: String, vararg fields: Pair<String, Any?>): Map<String, Any?> {
         val context = mutableMapOf<String, Any?>(
             "event" to event,
-            "timestamp" to System.currentTimeMillis()
+            "timestamp" to clock.instant().toEpochMilli()
         )
 
         // Add correlation ID if present

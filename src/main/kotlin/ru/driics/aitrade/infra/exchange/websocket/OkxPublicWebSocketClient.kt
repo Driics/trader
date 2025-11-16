@@ -9,11 +9,11 @@ import io.ktor.client.plugins.websocket.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.isActive
+import org.springframework.context.event.ContextClosedEvent
+import org.springframework.context.event.EventListener
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.config.OkxProperties
 import ru.driics.aitrade.infra.exchange.websocket.dto.*
@@ -21,7 +21,6 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import jakarta.annotation.PreDestroy
-import kotlinx.coroutines.CancellationException
 import kotlin.math.min
 import kotlin.random.Random
 
@@ -128,10 +127,13 @@ class OkxPublicWebSocketClient(
                     log.info { "Public WS stopping, not reconnecting" }
                     break
                 }
-                val base = min(30_000, (1_000 shl attempt))
-                val sleep = base + Random.nextInt(0, 1_000)
-                log.warn(t) { "Public WS reconnect in ${sleep}ms (attempt=$attempt)" }
-                delay(sleep.toLong())
+                // Only log reconnect message if not stopping
+                if (!stopping.get()) {
+                    val base = min(30_000, (1_000 shl attempt))
+                    val sleep = base + Random.nextInt(0, 1_000)
+                    log.warn(t) { "Public WS reconnect in ${sleep}ms (attempt=$attempt)" }
+                    delay(sleep.toLong())
+                }
                 attempt = (attempt + 1).coerceAtMost(15)
             }
         }
@@ -204,12 +206,22 @@ class OkxPublicWebSocketClient(
         activeSession.get()?.let { session ->
             try {
                 runBlocking {
-                    session.close()
+                    withTimeoutOrNull(5_000) {
+                        session.close()
+                    } ?: log.warn { "Public WS session close timed out" }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 log.warn(e) { "Error closing public WS session" }
             }
         }
         log.info { "Public WS client destroyed" }
+    }
+
+    @EventListener(ContextClosedEvent::class)
+    fun onContextClosed() {
+        log.info { "Context closed, shutting down public WS client" }
+        destroy()
     }
 }

@@ -17,13 +17,14 @@ import kotlinx.serialization.json.Json
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.env.Environment
+import ru.driics.aitrade.config.TradingProperties
 import kotlin.time.Duration.Companion.seconds
 
 @Configuration
 class OkxKtorClientConfig {
     @Bean
     @OptIn(ExperimentalCoroutinesApi::class)
-    fun okxKtorClient(okxHttpProps: OkxHttpProperties, env: Environment): HttpClient {
+    fun okxKtorClient(okxHttpProps: OkxHttpProperties, tradingProperties: TradingProperties, env: Environment): HttpClient {
         return HttpClient(CIO) {
             // Connection pooling
             engine {
@@ -46,10 +47,17 @@ class OkxKtorClientConfig {
             }
 
             // HTTP configuration
+            // Set timeouts slightly higher than per-call SLAs to allow per-call timeouts to trigger first
+            // Max per-call timeout is placeOrder (8s), so set requestTimeoutMillis to 10s
+            val maxPerCallTimeoutMs = maxOf(
+                tradingProperties.okxTimeouts.placeOrder.toMillis().toInt(),
+                tradingProperties.okxTimeouts.setLeverage.toMillis().toInt(),
+                tradingProperties.okxTimeouts.candles.toMillis().toInt()
+            )
             install(HttpTimeout) {
-                requestTimeoutMillis = 30_000
-                connectTimeoutMillis = 10_000
-                socketTimeoutMillis = 20_000
+                requestTimeoutMillis = maxPerCallTimeoutMs + 2_000 // Add 2s buffer above max per-call SLA
+                connectTimeoutMillis = okxHttpProps.connectTimeoutMs
+                socketTimeoutMillis = maxPerCallTimeoutMs + 1_000 // Add 1s buffer for socket timeout
             }
 
             // Compression

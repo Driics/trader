@@ -6,6 +6,7 @@ import io.micrometer.core.instrument.Timer
 /**
  * Times a blocking operation and records the duration.
  * Returns Pair<Result, DurationMs>.
+ * Uses nanoTime for duration measurements to avoid clock adjustments affecting measurements.
  */
 inline fun <T> MeterRegistry.timed(
     metricName: String,
@@ -14,10 +15,10 @@ inline fun <T> MeterRegistry.timed(
 ): Pair<T, Long> {
     val sample = Timer.start(this)
     var duration = 0L
-    val startMs = System.currentTimeMillis()
+    val startNanos = System.nanoTime()
     return try {
         val result = block()
-        duration = System.currentTimeMillis() - startMs
+        duration = (System.nanoTime() - startNanos) / 1_000_000 // Convert to milliseconds
         result to duration
     } finally {
         sample.stop(
@@ -31,6 +32,7 @@ inline fun <T> MeterRegistry.timed(
 /**
  * Times a suspend operation and records the duration.
  * Returns Pair<Result, DurationMs>.
+ * Uses nanoTime for duration measurements to avoid clock adjustments affecting measurements.
  */
 suspend inline fun <T> MeterRegistry.timedSuspend(
     metricName: String,
@@ -41,9 +43,9 @@ suspend inline fun <T> MeterRegistry.timedSuspend(
     var duration = 0L
 
     return try {
-        val startMs = System.currentTimeMillis()
+        val startNanos = System.nanoTime()
         val result = block()
-        duration = System.currentTimeMillis() - startMs
+        duration = (System.nanoTime() - startNanos) / 1_000_000 // Convert to milliseconds
         result to duration
     } finally {
         sample.stop(

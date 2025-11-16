@@ -1,6 +1,7 @@
 package ru.driics.aitrade.domain.services
 
 import ru.driics.aitrade.domain.model.MarketState
+import java.time.Clock
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -18,12 +19,13 @@ object PromptBuilder {
     fun build(
         marketState: MarketState,
         sessionStartTime: Long,
-        invocationCount: Long
+        invocationCount: Long,
+        clock: Clock = Clock.systemUTC()
     ): String {
         val minutesSinceStart = TimeUnit.MILLISECONDS.toMinutes(
-            System.currentTimeMillis() - sessionStartTime
+            clock.instant().toEpochMilli() - sessionStartTime
         )
-        val currentTime = LocalDateTime.now(ZoneId.of("UTC"))
+        val currentTime = LocalDateTime.ofInstant(clock.instant(), ZoneId.of("UTC"))
             .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS"))
 
         return buildString {
