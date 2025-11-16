@@ -9,6 +9,7 @@ import io.ktor.client.plugins.websocket.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -19,6 +20,8 @@ import ru.driics.aitrade.infra.exchange.websocket.dto.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import jakarta.annotation.PreDestroy
+import kotlinx.coroutines.CancellationException
 import kotlin.math.min
 import kotlin.random.Random
 
@@ -57,12 +60,13 @@ class OkxPublicWebSocketClient(
 
     private val connected = AtomicBoolean(false)
     private val activeSession = AtomicReference<DefaultClientWebSocketSession?>(null)
+    private val stopping = AtomicBoolean(false)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     suspend fun connect() {
         var attempt = 0
-        while (scope.isActive) {
+        while (scope.isActive && !stopping.get()) {
             try {
                 val url = okxProperties.publicWsUrl()
                 httpClient.webSocket(urlString = url, request = {
@@ -94,6 +98,8 @@ class OkxPublicWebSocketClient(
                                 is Frame.Ping -> {
                                     try {
                                         send(Frame.Pong(frame.data))
+                                    } catch (e: CancellationException) {
+                                        throw e
                                     } catch (e: Exception) {
                                         log.warn(e) { "Pong wasn't send" }
                                         break
@@ -115,7 +121,13 @@ class OkxPublicWebSocketClient(
                         log.warn { "Public WS disconnected" }
                     }
                 }
+            } catch (t: CancellationException) {
+                throw t
             } catch (t: Throwable) {
+                if (!scope.isActive || stopping.get()) {
+                    log.info { "Public WS stopping, not reconnecting" }
+                    break
+                }
                 val base = min(30_000, (1_000 shl attempt))
                 val sleep = base + Random.nextInt(0, 1_000)
                 log.warn(t) { "Public WS reconnect in ${sleep}ms (attempt=$attempt)" }
@@ -183,5 +195,21 @@ class OkxPublicWebSocketClient(
         } catch (e: Exception) {
             log.debug(e) { "Public WS parse failed: ${text.take(200)}" }
         }
+    }
+
+    @PreDestroy
+    fun destroy() {
+        stopping.set(true)
+        scope.cancel()
+        activeSession.get()?.let { session ->
+            try {
+                runBlocking {
+                    session.close()
+                }
+            } catch (e: Exception) {
+                log.warn(e) { "Error closing public WS session" }
+            }
+        }
+        log.info { "Public WS client destroyed" }
     }
 }

@@ -12,6 +12,7 @@ import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.runBlocking
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.config.OkxProperties
 import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsAccountUpdate
@@ -21,6 +22,9 @@ import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsTypeRefs
 import ru.driics.aitrade.service.OkxAuthService
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+import jakarta.annotation.PreDestroy
+import kotlinx.coroutines.CancellationException
 import kotlin.math.min
 import kotlin.random.Random
 
@@ -42,6 +46,8 @@ class OkxPrivateWebSocketClient(
 ) {
     private val log = KotlinLogging.logger {}
     private val connected = AtomicBoolean(false)
+    private val activeSession = AtomicReference<DefaultClientWebSocketSession?>(null)
+    private val stopping = AtomicBoolean(false)
 
     private val _orderFlow = MutableSharedFlow<OkxWsOrderUpdate>(
         replay = 0, extraBufferCapacity = 512, onBufferOverflow = BufferOverflow.DROP_OLDEST
@@ -62,7 +68,7 @@ class OkxPrivateWebSocketClient(
 
     suspend fun connect() {
         var attempt = 0
-        while (scope.isActive) {
+        while (scope.isActive && !stopping.get()) {
             try {
                 val url = okxProperties.privateWsUrl()
                 httpClient.webSocket(urlString = url, request = {
@@ -71,6 +77,7 @@ class OkxPrivateWebSocketClient(
                     headers.append("Origin", "https://www.okx.com")
                 }) {
                     connected.set(true)
+                    activeSession.set(this)
                     attempt = 0
                     if (!loginAndAwaitAck(this)) {
                         log.error { "OKX private WS login failed" }
@@ -98,6 +105,8 @@ class OkxPrivateWebSocketClient(
                                 is Frame.Ping -> {
                                     try {
                                         send(Frame.Pong(frame.data))
+                                    } catch (e: CancellationException) {
+                                        throw e
                                     } catch (e: Exception) {
                                         log.warn(e) { "Pong wasn't send" }
                                         break
@@ -115,10 +124,17 @@ class OkxPrivateWebSocketClient(
                     } finally {
                         pingJob.cancel()
                         connected.set(false)
+                        activeSession.set(null)
                         log.warn { "Private WS disconnected" }
                     }
                 }
+            } catch (t: CancellationException) {
+                throw t
             } catch (t: Throwable) {
+                if (!scope.isActive || stopping.get()) {
+                    log.info { "Private WS stopping, not reconnecting" }
+                    break
+                }
                 val base = min(30_000, (1_000 shl attempt))
                 val sleep = base + Random.nextInt(0, 1_000)
                 log.warn(t) { "Private WS reconnect in ${sleep}ms (attempt=$attempt)" }
@@ -223,5 +239,21 @@ class OkxPrivateWebSocketClient(
         } catch (e: Exception) {
             log.trace(e) { "Private WS parse failed: ${text.take(200)}" }
         }
+    }
+
+    @PreDestroy
+    fun destroy() {
+        stopping.set(true)
+        scope.cancel()
+        activeSession.get()?.let { session ->
+            try {
+                runBlocking {
+                    session.close()
+                }
+            } catch (e: Exception) {
+                log.warn(e) { "Error closing private WS session" }
+            }
+        }
+        log.info { "Private WS client destroyed" }
     }
 }

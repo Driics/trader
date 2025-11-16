@@ -77,6 +77,8 @@ dependencies {
 
     // Cache
     implementation("com.github.ben-manes.caffeine:caffeine:3.2.2")
+    // Caffeine metrics for Micrometer
+    implementation("io.micrometer:micrometer-core")
     
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")

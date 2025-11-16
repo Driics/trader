@@ -4,6 +4,7 @@ import ru.driics.aitrade.common.logging.logger
 import ru.driics.aitrade.domain.model.AiSignal
 import ru.driics.aitrade.domain.model.AiTradeSignalArgs
 import ru.driics.aitrade.domain.types.Symbol
+import ru.driics.aitrade.domain.util.isNegative
 import java.math.BigDecimal
 import java.math.BigDecimal.ONE
 import java.math.BigDecimal.ZERO

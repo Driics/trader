@@ -2,7 +2,7 @@ package ru.driics.aitrade.infra.exchange
 
 import com.github.benmanes.caffeine.cache.Caffeine
 import io.github.oshai.kotlinlogging.KotlinLogging
-import ru.driics.aitrade.infra.cache.IndicatorCache
+import ru.driics.aitrade.infra.cache.CachedIndicatorCalculator
 import ru.driics.aitrade.infra.cache.SmartCacheStrategy
 import ru.driics.aitrade.infra.cache.getTyped
 import io.ktor.client.plugins.*
@@ -39,7 +39,7 @@ class OkxExchangeAdapter(
     private val tradingProperties: TradingProperties,
     private val tracer: Tracer,
     private val smartCache: SmartCacheStrategy,
-    private val indicatorCache: IndicatorCache
+    private val cachedIndicatorCalculator: CachedIndicatorCalculator
 ) : MarketDataPort, TradingPort {
     companion object {
         private val log = KotlinLogging.logger { }
@@ -178,13 +178,13 @@ class OkxExchangeAdapter(
      * Runs calculations in parallel for better performance.
      */
     private suspend fun calculateIntradayIndicators(prices: List<BigDecimal>): IntradayIndicators = coroutineScope {
-        val currentEma20 = async(Dispatchers.Default) { indicatorCache.calculateEMA(prices, EMA_PERIOD_20) }
-        val currentMacd = async(Dispatchers.Default) { indicatorCache.calculateMACD(prices) }
-        val currentRsi7 = async(Dispatchers.Default) { indicatorCache.calculateRSI(prices, RSI_PERIOD_7) }
-        val intradayEma20 = async(Dispatchers.Default) { indicatorCache.calculateProgressiveEMA(prices, EMA_PERIOD_20) }
-        val intradayMacd = async(Dispatchers.Default) { indicatorCache.calculateProgressiveMACD(prices) }
-        val intradayRsi7 = async(Dispatchers.Default) { indicatorCache.calculateProgressiveRSI(prices, RSI_PERIOD_7) }
-        val intradayRsi14 = async(Dispatchers.Default) { indicatorCache.calculateProgressiveRSI(prices, RSI_PERIOD_14) }
+        val currentEma20 = async(Dispatchers.Default) { cachedIndicatorCalculator.calculateEMA(prices, EMA_PERIOD_20) }
+        val currentMacd = async(Dispatchers.Default) { cachedIndicatorCalculator.calculateMACD(prices) }
+        val currentRsi7 = async(Dispatchers.Default) { cachedIndicatorCalculator.calculateRSI(prices, RSI_PERIOD_7) }
+        val intradayEma20 = async(Dispatchers.Default) { cachedIndicatorCalculator.calculateProgressiveEMA(prices, EMA_PERIOD_20) }
+        val intradayMacd = async(Dispatchers.Default) { cachedIndicatorCalculator.calculateProgressiveMACD(prices) }
+        val intradayRsi7 = async(Dispatchers.Default) { cachedIndicatorCalculator.calculateProgressiveRSI(prices, RSI_PERIOD_7) }
+        val intradayRsi14 = async(Dispatchers.Default) { cachedIndicatorCalculator.calculateProgressiveRSI(prices, RSI_PERIOD_14) }
 
         IntradayIndicators(
             currentEma20 = currentEma20.await(),
@@ -206,12 +206,12 @@ class OkxExchangeAdapter(
         candles4h: List<OkxCandleResponse>,
         prices4h: List<BigDecimal>
     ): Indicators4H = coroutineScope {
-        val ema20 = async(Dispatchers.Default) { indicatorCache.calculateEMA(prices4h, EMA_PERIOD_20) }
-        val ema50 = async(Dispatchers.Default) { indicatorCache.calculateEMA(prices4h, EMA_PERIOD_50) }
-        val atr3 = async(Dispatchers.Default) { indicatorCache.calculateATR(candles4h, ATR_PERIOD_3) }
-        val atr14 = async(Dispatchers.Default) { indicatorCache.calculateATR(candles4h, ATR_PERIOD_14) }
-        val macd = async(Dispatchers.Default) { indicatorCache.calculateProgressiveMACD(prices4h) }
-        val rsi14 = async(Dispatchers.Default) { indicatorCache.calculateProgressiveRSI(prices4h, RSI_PERIOD_14) }
+        val ema20 = async(Dispatchers.Default) { cachedIndicatorCalculator.calculateEMA(prices4h, EMA_PERIOD_20) }
+        val ema50 = async(Dispatchers.Default) { cachedIndicatorCalculator.calculateEMA(prices4h, EMA_PERIOD_50) }
+        val atr3 = async(Dispatchers.Default) { cachedIndicatorCalculator.calculateATR(candles4h, ATR_PERIOD_3) }
+        val atr14 = async(Dispatchers.Default) { cachedIndicatorCalculator.calculateATR(candles4h, ATR_PERIOD_14) }
+        val macd = async(Dispatchers.Default) { cachedIndicatorCalculator.calculateProgressiveMACD(prices4h) }
+        val rsi14 = async(Dispatchers.Default) { cachedIndicatorCalculator.calculateProgressiveRSI(prices4h, RSI_PERIOD_14) }
 
         val volume4h = candles4h.lastOrNull()?.volume?.toBigDecimalOrNull() ?: BigDecimal.ZERO
         val avgVolume4h = calculateAverageVolume(candles4h, last = VOLUME_AVG_PERIOD)

@@ -64,16 +64,14 @@ class AiBudgetLimiter(
         val now = clock.instant()
         val last = lastRefill.get()
         val elapsed = Duration.between(last, now)
-
         if (elapsed >= refillInterval) {
             // Refill tokens
             val intervals = elapsed.toMinutes() / refillInterval.toMinutes()
             val tokensToAdd = intervals * budgetPerMinute
-
             if (lastRefill.compareAndSet(last, now)) {
-                val current = tokens.get()
-                val newValue = (current + tokensToAdd).coerceAtMost(budgetPerMinute.toLong())
-                tokens.set(newValue)
+                val newValue = tokens.updateAndGet { current ->
+                    (current + tokensToAdd).coerceAtMost(budgetPerMinute)
+                }
                 log.debug { "Refilled AI budget: $tokensToAdd tokens, new balance: $newValue" }
             }
         }

@@ -113,7 +113,8 @@ class ExecuteAiDecisionsUseCase(
         val lotSz: BigDecimal,
         val tickSz: BigDecimal,
         val tpPx: BigDecimal?,
-        val slPx: BigDecimal?
+        val slPx: BigDecimal?,
+        val signalKey: String?
     )
 
     private suspend fun buildPlan(args: AiTradeSignalArgs, supported: Set<String>): PlanResult {
@@ -176,9 +177,6 @@ class ExecuteAiDecisionsUseCase(
                     return PlanResult.Skip(symbol, "Zero/unknown quantity")
                 }
 
-                // Record signal for idempotency
-                idempotencyService.recordSignal(signalKey)
-
                 return PlanResult.Ready(
                     OrderPlan(
                         symbol = symbol,
@@ -189,11 +187,12 @@ class ExecuteAiDecisionsUseCase(
                         entryPx = validation.quantizedEntry,
                         ctVal = ctVal,
                         ctValCcy = ccy,
-                        minSz = min,
-                        lotSz = lot,
-                        tickSz = tick,
+                        minSz = min ?: BigDecimal.ZERO,
+                        lotSz = lot ?: BigDecimal.ZERO,
+                        tickSz = tick ?: BigDecimal.ZERO,
                         tpPx = validation.quantizedTp,
-                        slPx = validation.quantizedSl
+                        slPx = validation.quantizedSl,
+                        signalKey = signalKey
                     )
                 )
             }
@@ -258,6 +257,9 @@ class ExecuteAiDecisionsUseCase(
         return if (outcome.ok) {
             // Record trade for cooldown tracking
             confidenceCalibrator.recordTrade(plan.symbol)
+
+            // Record signal for idempotency only after successful execution
+            plan.signalKey?.let { idempotencyService.recordSignal(it) }
 
             // Log structured business event
             BusinessEventLogger.orderPlaced(

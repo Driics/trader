@@ -28,14 +28,6 @@ class TimeBasedCache<K>(
         return !isExpired(timestamp)
     }
 
-    /**
-     * Gets the timestamp for a key, or null if not found/expired.
-     */
-    fun get(key: K): Long? {
-        val timestamp = cache[key] ?: return null
-        return timestamp.takeIf { !isExpired(it) }
-    }
-
     private fun isExpired(timestamp: Long): Boolean {
         val now = clock.instant().toEpochMilli()
         val elapsed = now - timestamp
@@ -70,24 +62,12 @@ class TimeBasedCache<K>(
     /**
      * Removes expired entries from cache.
      */
-    fun cleanupExpired() {
+    private fun cleanupExpired() {
         val expired = cache.entries.filter { isExpired(it.value) }
         expired.forEach { cache.remove(it.key) }
         if (expired.isNotEmpty()) {
             log.debug { "Cleaned up ${expired.size} expired cache entries" }
         }
-    }
-
-    /**
-     * Gets current cache size.
-     */
-    fun size(): Int = cache.size
-
-    /**
-     * Clears all entries.
-     */
-    fun clear() {
-        cache.clear()
     }
 }
 
