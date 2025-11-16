@@ -4,6 +4,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import ru.driics.aitrade.common.logging.BusinessEventLogger
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.*
 import ru.driics.aitrade.domain.ports.MarketDataPort
@@ -228,15 +229,19 @@ class ExecuteAiDecisionsUseCase(
         ).getOrThrow()
 
         return if (outcome.ok) {
-            val orderDetails = buildString {
-                append("${plan.side.uppercase()} ${sizing.roundedContracts} contracts @ ${plan.entryPx.stripTrailingZeros().toPlainString()}")
-                append(" | Leverage: ${sizing.leverage}x")
-                plan.tpPx?.let { append(" | TP: ${it.stripTrailingZeros().toPlainString()}") }
-                plan.slPx?.let { append(" | SL: ${it.stripTrailingZeros().toPlainString()}") }
-                append(" | Cost: $${sizing.totalUsd.setScale(2, RoundingMode.HALF_UP)}")
-            }
-
-            log.info { "✓ ${plan.symbol}: $orderDetails" }
+            // Log structured business event
+            BusinessEventLogger.orderPlaced(
+                symbol = plan.symbol,
+                orderId = outcome.ordId,
+                clOrdId = clId,
+                side = plan.side,
+                contracts = sizing.roundedContracts,
+                price = plan.entryPx,
+                tp = plan.tpPx,
+                sl = plan.slPx,
+                leverage = sizing.leverage,
+                costUsd = sizing.totalUsd
+            )
 
             AiTradeExecutionResult(
                 symbol = plan.symbol,
@@ -249,7 +254,13 @@ class ExecuteAiDecisionsUseCase(
                 placedContracts = sizing.roundedContracts
             )
         } else {
-            log.warn { "✗ ${plan.symbol}: Order rejected - ${outcome.message}" }
+            BusinessEventLogger.orderRejected(
+                symbol = plan.symbol,
+                clOrdId = clId,
+                reason = outcome.message ?: "Unknown error",
+                errorCode = null
+            )
+
             AiTradeExecutionResult(
                 symbol = plan.symbol,
                 action = AIAction.SKIPPED,

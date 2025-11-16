@@ -1,7 +1,6 @@
 package ru.driics.aitrade.controller.util
 
 import ru.driics.aitrade.application.orchestrator.UpdateCycleOrchestrator
-import java.time.Clock
 import java.time.Duration
 
 /**
@@ -30,10 +29,10 @@ object TradingSystemUtils {
     /**
      * Estimates when the next execution should occur based on the last update time.
      */
-    fun estimateNextExecution(orchestrator: UpdateCycleOrchestrator, clock: Clock): String {
+    fun estimateNextExecution(orchestrator: UpdateCycleOrchestrator): String {
         val lastUpdate = orchestrator.getLastUpdateTime() ?: orchestrator.getSessionStartTime()
-        val nextExecution = lastUpdate + 180_000 // 3 minutes
-        val now = clock.millis()
+        val nextExecution = lastUpdate + 180000 // 3 minutes
+        val now = System.currentTimeMillis()
 
         return if (nextExecution > now) {
             val secondsUntil = (nextExecution - now) / 1000

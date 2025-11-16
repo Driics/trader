@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 @Service
 class KoogAiService(
-    private val openRouterProperties: OpenRouterProperties,
+    openRouterProperties: OpenRouterProperties,
     private val meterRegistry: MeterRegistry,
     @param:Value("\${ai.custom.system-prompt:You are an expert crypto trading analyst.}")
     private val systemPrompt: String

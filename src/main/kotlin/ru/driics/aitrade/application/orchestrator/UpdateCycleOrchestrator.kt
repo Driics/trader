@@ -3,6 +3,7 @@ package ru.driics.aitrade.application.orchestrator
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import io.github.oshai.kotlinlogging.KotlinLogging
+import ru.driics.aitrade.common.logging.BusinessEventLogger
 import io.micrometer.core.instrument.MeterRegistry
 import ru.driics.aitrade.application.usecase.AnalyzePromptUseCase
 import ru.driics.aitrade.application.usecase.BuildPromptUseCase
@@ -137,7 +138,12 @@ class UpdateCycleOrchestrator(
                 executionResults = execute.execute(decisions)
                 log.info { "Trade execution completed: ${executionResults.size} decisions processed" }
             } catch (e: Exception) {
-                log.error(e) { "Failed to execute AI decisions" }
+                BusinessEventLogger.error(
+                    event = "update_cycle_execution_failed",
+                    error = e,
+                    "cycleNumber" to invocationCount.get(),
+                    "decisionsCount" to decisions.size
+                )
                 return UpdateCycleResult(
                     success = false,
                     message = "Warning: AI succeeded but execution failed - ${e.message}",
@@ -149,12 +155,24 @@ class UpdateCycleOrchestrator(
             log.info { "Auto-execution disabled, skipping trade placement" }
         }
 
+        val cycleNumber = invocationCount.get()
+        val positionsPlaced = executionResults?.count { it.action == AIAction.PLACED } ?: 0
+
+        // Log structured update cycle event
+        BusinessEventLogger.updateCycle(
+            cycleNumber = cycleNumber,
+            durationMs = 0, // Will be calculated by caller
+            symbolsProcessed = decisions.size,
+            positionsPlaced = positionsPlaced,
+            success = true
+        )
+
         return UpdateCycleResult(
             success = true,
             message = "Success",
             executionTimeMs = 0,
             promptSize = prompt.length,
-            positionsPlaced = executionResults?.count { it.action == AIAction.PLACED } ?: 0
+            positionsPlaced = positionsPlaced
         )
     }
 

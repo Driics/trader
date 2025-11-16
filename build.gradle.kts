@@ -73,6 +73,7 @@ dependencies {
     // Logging
     implementation("org.springframework.boot:spring-boot-starter-logging")
     implementation("io.github.oshai:kotlin-logging-jvm:7.0.3")
+    implementation("net.logstash.logback:logstash-logback-encoder:7.4") // JSON logging for ELK/Loki
 
     // Cache
     implementation("com.github.ben-manes.caffeine:caffeine:3.2.2")

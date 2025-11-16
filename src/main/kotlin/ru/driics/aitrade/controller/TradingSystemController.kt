@@ -12,7 +12,6 @@ import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.controller.mapper.TradingSystemResponseMapper
 import ru.driics.aitrade.controller.util.TradingSystemUtils
 import java.time.Clock
-import java.time.Instant
 
 /**
  * REST controller for trading system monitoring and control.
@@ -36,10 +35,7 @@ class TradingSystemController(
         val sessionStart = orchestrator.getSessionStartTime()
         val uptimeSeconds = (now - sessionStart) / 1000
 
-        val response = TradingSystemResponseMapper.mapToHealthResponse(
-            orchestrator,
-            uptimeSeconds
-        )
+        val response = TradingSystemResponseMapper.mapToHealthResponse(orchestrator, uptimeSeconds)
 
         log.debug { "Health check - Status: UP, Invocations: ${response.invocationCount}" }
         return ResponseEntity.ok(response)
@@ -94,7 +90,7 @@ class TradingSystemController(
 
     @GetMapping("/status")
     fun getStatus(): ResponseEntity<StatusResponse> {
-        val nextExecutionEstimate = TradingSystemUtils.estimateNextExecution(orchestrator, clock)
+        val nextExecutionEstimate = TradingSystemUtils.estimateNextExecution(orchestrator)
         val response = TradingSystemResponseMapper.mapToStatusResponse(
             orchestrator = orchestrator,
             tradingProperties = tradingProperties,

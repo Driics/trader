@@ -15,6 +15,7 @@ import kotlinx.coroutines.withTimeout
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
 import org.springframework.stereotype.Component
+import ru.driics.aitrade.common.logging.BusinessEventLogger
 import ru.driics.aitrade.common.timeOkx
 import ru.driics.aitrade.config.OkxProperties
 import ru.driics.aitrade.config.TradingProperties
@@ -98,7 +99,6 @@ class OkxTradingClient(
         var status = "success"
 
         return meterRegistry.timeOkx("placeOrder", { arrayOf("side", side, "status", status) }) {
-            val previous = MDC.getCopyOfContextMap()
             try {
                 withTimeout(tradingProperties.okxTimeouts.placeOrder.toMillis()) {
                     clOrdId?.let { MDC.put("clOrdId", it) }
@@ -123,6 +123,13 @@ class OkxTradingClient(
 
                     if (!apiResponse.isSuccess()) {
                         status = "rejected"
+                        val instIdSymbol = instId.substringBefore("-")
+                        BusinessEventLogger.orderRejected(
+                            symbol = instIdSymbol,
+                            clOrdId = clOrdId,
+                            reason = apiResponse.msg ?: "Order rejected",
+                            errorCode = apiResponse.code
+                        )
                         log.warn("Order rejected $clOrdId: code=${apiResponse.code}, msg=${apiResponse.msg}, data=${apiResponse.data}")
                     }
 
@@ -133,9 +140,7 @@ class OkxTradingClient(
                 log.error("Error placing order $clOrdId", e)
                 null
             } finally {
-                if (previous.isNotEmpty())
-                    MDC.setContextMap(previous)
-                else MDC.clear()
+                MDC.clear()
             }
         }
     }

@@ -5,7 +5,6 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.domain.services.IndicatorCalculator
 import java.math.BigDecimal
-import java.security.MessageDigest
 import java.time.Duration
 
 /**
@@ -121,15 +120,9 @@ class IndicatorCache {
     private fun generateKey(prefix: String, prices: List<BigDecimal>, period: Int?): String {
         // Use last 50 prices for key generation to balance uniqueness and performance
         val relevantPrices = prices.takeLast(50)
-        val priceString = relevantPrices.joinToString(",") { it.toPlainString() }
+        val priceHash = relevantPrices.joinToString(",") { it.toPlainString() }
         val periodStr = period?.toString() ?: ""
-
-        val hash = MessageDigest.getInstance("SHA-256")
-            .digest(priceString.toByteArray())
-            .joinToString("") { "%02x".format(it) }
-            .take(16)
-
-        return "$prefix:${prices.size}:$periodStr:$hash"
+        return "$prefix:${prices.size}:$periodStr:${priceHash.hashCode()}"
     }
 
     /**

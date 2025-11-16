@@ -36,6 +36,21 @@ cache:
 redis:
   enabled: false  # Set to true and add spring-boot-starter-data-redis dependency to enable Redis L2 cache
 
+# Logging Configuration
+logging:
+  level:
+    root: INFO
+    ru.driics.aitrade: INFO
+    ru.driics.aitrade.common.logging.BusinessEventLogger: INFO
+    org.springframework: WARN
+    io.ktor: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{correlationId}] %logger{36} - %msg%n"
+  file:
+    name: ./logs/application.log
+    max-size: 100MB
+    max-history: 30
+
 otel:
   service:
     name: "trading-system"
