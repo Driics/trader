@@ -48,8 +48,10 @@ logging:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{correlationId}] %logger{36} - %msg%n"
   file:
     name: ./logs/application.log
-    max-size: 100MB
-    max-history: 30
+  logback:
+    rollingpolicy:
+      max-file-size: 100MB
+      max-history: 30
 
 otel:
   service:
@@ -61,7 +63,7 @@ ai:
   koog:
     openrouter:
       enabled: true
-      api-keys: ${OPENROUTER_API_KEYS:key1,key2,key3}
+      api-keys: ${OPENROUTER_API_KEYS}
       max-retries: 3
       retry-delay-ms: 1000
       base-url: https://openrouter.ai/api/v1
