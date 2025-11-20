@@ -8,124 +8,142 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import io.micrometer.core.instrument.MeterRegistry
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
-import ru.driics.aitrade.common.timedSuspend
+import ru.driics.aitrade.common.measureSuspend
 import ru.driics.aitrade.config.OpenRouterProperties
-import ru.driics.aitrade.domain.services.ApiKeyRotationPolicy
-import ru.driics.aitrade.infra.ai.RotatingOpenRouterClient
 import ru.driics.aitrade.domain.model.AiAnalysisResponse
 import ru.driics.aitrade.domain.model.AiService
 import ru.driics.aitrade.domain.model.LastAiAnalysis
+import ru.driics.aitrade.domain.services.ApiKeyRotationPolicy
+import ru.driics.aitrade.infra.ai.RotatingOpenRouterClient
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.time.measureTimedValue
 
 @Service
 class KoogAiService(
     openRouterProperties: OpenRouterProperties,
     private val meterRegistry: MeterRegistry,
-    @param:Value("\${ai.custom.system-prompt:You are an expert crypto trading analyst.}")
+    @Value("\${ai.custom.system-prompt:You are an expert crypto trading analyst.}")
     private val systemPrompt: String
 ) : AiService {
-    companion object {
-        private val logger = KotlinLogging.logger {}
+
+    private companion object {
+        val log = KotlinLogging.logger {}
+
+        const val PROVIDER_NAME = "koog-openrouter"
+        const val MODEL_ID = "qwen/qwen3-max"
+        const val PROMPT_ID = "signal-gen"
+        const val METRIC_NAME = "ai.analyze"
+        const val CONTEXT_LENGTH = 131_072L
     }
 
-    private val rotationPolicy: ApiKeyRotationPolicy
     private val rotatingClient: RotatingOpenRouterClient
+    private val lastAnalysis = AtomicReference<LastAiAnalysis?>(null)
+
+    // Define model configuration once
+    private val llmModel = LLModel(
+        provider = LLMProvider.OpenRouter,
+        id = MODEL_ID,
+        contextLength = CONTEXT_LENGTH,
+        capabilities = listOf(LLMCapability.Temperature, LLMCapability.Completion)
+    )
 
     init {
         val apiKeys = openRouterProperties.getApiKeysList()
         require(apiKeys.isNotEmpty()) { "At least one OpenRouter API key must be configured" }
 
-        rotationPolicy = ApiKeyRotationPolicy(apiKeys)
+        val policy = ApiKeyRotationPolicy(apiKeys)
         rotatingClient = RotatingOpenRouterClient(
-            rotationPolicy = rotationPolicy,
+            rotationPolicy = policy,
             maxRetries = openRouterProperties.maxRetries,
             retryDelayMs = openRouterProperties.retryDelayMs
         )
 
-        logger.info { "Initialized KoogAiService with ${apiKeys.size} API key(s)" }
+        log.info { "Initialized KoogAiService with ${apiKeys.size} API key(s)" }
     }
 
-    val model = LLModel(
-        provider = LLMProvider.OpenRouter,
-        id = "qwen/qwen3-max",
-        contextLength = 131_072,
-        capabilities = listOf(
-            LLMCapability.Temperature,
-            LLMCapability.Completion
-        )
-    )
+    override fun getProviderName(): String = PROVIDER_NAME
 
-    private val last = AtomicReference<LastAiAnalysis?>(null)
+    override fun getModel(): String = MODEL_ID
 
-    override fun getProviderName(): String = "koog-openrouter"
-
-    override fun getModel(): String = model.id
-
-    override fun getLastAnalysis(): LastAiAnalysis? = last.get()
+    override fun getLastAnalysis(): LastAiAnalysis? = lastAnalysis.get()
 
     override suspend fun analyzePrompt(prompt: String): AiAnalysisResponse {
-        return try {
-            val p = prompt(id = "signal-gen") {
-                system(systemPrompt)
-                user(prompt)
-            }
-
-            val (response, took) = meterRegistry.timedSuspend(
-                "ai.analyze",
-                "provider", "koog",
-                "model", model.id
-            ) {
-                rotatingClient.execute(p, model)
-            }
-
-            val responseText = response.content
-            val stats = rotatingClient.getRotationStats()
-
-            logger.info { "AI call ok: ${took}ms | keys=${stats.totalKeys} | mode=${stats.mode} | idx=${stats.currentIndex}" }
-
-            val snapshot = LastAiAnalysis(
-                provider = getProviderName(),
-                model = model.id,
-                timestamp = Instant.now().toEpochMilli(),
-                executionTimeMs = took,
-                success = true,
-                response = responseText,
-                error = null
-            )
-            last.set(snapshot)
-
-            AiAnalysisResponse(
-                provider = snapshot.provider,
-                model = snapshot.model,
-                response = responseText,
-                executionTimeMs = took,
-                isSuccess = true
-            )
-        } catch (e: Exception) {
-            val took = 0L
-            logger.error(e) { "Koog/OpenRouter analysis failed after all retries" }
-
-            val snapshot = LastAiAnalysis(
-                provider = getProviderName(),
-                model = model.id,
-                timestamp = Instant.now().toEpochMilli(),
-                executionTimeMs = took,
-                success = false,
-                response = null,
-                error = e.message
-            )
-            last.set(snapshot)
-
-            AiAnalysisResponse(
-                provider = snapshot.provider,
-                model = snapshot.model,
-                response = "",
-                executionTimeMs = took,
-                isSuccess = false,
-                errorMessage = e.message
-            )
+        // 1. Prepare Request
+        val promptRequest = prompt(id = PROMPT_ID) {
+            system(systemPrompt)
+            user(prompt)
         }
+
+        // 2. Execute with Timing & Error Handling
+        // measureTimedValue is idiomatic Kotlin for capturing duration + result
+        val (result, duration) = measureTimedValue {
+            runCatching {
+                // Use the Micrometer extension for metrics recording
+                // passing 'this' as TimerScope to potentially set dynamic tags if needed
+                meterRegistry.measureSuspend(
+                    metricName = METRIC_NAME,
+                    staticTags = arrayOf("provider", "koog", "model", MODEL_ID)
+                ) {
+                    rotatingClient.execute(promptRequest, llmModel)
+                }
+            }
+        }
+
+        val durationMs = duration.inWholeMilliseconds
+        val timestamp = Instant.now().toEpochMilli()
+
+        // 3. Process Result (Success or Failure)
+        return result.fold(
+            onSuccess = { llmResponse ->
+                val content = llmResponse.content
+                val stats = rotatingClient.getRotationStats()
+
+                log.info { "AI call success: ${durationMs}ms | keys=${stats.totalKeys} | mode=${stats.mode} | idx=${stats.currentIndex}" }
+
+                val snapshot = LastAiAnalysis(
+                    provider = PROVIDER_NAME,
+                    model = MODEL_ID,
+                    timestamp = timestamp,
+                    executionTimeMs = durationMs,
+                    success = true,
+                    response = content,
+                    error = null
+                )
+                lastAnalysis.set(snapshot)
+
+                AiAnalysisResponse(
+                    provider = PROVIDER_NAME,
+                    model = MODEL_ID,
+                    response = content,
+                    executionTimeMs = durationMs,
+                    isSuccess = true
+                )
+            },
+            onFailure = { ex ->
+                log.error(ex) { "Koog/OpenRouter analysis failed after retries" }
+
+                val snapshot = LastAiAnalysis(
+                    provider = PROVIDER_NAME,
+                    model = MODEL_ID,
+                    timestamp = timestamp,
+                    executionTimeMs = durationMs,
+                    success = false,
+                    response = null,
+                    error = ex.message
+                )
+                lastAnalysis.set(snapshot)
+
+                AiAnalysisResponse(
+                    provider = PROVIDER_NAME,
+                    model = MODEL_ID,
+                    response = "",
+                    executionTimeMs = durationMs,
+                    isSuccess = false,
+                    errorMessage = ex.message
+                )
+            }
+        )
     }
 
     fun getKeyMode(): RotatingOpenRouterClient.KeyMode = rotatingClient.getMode()
