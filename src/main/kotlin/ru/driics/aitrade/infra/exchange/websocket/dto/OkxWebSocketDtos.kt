@@ -133,10 +133,10 @@ data class OkxWsAccountUpdate(
     @field:JsonProperty("adjEq") val adjEq: String? = null,
     @field:JsonProperty("ordFroz") val ordFroz: String? = null,
     @field:JsonProperty("details") val details: List<OkxWsAccountDetail>? = null,
-    @field:JsonProperty("ts") val ts: String
+    @field:JsonProperty("ts") val ts: String?
 ) {
     fun totalEqOrZero(): BigDecimal = totalEq.toBigDecimalOrNull() ?: BigDecimal.ZERO
-    fun tsMillisOrZero(): Long = ts.toLongOrNull() ?: 0L
+    fun tsMillisOrZero(): Long = ts?.toLongOrNull() ?: 0L
 }
 
 // ----- Type references for parsing envelopes -----
