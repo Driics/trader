@@ -252,7 +252,7 @@ class ExecuteAiDecisionsUseCase(
 
     private fun handleSuccessfulOrder(
         plan: OrderPlan,
-        sizing: OrderSizingPolicy.SizingOutput,
+        sizing: OrderSizingPolicy.SizingResult,
         clOrdId: String,
         ordId: String?
     ): AiTradeExecutionResult {

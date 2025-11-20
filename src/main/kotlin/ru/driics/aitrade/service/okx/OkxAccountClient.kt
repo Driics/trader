@@ -9,6 +9,7 @@ import io.ktor.client.*
 import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
+import io.ktor.http.*
 import io.micrometer.core.instrument.MeterRegistry
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
@@ -37,133 +38,141 @@ class OkxAccountClient(
     LoggerFactory.getLogger(OkxAccountClient::class.java)
 ) {
 
-    @Retry(name = "okxAccount")
-    @RateLimiter(name = "okxAccount")
-    @CircuitBreaker(name = "okxAccount")
+    private companion object {
+        const val METRIC_NAME = "okxAccount"
+        const val PATH_BALANCE = "/api/v5/account/balance"
+        const val PATH_POSITIONS = "/api/v5/account/positions"
+        const val INST_TYPE_SWAP = "SWAP"
+
+        val EMPTY_ACCOUNT = OkxAccountResponse("0", "0", "0", "0")
+    }
+
+    @Retry(name = METRIC_NAME)
+    @RateLimiter(name = METRIC_NAME)
+    @CircuitBreaker(name = METRIC_NAME)
     suspend fun fetchAccount(): OkxAccountResponse {
-        var status = "ok"
+        return executeSignedRequest(
+            operation = "fetchAccount",
+            path = PATH_BALANCE,
+            timeoutMs = tradingProperties.okxTimeouts.account.toMillis(),
+            defaultResult = EMPTY_ACCOUNT
+        ) { body ->
+            val response = objectMapper.readValue<OkxAccountApiResponse>(body)
 
-        return meterRegistry.timeOkx("fetchAccount", { arrayOf("status", status) }) {
-            try {
-                withTimeout(tradingProperties.okxTimeouts.account.toMillis()) {
-                    val path = "/api/v5/account/balance"
-                    val url = "$baseUrl$path"
-                    val authHeaders = okxAuthService.createAuthHeaders("GET", path)
+            if (!response.isSuccess()) {
+                //logApiError("Account Balance", response)
+                return@executeSignedRequest EMPTY_ACCOUNT
+            }
 
-                    val response: HttpResponse = okxKtorClient.get(url) {
-                        authHeaders.forEach { (key, value) -> header(key, value) }
-                    }
+            val data = response.getFirstOrNull() ?: return@executeSignedRequest EMPTY_ACCOUNT
+            mapAccountData(data)
+        }
+    }
 
-                    val body = response.bodyAsText()
-                    val apiResponse = objectMapper.readValue<OkxAccountApiResponse>(body)
+    @Retry(name = METRIC_NAME)
+    @RateLimiter(name = METRIC_NAME)
+    @CircuitBreaker(name = METRIC_NAME)
+    suspend fun fetchOpenPositions(): List<OkxPositionResponse> {
+        return executeSignedRequest(
+            operation = "fetchOpenPositions",
+            path = "$PATH_POSITIONS?instType=$INST_TYPE_SWAP",
+            timeoutMs = tradingProperties.okxTimeouts.positions.toMillis(),
+            defaultResult = emptyList()
+        ) { body ->
+            val response = objectMapper.readValue<OkxApiResponse<OkxPositionResponse>>(body)
 
-                    if (!apiResponse.isSuccess()) {
-                        val statusCode = response.status.value
-                        status = when {
-                            statusCode in 400..499 -> "http_4xx"
-                            statusCode >= 500 -> "http_5xx"
-                            else -> "api_error"
-                        }
-                        log.warn("OKX API error for account - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
-                        return@withTimeout OkxAccountResponse("0", "0", "0", "0")
-                    }
-
-                    val data = apiResponse.getFirstOrNull()
-                        ?: return@withTimeout OkxAccountResponse("0", "0", "0", "0")
-
-                    val totalEq = data.totalEquity.toBigDecimalOrNull() ?: BigDecimal.ZERO
-                    val availEqUsd = data.availableEquityUsd.toBigDecimalOrNull() ?: BigDecimal.ZERO
-                    val usdtAvailBal = data.details.firstOrNull { it.currency.equals("USDT", ignoreCase = true) }
-                        ?.availableBalance?.toBigDecimalOrNull()
-
-                    val derivedAvailable = when {
-                        availEqUsd > BigDecimal.ZERO -> availEqUsd
-                        usdtAvailBal != null -> usdtAvailBal
-                        else -> BigDecimal.ZERO
-                    }
-
-                    OkxAccountResponse(
-                        totalEquity = totalEq.toPlainString(),
-                        availableBalance = derivedAvailable.toPlainString(),
-                        cashBalance = data.cashBalance,
-                        unrealizedPnl = data.unrealizedPnl
-                    )
+            if (!response.isSuccess()) {
+                logApiError("Open Positions", response)
+                emptyList()
+            } else {
+                if (response.data.isEmpty()) {
+                    log.debug("No open positions found")
                 }
-            } catch (e: TimeoutCancellationException) {
-                status = "timeout"
-                OkxAccountResponse("0", "0", "0", "0")
-            } catch (e: ClientRequestException) {
-                val statusCode = e.response.status.value
-                status = when {
-                    statusCode in 400..499 -> "http_4xx"
-                    statusCode >= 500 -> "http_5xx"
-                    else -> "http_error"
-                }
-                log.error("HTTP error fetching account info: ${e.response.status}", e)
-                OkxAccountResponse("0", "0", "0", "0")
-            } catch (e: Exception) {
-                status = "error"
-                log.error("Error fetching account info", e)
-                OkxAccountResponse("0", "0", "0", "0")
+                response.data
             }
         }
     }
 
-    @Retry(name = "okxAccount")
-    @RateLimiter(name = "okxAccount")
-    @CircuitBreaker(name = "okxAccount")
-    suspend fun fetchOpenPositions(): List<OkxPositionResponse> {
-        var status = "ok"
+    // =========================================================================
+    // Private Logic
+    // =========================================================================
 
-        return meterRegistry.timeOkx("fetchOpenPositions", { arrayOf("status", status) }) {
+    private fun mapAccountData(data: OkxAccountData): OkxAccountResponse {
+        val totalEq = data.totalEquity.toBigDecimalOrNull() ?: BigDecimal.ZERO
+        val availEqUsd = data.availableEquityUsd.toBigDecimalOrNull() ?: BigDecimal.ZERO
+
+        // Logic: Prefer availableEquityUsd, fallback to USDT available balance
+        val derivedAvailable = if (availEqUsd > BigDecimal.ZERO) {
+            availEqUsd
+        } else {
+            data.details.firstOrNull { it.currency.equals("USDT", ignoreCase = true) }
+                ?.availableBalance?.toBigDecimalOrNull()
+                ?: BigDecimal.ZERO
+        }
+
+        return OkxAccountResponse(
+            totalEquity = totalEq.toPlainString(),
+            availableBalance = derivedAvailable.toPlainString(),
+            cashBalance = data.cashBalance,
+            unrealizedPnl = data.unrealizedPnl
+        )
+    }
+
+    /**
+     * Generalized executor for Signed GET requests.
+     * Handles Authentication, Timeouts, Metrics, and Error Mapping.
+     */
+    private suspend inline fun <T> executeSignedRequest(
+        operation: String,
+        path: String,
+        timeoutMs: Long,
+        defaultResult: T,
+        crossinline block: (String) -> T
+    ): T {
+        // Use TimerScope extension for dynamic tagging
+        return meterRegistry.timeOkx(operation) {
             try {
-                withTimeout(tradingProperties.okxTimeouts.positions.toMillis()) {
-                    val path = "/api/v5/account/positions?instType=SWAP"
-                    val url = "$baseUrl$path"
+                withTimeout(timeoutMs) {
+                    // Generate Sign Headers
+                    // Note: For GET requests, body is empty string
                     val authHeaders = okxAuthService.createAuthHeaders("GET", path)
 
-                    val response: HttpResponse = okxKtorClient.get(url) {
-                        authHeaders.forEach { (key, value) -> header(key, value) }
+                    val response = okxKtorClient.get("$baseUrl$path") {
+                        authHeaders.forEach { (k, v) -> header(k, v) }
                     }
 
-                    val body = response.bodyAsText()
-                    val apiResponse = objectMapper.readValue<OkxApiResponse<OkxPositionResponse>>(body)
-
-                    if (!apiResponse.isSuccess()) {
-                        val statusCode = response.status.value
-                        status = when {
-                            statusCode in 400..499 -> "http_4xx"
-                            statusCode >= 500 -> "http_5xx"
-                            else -> "api_error"
-                        }
-                        log.warn("OKX API error for positions - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
-                        return@withTimeout emptyList()
+                    if (!response.status.isSuccess()) {
+                        val code = response.status.value
+                        status(mapHttpStatus(code)) // Dynamic Tag
+                        log.warn("HTTP $code for $operation")
+                        return@withTimeout defaultResult
                     }
 
-                    apiResponse.data.ifEmpty {
-                        log.debug("No open positions found")
-                    }
-
-                    apiResponse.data
+                    block(response.bodyAsText())
                 }
             } catch (e: TimeoutCancellationException) {
-                status = "timeout"
-                emptyList()
+                status("timeout")
+                log.error("Timeout fetching $operation after ${timeoutMs}ms", e)
+                defaultResult
             } catch (e: ClientRequestException) {
-                val statusCode = e.response.status.value
-                status = when {
-                    statusCode in 400..499 -> "http_4xx"
-                    statusCode >= 500 -> "http_5xx"
-                    else -> "http_error"
-                }
-                log.error("HTTP error fetching open positions: ${e.response.status}", e)
-                emptyList()
+                status(mapHttpStatus(e.response.status.value))
+                log.error("HTTP error fetching $operation", e)
+                defaultResult
             } catch (e: Exception) {
-                status = "error"
-                log.error("Error fetching open positions", e)
-                emptyList()
+                status("error")
+                log.error("Unexpected error fetching $operation", e)
+                defaultResult
             }
         }
+    }
+
+    private fun logApiError(context: String, response: OkxApiResponse<*>) {
+        log.warn("OKX API Error [$context]: code=${response.code}, msg=${response.message}")
+    }
+
+    private fun mapHttpStatus(code: Int): String = when {
+        code in 400..499 -> "http_4xx"
+        code >= 500 -> "http_5xx"
+        else -> "http_error"
     }
 }
-
