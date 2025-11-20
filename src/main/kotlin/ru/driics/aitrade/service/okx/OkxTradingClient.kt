@@ -20,7 +20,9 @@ import ru.driics.aitrade.common.logging.BusinessEventLogger
 import ru.driics.aitrade.common.timeOkx
 import ru.driics.aitrade.config.OkxProperties
 import ru.driics.aitrade.config.TradingProperties
-import ru.driics.aitrade.domain.model.*
+import ru.driics.aitrade.domain.model.MarginMode
+import ru.driics.aitrade.domain.model.OkxPlaceOrderApiResponse
+import ru.driics.aitrade.domain.model.OkxPlaceOrderData
 import ru.driics.aitrade.service.OkxAuthService
 
 /**
@@ -39,70 +41,50 @@ class OkxTradingClient(
     LoggerFactory.getLogger(OkxTradingClient::class.java)
 ) {
 
-    @Retry(name = "okxTrade")
-    @RateLimiter(name = "okxTrade")
-    @CircuitBreaker(name = "okxTrade")
-    suspend fun setLeverage(instId: String, leverage: Int, marginMode: MarginMode, posSide: String? = null): Boolean {
-        var status = "ok"
-
-        return meterRegistry.timeOkx("setLeverage", { arrayOf("status", status) }) {
-            try {
-                withTimeout(tradingProperties.okxTimeouts.setLeverage.toMillis()) {
-                    val path = "/api/v5/account/set-leverage"
-                    val url = "$baseUrl$path"
-                    val payload = mutableMapOf(
-                        "instId" to instId,
-                        "lever" to leverage.toString(),
-                        "mgnMode" to marginMode.asOkxApiValue
-                    )
-                    posSide?.let { payload["posSide"] = it }
-                    val bodyJson = objectMapper.writeValueAsString(payload)
-                    val authHeaders = okxAuthService.createAuthHeaders("POST", path, bodyJson)
-
-                    val response: HttpResponse = okxKtorClient.post(url) {
-                        authHeaders.forEach { (key, value) -> header(key, value) }
-                        contentType(ContentType.Application.Json)
-                        setBody(bodyJson)
-                    }
-
-                    val responseBody = response.bodyAsText()
-                    val responseMap = objectMapper.readValue<Map<String, Any>>(responseBody)
-                    val ok = (responseMap["code"]?.toString() == "0")
-
-                    if (!ok) {
-                        val statusCode = response.status.value
-                        status = when {
-                            statusCode in 400..499 -> "http_4xx"
-                            statusCode >= 500 -> "http_5xx"
-                            else -> "api_error"
-                        }
-                        log.warn("Set leverage failed for $instId: body=$responseBody")
-                    }
-                    ok
-                }
-            } catch (e: TimeoutCancellationException) {
-                status = "timeout"
-                false
-            } catch (e: ClientRequestException) {
-                val statusCode = e.response.status.value
-                status = when {
-                    statusCode in 400..499 -> "http_4xx"
-                    statusCode >= 500 -> "http_5xx"
-                    else -> "http_error"
-                }
-                log.error("HTTP error setting leverage for $instId: ${e.response.status}", e)
-                false
-            } catch (e: Exception) {
-                status = "error"
-                log.error("Error setting leverage for $instId", e)
-                false
-            }
-        }
+    private companion object {
+        const val METRIC_NAME = "okxTrade"
+        const val PATH_SET_LEVERAGE = "/api/v5/account/set-leverage"
+        const val PATH_PLACE_ORDER = "/api/v5/trade/order"
+        const val TAG_AI_SIGNAL = "ai-signal"
+        const val ORD_TYPE_MARKET = "market"
     }
 
-    @Retry(name = "okxTrade")
-    @RateLimiter(name = "okxTrade")
-    @CircuitBreaker(name = "okxTrade")
+    @Retry(name = METRIC_NAME)
+    @RateLimiter(name = METRIC_NAME)
+    @CircuitBreaker(name = METRIC_NAME)
+    suspend fun setLeverage(
+        instId: String,
+        leverage: Int,
+        marginMode: MarginMode,
+        posSide: String? = null
+    ): Boolean {
+        val payload = buildMap {
+            put("instId", instId)
+            put("lever", leverage.toString())
+            put("mgnMode", marginMode.asOkxApiValue)
+            if (posSide != null) put("posSide", posSide)
+        }
+
+        return executeOkxCall(
+            operationName = "setLeverage",
+            path = PATH_SET_LEVERAGE,
+            payload = payload,
+            timeoutMs = tradingProperties.okxTimeouts.setLeverage.toMillis(),
+            contextTags = mapOf("instId" to instId)
+        ) { responseBody ->
+            val responseMap = objectMapper.readValue<Map<String, Any>>(responseBody)
+            val isSuccess = responseMap["code"]?.toString() == "0"
+
+            if (!isSuccess) {
+                log.warn("Set leverage failed for $instId: $responseBody")
+            }
+            isSuccess
+        } ?: false
+    }
+
+    @Retry(name = METRIC_NAME)
+    @RateLimiter(name = METRIC_NAME)
+    @CircuitBreaker(name = METRIC_NAME)
     suspend fun placeMarketOrderWithAttach(
         instId: String,
         side: String,
@@ -112,71 +94,93 @@ class OkxTradingClient(
         slPx: String? = null,
         posSide: String? = null,
         clOrdId: String? = null,
-        tag: String? = "ai-signal"
+        tag: String? = TAG_AI_SIGNAL
     ): OkxPlaceOrderData? {
+        val payload = buildOrderPayload(instId, side, tdMode, szContracts, tpPx, slPx, posSide, clOrdId, tag)
+
+        val mdcTags = buildMap {
+            put("instId", instId)
+            put("side", side)
+            if (clOrdId != null) put("clOrdId", clOrdId)
+        }
+
+        return executeOkxCall(
+            operationName = "placeOrder",
+            path = PATH_PLACE_ORDER,
+            payload = payload,
+            timeoutMs = tradingProperties.okxTimeouts.placeOrder.toMillis(),
+            contextTags = mdcTags,
+            extraMetricTags = arrayOf("side", side)
+        ) { responseBody ->
+            val apiResponse = objectMapper.readValue<OkxPlaceOrderApiResponse>(responseBody)
+
+            if (!apiResponse.isSuccess()) {
+                handleOrderFailure(apiResponse, instId, clOrdId)
+                null
+            } else {
+                apiResponse.firstOrNull()
+            }
+        }
+    }
+
+    // =========================================================================
+    // Private Helpers
+    // =========================================================================
+
+    /**
+     * Centralized execution wrapper handling:
+     * 1. Serialization & Signing
+     * 2. Timeouts
+     * 3. MDC Context
+     * 4. Metrics (Timer & Status tags)
+     * 5. Error Handling & Logging
+     */
+    private suspend fun <T> executeOkxCall(
+        operationName: String,
+        path: String,
+        payload: Any,
+        timeoutMs: Long,
+        contextTags: Map<String, String> = emptyMap(),
+        extraMetricTags: Array<String> = emptyArray(),
+        responseMapper: (String) -> T
+    ): T? {
         var status = "ok"
 
-        return meterRegistry.timeOkx("placeOrder", { arrayOf("side", side, "status", status) }) {
-            try {
-                withTimeout(tradingProperties.okxTimeouts.placeOrder.toMillis()) {
-                    clOrdId?.let { MDC.put("clOrdId", it) }
-                    MDC.put("instId", instId)
-                    MDC.put("side", side)
+        // Setup MDC for this execution
+        withMdc(contextTags) {
+            return meterRegistry.timeOkx(operationName, arrayOf("status", status, *extraMetricTags)) {
+                try {
+                    withTimeout(timeoutMs) {
+                        val url = "$baseUrl$path"
+                        val bodyJson = objectMapper.writeValueAsString(payload)
+                        val authHeaders = okxAuthService.createAuthHeaders("POST", path, bodyJson)
 
-                    val path = "/api/v5/trade/order"
-                    val url = "$baseUrl$path"
-
-                    val payload = buildOrderPayload(instId, side, tdMode, szContracts, tpPx, slPx, posSide, clOrdId, tag)
-                    val bodyJson = objectMapper.writeValueAsString(payload)
-                    val authHeaders = okxAuthService.createAuthHeaders("POST", path, bodyJson)
-
-                    val response: HttpResponse = okxKtorClient.post(url) {
-                        authHeaders.forEach { (key, value) -> header(key, value) }
-                        contentType(ContentType.Application.Json)
-                        setBody(bodyJson)
-                    }
-
-                    val responseBody = response.bodyAsText()
-                    val apiResponse = objectMapper.readValue<OkxPlaceOrderApiResponse>(responseBody)
-
-                    if (!apiResponse.isSuccess()) {
-                        val statusCode = response.status.value
-                        status = when {
-                            statusCode in 400..499 -> "http_4xx"
-                            statusCode >= 500 -> "http_5xx"
-                            else -> "api_error"
+                        val response: HttpResponse = okxKtorClient.post(url) {
+                            authHeaders.forEach { (k, v) -> header(k, v) }
+                            contentType(ContentType.Application.Json)
+                            setBody(bodyJson)
                         }
-                        val instIdSymbol = instId.substringBefore("-")
-                        BusinessEventLogger.orderRejected(
-                            symbol = instIdSymbol,
-                            clOrdId = clOrdId,
-                            reason = apiResponse.msg ?: "Order rejected",
-                            errorCode = apiResponse.code
-                        )
-                        log.warn("Order rejected $clOrdId: code=${apiResponse.code}, msg=${apiResponse.msg}, data=${apiResponse.data}")
-                    }
 
-                    apiResponse.firstOrNull()
+                        // Explicitly check HTTP status before parsing body
+                        if (!response.status.isSuccess()) {
+                            throw ClientRequestException(response, "HTTP ${response.status}")
+                        }
+
+                        responseMapper(response.bodyAsText())
+                    }
+                } catch (e: TimeoutCancellationException) {
+                    status("timeout")
+                    log.error("Timeout during $operationName",e)
+                    null
+                } catch (e: ClientRequestException) {
+                    status(mapHttpStatusToMetric(e.response.status.value))
+                    log.error("HTTP error during $operationName: ${e.response.status}",e)
+                    null
+                } catch (e: Exception) {
+                    status("error")
+                    log.error("Unexpected error during $operationName", e)
+                    null
                 }
-            } catch (e: TimeoutCancellationException) {
-                status = "timeout"
-                log.error("Timeout placing order $clOrdId", e)
-                null
-            } catch (e: ClientRequestException) {
-                val statusCode = e.response.status.value
-                status = when {
-                    statusCode in 400..499 -> "http_4xx"
-                    statusCode >= 500 -> "http_5xx"
-                    else -> "http_error"
-                }
-                log.error("HTTP error placing order $clOrdId: ${e.response.status}", e)
-                null
-            } catch (e: Exception) {
-                status = "error"
-                log.error("Error placing order $clOrdId", e)
-                null
-            } finally {
-                MDC.clear()
             }
         }
     }
@@ -191,35 +195,69 @@ class OkxTradingClient(
         posSide: String?,
         clOrdId: String?,
         tag: String?
-    ): MutableMap<String, Any> {
-        val payload = mutableMapOf<String, Any>(
-            "instId" to instId,
-            "tdMode" to tdMode,
-            "side" to side,
-            "ordType" to "market",
-            "sz" to szContracts
+    ): Map<String, Any> = buildMap {
+        put("instId", instId)
+        put("tdMode", tdMode)
+        put("side", side)
+        put("ordType", ORD_TYPE_MARKET)
+        put("sz", szContracts)
+
+        if (clOrdId != null) put("clOrdId", clOrdId)
+        if (tag != null) put("tag", tag)
+        if (posSide != null) put("posSide", posSide)
+
+        // Build Attachments (TP/SL)
+        val attachments = buildList {
+            if (!tpPx.isNullOrBlank()) {
+                add(mapOf(
+                    "tpTriggerPx" to tpPx,
+                    "tpOrdPx" to tpPx,
+                    "tpOrdKind" to "limit"
+                ))
+            }
+            if (!slPx.isNullOrBlank()) {
+                add(mapOf(
+                    "slTriggerPx" to slPx,
+                    "slOrdPx" to "-1"
+                ))
+            }
+        }
+
+        if (attachments.isNotEmpty()) {
+            put("attachAlgoOrds", attachments)
+        }
+    }
+
+    private fun handleOrderFailure(
+        apiResponse: OkxPlaceOrderApiResponse,
+        instId: String,
+        clOrdId: String?
+    ) {
+        val symbol = instId.substringBefore("-")
+        BusinessEventLogger.orderRejected(
+            symbol = symbol,
+            clOrdId = clOrdId,
+            reason = apiResponse.msg ?: "Order rejected",
+            errorCode = apiResponse.code
         )
-        clOrdId?.let { payload["clOrdId"] = it }
-        tag?.let { payload["tag"] = it }
-        posSide?.let { payload["posSide"] = it }
+        log.warn("Order rejected $clOrdId: code=${apiResponse.code}, msg=${apiResponse.msg}, data=${apiResponse.data}")
+    }
 
-        val attach = mutableListOf<MutableMap<String, String>>()
-        if (!tpPx.isNullOrBlank()) {
-            attach += mutableMapOf(
-                "tpTriggerPx" to tpPx,
-                "tpOrdPx" to tpPx,
-                "tpOrdKind" to "limit"
-            )
-        }
-        if (!slPx.isNullOrBlank()) {
-            attach += mutableMapOf(
-                "slTriggerPx" to slPx,
-                "slOrdPx" to "-1"
-            )
-        }
-        if (attach.isNotEmpty()) payload["attachAlgoOrds"] = attach
+    private fun mapHttpStatusToMetric(statusCode: Int): String = when {
+        statusCode in 400..499 -> "http_4xx"
+        statusCode >= 500 -> "http_5xx"
+        else -> "http_error"
+    }
 
-        return payload
+    private inline fun <T> withMdc(tags: Map<String, String>, block: () -> T): T {
+        val previous = MDC.getCopyOfContextMap() ?: emptyMap()
+        tags.forEach { (k, v) -> MDC.put(k, v) }
+        try {
+            return block()
+        } finally {
+            // Restore previous context or clear if it was empty
+            // Simplification: Just removing the keys we added is often safer if we are in a nested context
+            tags.keys.forEach { MDC.remove(it) }
+        }
     }
 }
-
