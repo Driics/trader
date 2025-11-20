@@ -9,13 +9,13 @@ import io.ktor.client.*
 import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
+import io.ktor.http.isSuccess
 import io.micrometer.core.instrument.MeterRegistry
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.common.timeOkx
-import ru.driics.aitrade.common.withTimeoutAndLog
 import ru.driics.aitrade.config.OkxProperties
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.*
@@ -38,52 +38,33 @@ class OkxMarketDataClient(
     LoggerFactory.getLogger(OkxMarketDataClient::class.java)
 ) {
 
-    @Retry(name = "okxMarket")
-    @RateLimiter(name = "okxMarket")
-    @CircuitBreaker(name = "okxMarket", fallbackMethod = "fetchTickerFallback")
+    private companion object {
+        const val METRIC_NAME = "okxMarket"
+        const val PATH_TICKER = "/api/v5/market/ticker"
+        const val PATH_CANDLES = "/api/v5/market/candles"
+        const val PATH_FUNDING = "/api/v5/public/funding-rate"
+        const val PATH_OPEN_INTEREST = "/api/v5/public/open-interest"
+        const val PATH_INSTRUMENTS = "/api/v5/public/instruments"
+    }
+
+    @Retry(name = METRIC_NAME)
+    @RateLimiter(name = METRIC_NAME)
+    @CircuitBreaker(name = METRIC_NAME, fallbackMethod = "fetchTickerFallback")
     suspend fun fetchTicker(instId: String): OkxTickerResponse? {
-        var status = "ok"
-
-        return meterRegistry.timeOkx("fetchTicker", { arrayOf("status", status) }) {
-            try {
-                withTimeoutAndLog(tradingProperties.okxTimeouts.ticker.toMillis(), null, "fetchTicker($instId)") {
-                    val url = "$baseUrl/api/v5/market/ticker?instId=$instId"
-                    val response: HttpResponse = okxKtorClient.get(url)
-                    val body = response.bodyAsText()
-                    val apiResponse = objectMapper.readValue<OkxApiResponse<OkxTickerResponse>>(body)
-
-                    if (!apiResponse.isSuccess()) {
-                        val statusCode = response.status.value
-                        status = when {
-                            statusCode in 400..499 -> "http_4xx"
-                            statusCode >= 500 -> "http_5xx"
-                            else -> "api_error"
-                        }
-                        log.warn("OKX API error for ticker $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
-                        return@withTimeoutAndLog null
-                    }
-
-                    apiResponse.getFirstOrNull() ?: run {
-                        status = "ok" // Empty data is still OK, just no result
-                        log.warn("No ticker data found for $instId")
-                        null
-                    }
+        return executePublicRequest(
+            operation = "fetchTicker",
+            url = "$baseUrl$PATH_TICKER?instId=$instId",
+            timeoutMs = tradingProperties.okxTimeouts.ticker.toMillis(),
+            defaultResult = null
+        ) { body ->
+            val response = objectMapper.readValue<OkxApiResponse<OkxTickerResponse>>(body)
+            if (response.isSuccess()) {
+                response.getFirstOrNull() ?: run {
+                    log.warn("No ticker data found for $instId")
+                    null
                 }
-            } catch (e: TimeoutCancellationException) {
-                status = "timeout"
-                null
-            } catch (e: ClientRequestException) {
-                val statusCode = e.response.status.value
-                status = when {
-                    statusCode in 400..499 -> "http_4xx"
-                    statusCode >= 500 -> "http_5xx"
-                    else -> "http_error"
-                }
-                log.error("HTTP error fetching ticker for $instId: ${e.response.status}", e)
-                null
-            } catch (e: Exception) {
-                status = "error"
-                log.error("Error fetching ticker for $instId", e)
+            } else {
+                logApiError(instId, "ticker", response)
                 null
             }
         }
@@ -94,48 +75,22 @@ class OkxMarketDataClient(
         return null
     }
 
-    @Retry(name = "okxMarket")
-    @RateLimiter(name = "okxMarket")
-    @CircuitBreaker(name = "okxMarket", fallbackMethod = "fetchCandlesFallback")
+    @Retry(name = METRIC_NAME)
+    @RateLimiter(name = METRIC_NAME)
+    @CircuitBreaker(name = METRIC_NAME, fallbackMethod = "fetchCandlesFallback")
     suspend fun fetchCandles(instId: String, period: String, limit: Int): List<OkxCandleResponse> {
-        var status = "ok"
-
-        return meterRegistry.timeOkx("fetchCandles", { arrayOf("period", period, "status", status) }) {
-            try {
-                withTimeout(tradingProperties.okxTimeouts.candles.toMillis()) {
-                    val url = "$baseUrl/api/v5/market/candles?instId=$instId&bar=$period&limit=$limit"
-                    val response: HttpResponse = okxKtorClient.get(url)
-                    val body = response.bodyAsText()
-                    val apiResponse = objectMapper.readValue<OkxCandlesApiResponse>(body)
-
-                    if (!apiResponse.isSuccess()) {
-                        val statusCode = response.status.value
-                        status = when {
-                            statusCode in 400..499 -> "http_4xx"
-                            statusCode >= 500 -> "http_5xx"
-                            else -> "api_error"
-                        }
-                        log.warn("OKX API error for candles $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
-                        return@withTimeout emptyList()
-                    }
-
-                    apiResponse.toCandles().sortedBy { it.timestamp.toLongOrNull() ?: Long.MAX_VALUE }
-                }
-            } catch (e: TimeoutCancellationException) {
-                status = "timeout"
-                emptyList()
-            } catch (e: ClientRequestException) {
-                val statusCode = e.response.status.value
-                status = when {
-                    statusCode in 400..499 -> "http_4xx"
-                    statusCode >= 500 -> "http_5xx"
-                    else -> "http_error"
-                }
-                log.error("HTTP error fetching candles for $instId, period: $period: ${e.response.status}", e)
-                emptyList()
-            } catch (e: Exception) {
-                status = "error"
-                log.error("Error fetching candles for $instId, period: $period", e)
+        return executePublicRequest(
+            operation = "fetchCandles",
+            url = "$baseUrl$PATH_CANDLES?instId=$instId&bar=$period&limit=$limit",
+            timeoutMs = tradingProperties.okxTimeouts.candles.toMillis(),
+            defaultResult = emptyList(),
+            extraMetricTags = arrayOf("period", period)
+        ) { body ->
+            val response = objectMapper.readValue<OkxCandlesApiResponse>(body)
+            if (response.isSuccess()) {
+                response.toCandles().sortedBy { it.timestamp.toLongOrNull() ?: Long.MAX_VALUE }
+            } else {
+                //FIXME: logApiError(instId, "candles", response)
                 emptyList()
             }
         }
@@ -146,152 +101,127 @@ class OkxMarketDataClient(
         return emptyList()
     }
 
-    @Retry(name = "okxMarket")
-    @RateLimiter(name = "okxMarket")
-    @CircuitBreaker(name = "okxMarket")
+    @Retry(name = METRIC_NAME)
+    @RateLimiter(name = METRIC_NAME)
+    @CircuitBreaker(name = METRIC_NAME)
     suspend fun fetchFundingRate(instId: String): BigDecimal? {
-        var status = "ok"
-
-        return meterRegistry.timeOkx("fetchFundingRate", { arrayOf("status", status) }) {
-            try {
-                withTimeout(tradingProperties.okxTimeouts.funding.toMillis()) {
-                    val url = "$baseUrl/api/v5/public/funding-rate?instId=$instId"
-                    val response: HttpResponse = okxKtorClient.get(url)
-                    val body = response.bodyAsText()
-                    val apiResponse = objectMapper.readValue<OkxApiResponse<OkxFundingResponse>>(body)
-
-                    if (!apiResponse.isSuccess()) {
-                        val statusCode = response.status.value
-                        status = when {
-                            statusCode in 400..499 -> "http_4xx"
-                            statusCode >= 500 -> "http_5xx"
-                            else -> "api_error"
-                        }
-                        log.warn("OKX API error for funding rate $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
-                        return@withTimeout null
-                    }
-
-                    apiResponse.getFirstOrNull()?.fundingRate?.toBigDecimalOrNull() ?: run {
-                        status = "ok" // Empty data is still OK
-                        log.debug("No funding rate data for $instId")
-                        null
-                    }
-                }
-            } catch (e: TimeoutCancellationException) {
-                status = "timeout"
-                null
-            } catch (e: ClientRequestException) {
-                val statusCode = e.response.status.value
-                status = when {
-                    statusCode in 400..499 -> "http_4xx"
-                    statusCode >= 500 -> "http_5xx"
-                    else -> "http_error"
-                }
-                log.error("HTTP error fetching funding rate for $instId: ${e.response.status}", e)
-                null
-            } catch (e: Exception) {
-                status = "error"
-                log.error("Error fetching funding rate for $instId", e)
+        return executePublicRequest(
+            operation = "fetchFundingRate",
+            url = "$baseUrl$PATH_FUNDING?instId=$instId",
+            timeoutMs = tradingProperties.okxTimeouts.funding.toMillis(),
+            defaultResult = null
+        ) { body ->
+            val response = objectMapper.readValue<OkxApiResponse<OkxFundingResponse>>(body)
+            if (response.isSuccess()) {
+                response.getFirstOrNull()?.fundingRate?.toBigDecimalOrNull()
+            } else {
+                logApiError(instId, "funding rate", response)
                 null
             }
         }
     }
 
-    @Retry(name = "okxMarket")
-    @RateLimiter(name = "okxMarket")
-    @CircuitBreaker(name = "okxMarket")
+    @Retry(name = METRIC_NAME)
+    @RateLimiter(name = METRIC_NAME)
+    @CircuitBreaker(name = METRIC_NAME)
     suspend fun fetchOpenInterest(instId: String): BigDecimal? {
-        var status = "ok"
-
-        return meterRegistry.timeOkx("fetchOpenInterest", { arrayOf("status", status) }) {
-            try {
-                withTimeout(tradingProperties.okxTimeouts.openInterest.toMillis()) {
-                    val url = "$baseUrl/api/v5/public/open-interest?instId=$instId"
-                    val response: HttpResponse = okxKtorClient.get(url)
-                    val body = response.bodyAsText()
-                    val apiResponse = objectMapper.readValue<OkxApiResponse<OkxOpenInterestResponse>>(body)
-
-                    if (!apiResponse.isSuccess()) {
-                        val statusCode = response.status.value
-                        status = when {
-                            statusCode in 400..499 -> "http_4xx"
-                            statusCode >= 500 -> "http_5xx"
-                            else -> "api_error"
-                        }
-                        log.warn("OKX API error for open interest $instId - Code: ${apiResponse.code}, Message: ${apiResponse.message}")
-                        return@withTimeout null
-                    }
-
-                    apiResponse.getFirstOrNull()?.openInterest?.toBigDecimalOrNull() ?: run {
-                        status = "ok" // Empty data is still OK
-                        log.debug("No open interest data for $instId")
-                        null
-                    }
-                }
-            } catch (e: TimeoutCancellationException) {
-                status = "timeout"
-                null
-            } catch (e: ClientRequestException) {
-                val statusCode = e.response.status.value
-                status = when {
-                    statusCode in 400..499 -> "http_4xx"
-                    statusCode >= 500 -> "http_5xx"
-                    else -> "http_error"
-                }
-                log.error("HTTP error fetching open interest for $instId: ${e.response.status}", e)
-                null
-            } catch (e: Exception) {
-                status = "error"
-                log.error("Error fetching open interest for $instId", e)
+        return executePublicRequest(
+            operation = "fetchOpenInterest",
+            url = "$baseUrl$PATH_OPEN_INTEREST?instId=$instId",
+            timeoutMs = tradingProperties.okxTimeouts.openInterest.toMillis(),
+            defaultResult = null
+        ) { body ->
+            val response = objectMapper.readValue<OkxApiResponse<OkxOpenInterestResponse>>(body)
+            if (response.isSuccess()) {
+                response.getFirstOrNull()?.openInterest?.toBigDecimalOrNull()
+            } else {
+                logApiError(instId, "open interest", response)
                 null
             }
         }
     }
 
-    @Retry(name = "okxMarket")
-    @RateLimiter(name = "okxMarket")
+    @Retry(name = METRIC_NAME)
+    @RateLimiter(name = METRIC_NAME)
     suspend fun getSwapInstrument(instId: String): OkxInstrumentInfo? {
-        var status = "ok"
-
-        return meterRegistry.timeOkx("getSwapInstrument", { arrayOf("status", status) }) {
-            try {
-                withTimeout(tradingProperties.okxTimeouts.instruments.toMillis()) {
-                    val url = "$baseUrl/api/v5/public/instruments?instType=SWAP&instId=$instId"
-                    val response: HttpResponse = okxKtorClient.get(url)
-                    val body = response.bodyAsText()
-                    val apiResponse = objectMapper.readValue<OkxPublicInstrumentsApiResponse>(body)
-
-                    if (!apiResponse.isSuccess()) {
-                        val statusCode = response.status.value
-                        status = when {
-                            statusCode in 400..499 -> "http_4xx"
-                            statusCode >= 500 -> "http_5xx"
-                            else -> "api_error"
-                        }
-                        log.warn("Instruments fetch failed for $instId - code=${apiResponse.code}, msg=${apiResponse.msg}")
-                        null
-                    } else {
-                        apiResponse.firstOrNull()
-                    }
-                }
-            } catch (e: TimeoutCancellationException) {
-                status = "timeout"
-                null
-            } catch (e: ClientRequestException) {
-                val statusCode = e.response.status.value
-                status = when {
-                    statusCode in 400..499 -> "http_4xx"
-                    statusCode >= 500 -> "http_5xx"
-                    else -> "http_error"
-                }
-                log.error("HTTP error getting instrument $instId: ${e.response.status}", e)
-                null
-            } catch (e: Exception) {
-                status = "error"
-                log.error("Error getting instrument {}", instId, e)
+        return executePublicRequest(
+            operation = "getSwapInstrument",
+            url = "$baseUrl$PATH_INSTRUMENTS?instType=SWAP&instId=$instId",
+            timeoutMs = tradingProperties.okxTimeouts.instruments.toMillis(),
+            defaultResult = null
+        ) { body ->
+            val response = objectMapper.readValue<OkxPublicInstrumentsApiResponse>(body)
+            if (response.isSuccess()) {
+                response.firstOrNull()
+            } else {
+                //FIXME: logApiError(instId, "instruments", response)
                 null
             }
         }
+    }
+
+    // =========================================================================
+    // Private Helpers
+    // =========================================================================
+
+    /**
+     * Generalized executor for Public GET requests.
+     * Handles:
+     * 1. Timeouts
+     * 2. Metrics (Duration + Dynamic Status Tags)
+     * 3. HTTP Error Mapping
+     * 4. Exception Logging
+     */
+    private suspend inline fun <T> executePublicRequest(
+        operation: String,
+        url: String,
+        timeoutMs: Long,
+        defaultResult: T,
+        extraMetricTags: Array<String> = emptyArray(),
+        crossinline block: (String) -> T
+    ): T {
+        // Use the TimerScope-based extension from previous refactoring
+        return meterRegistry.timeOkx(operation, extraMetricTags) {
+            try {
+                withTimeout(timeoutMs) {
+                    val response = okxKtorClient.get(url)
+
+                    // 1. Handle HTTP Errors
+                    if (!response.status.isSuccess()) {
+                        val code = response.status.value
+                        status(mapHttpStatus(code)) // Dynamic Tag
+                        log.warn("HTTP $code for $operation: $url")
+                        return@withTimeout defaultResult
+                    }
+
+                    // 2. Process Body
+                    val body = response.bodyAsText()
+                    block(body)
+                }
+            } catch (e: TimeoutCancellationException) {
+                status("timeout") // Dynamic Tag
+                // Timeouts are expected in high-frequency trading, debug level is often enough
+                log.debug("Timeout fetching $operation")
+                defaultResult
+            } catch (e: ClientRequestException) {
+                status(mapHttpStatus(e.response.status.value)) // Dynamic Tag
+                log.error("HTTP Client error fetching $operation", e)
+                defaultResult
+            } catch (e: Exception) {
+                status("error") // Dynamic Tag
+                log.error("Unexpected error fetching $operation", e)
+                defaultResult
+            }
+        }
+    }
+
+    private fun logApiError(instId: String, type: String, response: OkxApiResponse<*>) {
+        log.warn("OKX API error for $type $instId - Code: ${response.code}, Message: ${response.message}" )
+    }
+
+    private fun mapHttpStatus(code: Int): String = when {
+        code in 400..499 -> "http_4xx"
+        code >= 500 -> "http_5xx"
+        else -> "http_error"
     }
 }
-

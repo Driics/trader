@@ -1,10 +1,11 @@
 package ru.driics.aitrade.application.usecase
 
 import io.github.oshai.kotlinlogging.KotlinLogging
-import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Timer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import ru.driics.aitrade.application.ai.AiBudgetLimiter
 import ru.driics.aitrade.common.logging.BusinessEventLogger
@@ -19,130 +20,132 @@ class AnalyzePromptUseCase(
     private val budgetLimiter: AiBudgetLimiter,
     private val meterRegistry: MeterRegistry
 ) {
-    companion object {
-        private val log = KotlinLogging.logger {}
+    private companion object {
+        val log = KotlinLogging.logger {}
+        const val METRIC_PREFIX = "ai.request"
     }
 
-    private val timeoutCounter: Counter = meterRegistry.counter("ai.request.timeout")
-    private val retryCounter: Counter = meterRegistry.counter("ai.request.retry")
-    private val budgetExceededCounter: Counter = meterRegistry.counter("ai.request.budget_exceeded")
-    private val successCounter: Counter = meterRegistry.counter("ai.request.success")
-    private val errorCounter: Counter = meterRegistry.counter("ai.request.error")
-
-    private val latencyTimer: Timer = meterRegistry.timer("ai.latency")
+    // Pre-define metrics to avoid allocation during execution
+    private val successCounter = meterRegistry.counter("$METRIC_PREFIX.success")
+    private val errorCounter = meterRegistry.counter("$METRIC_PREFIX.error")
+    private val timeoutCounter = meterRegistry.counter("$METRIC_PREFIX.timeout")
+    private val retryCounter = meterRegistry.counter("$METRIC_PREFIX.retry")
+    private val budgetExceededCounter = meterRegistry.counter("$METRIC_PREFIX.budget_exceeded")
+    private val latencyTimer = meterRegistry.timer("ai.latency")
 
     suspend fun execute(prompt: String): AiAnalysisResponse {
-        // Check budget before making request
+        // 1. Budget Check
         if (!budgetLimiter.tryConsume()) {
             budgetExceededCounter.increment()
-            log.warn { "AI request rejected: budget limit exceeded (${tradingProperties.aiBudgetPerMinute} req/min)" }
-            return AiAnalysisResponse(
+            log.warn { "AI budget exceeded (${tradingProperties.aiBudgetPerMinute} req/min)" }
+            return failureResponse(
                 provider = "budget-limiter",
-                model = "none",
-                response = "",
-                executionTimeMs = 0,
-                isSuccess = false,
-                errorMessage = "AI budget limit exceeded: ${tradingProperties.aiBudgetPerMinute} requests/min"
+                message = "Budget limit exceeded: ${tradingProperties.aiBudgetPerMinute} req/min"
             )
         }
 
-        var lastError: Throwable? = null
         val maxRetries = tradingProperties.aiMaxRetries
         val timeoutMs = tradingProperties.aiTimeoutMs
 
-        // Retry loop for transient errors
-        for (attempt in 0..maxRetries) {
+        // 2. Execution with Retry Policy
+        var lastException: Throwable? = null
+
+        repeat(maxRetries + 1) { attempt ->
+            val isLastAttempt = attempt == maxRetries
+
             try {
-                val sample = Timer.start(meterRegistry)
-                val response = withTimeout(timeoutMs.milliseconds) {
-                    ai.analyze(prompt)
+                // Measure latency only for the actual AI call, not the retry logic
+                val response = latencyTimer.recordSuspend {
+                    withTimeout(timeoutMs.milliseconds) {
+                        ai.analyze(prompt)
+                    }
                 }
-                sample.stop(latencyTimer)
 
                 if (response.isSuccess) {
                     successCounter.increment()
-                    BusinessEventLogger.aiDecision(
-                        symbol = "ALL",
-                        signal = "analysis_complete",
-                        confidence = null,
-                        leverage = null,
-                        riskUsd = null
-                    )
+                    BusinessEventLogger.aiDecision("ALL", "analysis_complete", null, null, null)
                     return response
-                } else {
-                    // Non-success response - might be retryable
-                    if (attempt < maxRetries && isRetryableError(response.errorMessage)) {
-                        retryCounter.increment()
-                        log.warn { "AI call failed (attempt ${attempt + 1}/${maxRetries + 1}): ${response.errorMessage}, retrying..." }
-                        continue
-                    } else {
-                        errorCounter.increment()
-                        return response
-                    }
                 }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: TimeoutCancellationException) {
-                timeoutCounter.increment()
-                lastError = e
-                if (attempt < maxRetries) {
-                    retryCounter.increment()
-                    log.warn { "AI call timed out after ${timeoutMs}ms (attempt ${attempt + 1}/${maxRetries + 1}), retrying..." }
-                    continue
-                } else {
-                    log.error(e) { "AI call timed out after ${maxRetries + 1} attempts" }
+
+                // Handle soft failure (API returned 200 but content implies error)
+                if (!isLastAttempt && response.errorMessage.isRetryable()) {
+                    handleRetry(attempt, maxRetries, response.errorMessage)
+                    return@repeat // continue loop
+                } else if (isLastAttempt) {
                     errorCounter.increment()
-                    return AiAnalysisResponse(
-                        provider = "timeout",
-                        model = "none",
-                        response = "",
-                        executionTimeMs = timeoutMs * (maxRetries + 1),
-                        isSuccess = false,
-                        errorMessage = "AI request timed out after ${timeoutMs}ms (${maxRetries + 1} attempts)"
-                    )
+                    return response
+                }
+
+            } catch (e: TimeoutCancellationException) {
+                lastException = e
+                timeoutCounter.increment()
+                if (!isLastAttempt) {
+                    handleRetry(attempt, maxRetries, "Timeout ${timeoutMs}ms")
                 }
             } catch (e: Exception) {
-                lastError = e
-                if (attempt < maxRetries && isRetryableError(e.message)) {
-                    retryCounter.increment()
-                    log.warn(e) { "AI call failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying..." }
-                    continue
+                if (e is CancellationException) throw e // Don't catch coroutine cancellation
+
+                lastException = e
+                if (!isLastAttempt && e.message.isRetryable()) {
+                    handleRetry(attempt, maxRetries, e.message)
                 } else {
-                    log.error(e) { "AI call failed after ${attempt + 1} attempts" }
+                    // Non-retryable error or last attempt
+                    log.error(e) { "AI call failed permanently after ${attempt + 1} attempts" }
                     errorCounter.increment()
-                    return AiAnalysisResponse(
+                    return failureResponse(
                         provider = "error",
-                        model = "none",
-                        response = "",
-                        executionTimeMs = 0,
-                        isSuccess = false,
-                        errorMessage = "AI request failed: ${e.message}"
+                        message = "AI request failed: ${e.message}"
                     )
                 }
             }
         }
 
-        // Should not reach here, but handle it
+        // 3. Fallback for exhausted retries
         errorCounter.increment()
-        return AiAnalysisResponse(
-            provider = "unknown",
-            model = "none",
-            response = "",
-            executionTimeMs = 0,
-            isSuccess = false,
-            errorMessage = "AI request failed after ${maxRetries + 1} attempts: ${lastError?.message}"
+        return failureResponse(
+            provider = "exhausted",
+            message = "Failed after ${maxRetries + 1} attempts. Last error: ${lastException?.message}"
         )
     }
 
-    private fun isRetryableError(errorMessage: String?): Boolean {
-        if (errorMessage == null) return false
-        val msg = errorMessage.lowercase()
-        // Retry on network errors, rate limits, temporary service errors
-        return msg.contains("timeout", ignoreCase = true) ||
-                msg.contains("rate limit", ignoreCase = true) ||
-                msg.contains("503", ignoreCase = true) ||
-                msg.contains("502", ignoreCase = true) ||
-                msg.contains("500", ignoreCase = true) ||
-                msg.contains("connection", ignoreCase = true)
+    private suspend fun handleRetry(attempt: Int, maxRetries: Int, reason: String?) {
+        retryCounter.increment()
+        log.warn { "AI call issue (attempt ${attempt + 1}/${maxRetries + 1}): $reason. Retrying..." }
+        // Optional: Add exponential backoff here if desired
+        delay(500L * (attempt + 1))
+    }
+
+    /**
+     * Extension to determine if an error string suggests a transient issue.
+     */
+    private fun String?.isRetryable(): Boolean {
+        if (this == null) return false
+        val msg = this.lowercase()
+        return msg.contains("timeout") ||
+                msg.contains("rate limit") ||
+                msg.contains("503") ||
+                msg.contains("502") ||
+                msg.contains("500") ||
+                msg.contains("connection") ||
+                msg.contains("reset")
+    }
+
+    private fun failureResponse(provider: String, message: String) = AiAnalysisResponse(
+        provider = provider,
+        model = "none",
+        response = "",
+        executionTimeMs = 0,
+        isSuccess = false,
+        errorMessage = message
+    )
+
+    // Helper for Micrometer suspend recording
+    private suspend fun <T> Timer.recordSuspend(block: suspend () -> T): T {
+        val sample = Timer.start(meterRegistry)
+        return try {
+            block()
+        } finally {
+            sample.stop(this)
+        }
     }
 }
