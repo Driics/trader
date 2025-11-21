@@ -2,7 +2,7 @@ package ru.driics.aitrade.domain.services
 
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
-import ru.driics.aitrade.model.OkxCandleResponse
+import ru.driics.aitrade.domain.model.OkxCandleResponse
 import java.math.BigDecimal
 import java.math.RoundingMode
 

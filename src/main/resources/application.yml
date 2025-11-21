@@ -25,7 +25,33 @@ trading:
   time-zone: UTC
   auto-execute: true
   max-concurrent-symbols: 10
-  instrument-cache-ttl: 10m
+  instrument-cache-ttl: 1h  # Aggressive caching: 1 hour TTL
+
+# Cache Configuration
+cache:
+  warming:
+    enabled: true  # Enable cache warming at startup
+
+# Redis Configuration (optional - for distributed caching)
+redis:
+  enabled: false  # Set to true and add spring-boot-starter-data-redis dependency to enable Redis L2 cache
+
+# Logging Configuration
+#logging:
+#  level:
+#    root: INFO
+#    ru.driics.aitrade: INFO
+#    ru.driics.aitrade.common.logging.BusinessEventLogger: INFO
+#    org.springframework: WARN
+#    io.ktor: WARN
+#  pattern:
+#    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{correlationId}] %logger{36} - %msg%n"
+#  file:
+#    name: ./logs/application.log
+#  logback:
+#    rollingpolicy:
+#      max-file-size: 100MB
+#      max-history: 30
 
 otel:
   service:
@@ -37,7 +63,7 @@ ai:
   koog:
     openrouter:
       enabled: true
-      api-keys: ${OPENROUTER_API_KEYS:key1,key2,key3}
+      api-keys: ${OPENROUTER_API_KEYS}
       max-retries: 3
       retry-delay-ms: 1000
       base-url: https://openrouter.ai/api/v1

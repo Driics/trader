@@ -1,4 +1,3 @@
-// src/main/kotlin/ru/driics/aitrade/service/PromptSchedulerService.kt
 package ru.driics.aitrade.service
 
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -6,53 +5,58 @@ import kotlinx.coroutines.runBlocking
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Service
 import ru.driics.aitrade.application.orchestrator.UpdateCycleOrchestrator
+import ru.driics.aitrade.application.orchestrator.UpdateCycleResult
 
 /**
  * Scheduler service for periodic trading system updates.
- * Minimal responsibility: scheduling only. Business logic is in UpdateCycleOrchestrator.
+ * Acts as an entry point for both Scheduled and Manual triggers.
  */
 @Service
 class PromptSchedulerService(
     private val orchestrator: UpdateCycleOrchestrator
 ) {
-    companion object {
-        private val log = KotlinLogging.logger {}
+    private companion object {
+        val log = KotlinLogging.logger {}
     }
 
     /**
-     * Executes scheduled update every 15 minutes.
-     * Initial delay: 5 seconds after startup.
+     * Executes scheduled update.
+     * Interval configurable via 'ai.trade.scheduler.interval-ms', defaults to 15 minutes.
+     *
+     * Note: @Scheduled methods must be blocking/void in Spring, so runBlocking is necessary here,
+     * but it only blocks the single scheduler thread, not the web server threads.
      */
-    @Scheduled(fixedDelay = 900_000, initialDelay = 5000)
-    fun updatePrompt() {
-        log.info { "╔══════════════════════════════════════════════════════" }
-        log.info { "║ Scheduled Update Triggered" }
-        log.info { "╚══════════════════════════════════════════════════════" }
+    @Scheduled(
+        fixedDelayString = "\${ai.trade.scheduler.interval-ms:900000}",
+        initialDelayString = "\${ai.trade.scheduler.initial-delay-ms:5000}"
+    )
+    fun scheduledUpdate() {
+        runBlocking {
+            log.info { "Clock tick: Triggering scheduled update..." }
 
-        try {
-            val result = runBlocking { orchestrator.runOnce() }
-
-            if (result.success) {
-                log.info { "✓ Scheduled update completed successfully in ${result.executionTimeMs}ms" }
-                if (result.positionsPlaced > 0) {
-                    log.info { "  → ${result.positionsPlaced} position(s) placed" }
-                }
-            } else {
-                log.error { "✗ Scheduled update failed: ${result.message}" }
+            runCatching {
+                orchestrator.runOnce()
+            }.onSuccess { result ->
+                logSuccess(result)
+            }.onFailure { e ->
+                log.error(e) { "Scheduled update failed with unexpected exception" }
             }
-        } catch (e: Exception) {
-            log.error(e) { "Unexpected error during scheduled update" }
         }
-
-        log.info { "═══════════════════════════════════════════════════════\n" }
     }
 
     /**
      * Triggers manual update (called from REST API).
-     * Returns execution result for API response.
+     * Marked as 'suspend' so the Controller does not need to block a thread waiting for the result.
      */
-    fun triggerManualUpdate(): ru.driics.aitrade.application.orchestrator.UpdateCycleResult {
+    suspend fun triggerManualUpdate(): UpdateCycleResult {
         log.info { "Manual update triggered via API" }
-        return runBlocking { orchestrator.runOnce() }
+        return orchestrator.runOnce()
     }
+
+    private fun logSuccess(result: UpdateCycleResult) =
+        if (result.success) {
+            log.info { "Update finished. Positions placed: ${result.positionsPlaced}" }
+        } else {
+            log.warn { "Update finished with warning: ${result.message}" }
+        }
 }

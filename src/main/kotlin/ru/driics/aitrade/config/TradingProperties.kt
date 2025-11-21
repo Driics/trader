@@ -40,7 +40,15 @@ data class TradingProperties(
     @field:Min(value = 1, message = "Max concurrent symbols must be at least 1")
     var maxConcurrentSymbols: Int = 4,
 
-    var instrumentCacheTtl: Duration = Duration.ofMinutes(10)
+    var instrumentCacheTtl: Duration = Duration.ofHours(1), // Changed to 1 hour for aggressive caching
+
+    var okxTimeouts: OkxTimeouts = OkxTimeouts(),
+
+    // AI call configuration
+    var aiTimeoutMs: Long = 60_000, // 60 seconds default timeout
+    var aiMaxRetries: Int = 2, // Retries for transient errors
+    var aiBudgetPerMinute: Long = 10, // Max AI requests per minute
+    var aiCooldownMs: Duration? = Duration.ofMinutes(5) // Cooldown between trades per symbol
 ) {
     fun getCurrenciesList(): List<String> =
         currencies.map { it.trim().uppercase(Locale.ROOT) }
@@ -48,3 +56,15 @@ data class TradingProperties(
 
     fun getMarginMode(): MarginMode = MarginMode.fromString(marginMode)
 }
+
+data class OkxTimeouts(
+    var ticker: Duration = Duration.ofSeconds(2),
+    var candles: Duration = Duration.ofSeconds(6),
+    var funding: Duration = Duration.ofSeconds(3),
+    var openInterest: Duration = Duration.ofSeconds(3),
+    var account: Duration = Duration.ofSeconds(4),
+    var positions: Duration = Duration.ofSeconds(4),
+    var instruments: Duration = Duration.ofSeconds(4),
+    var setLeverage: Duration = Duration.ofSeconds(6),
+    var placeOrder: Duration = Duration.ofSeconds(8)
+)

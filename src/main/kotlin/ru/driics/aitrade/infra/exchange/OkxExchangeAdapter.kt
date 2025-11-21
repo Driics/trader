@@ -1,29 +1,33 @@
 package ru.driics.aitrade.infra.exchange
 
-import com.github.benmanes.caffeine.cache.Caffeine
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.plugins.*
 import io.opentelemetry.api.trace.Tracer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.withTimeout
 import org.springframework.stereotype.Service
 import ru.driics.aitrade.common.traced
 import ru.driics.aitrade.config.TradingProperties
-import ru.driics.aitrade.domain.model.MarginMode
+import ru.driics.aitrade.domain.model.*
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PlaceOrderOutcome
 import ru.driics.aitrade.domain.ports.TradingPort
-import ru.driics.aitrade.domain.services.IndicatorCalculator
+import ru.driics.aitrade.domain.types.InstrumentId
+import ru.driics.aitrade.domain.types.Symbol
 import ru.driics.aitrade.domain.types.TradeResult
 import ru.driics.aitrade.domain.util.quantize
-import ru.driics.aitrade.model.*
+import ru.driics.aitrade.infra.cache.CachedIndicatorCalculator
+import ru.driics.aitrade.infra.cache.SmartCacheStrategy
+import ru.driics.aitrade.infra.cache.getTyped
 import ru.driics.aitrade.service.OkxRestClient
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.time.Clock
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -31,143 +35,344 @@ import java.util.concurrent.atomic.AtomicReference
 class OkxExchangeAdapter(
     private val rest: OkxRestClient,
     private val tradingProperties: TradingProperties,
-    private val tracer: Tracer
+    private val tracer: Tracer,
+    private val smartCache: SmartCacheStrategy,
+    private val cachedIndicatorCalculator: CachedIndicatorCalculator,
+    private val clock: Clock
 ) : MarketDataPort, TradingPort {
-    companion object {
-        private val log = KotlinLogging.logger { }
-    }
 
-    private val sessionStartTime = AtomicLong(System.currentTimeMillis())
+    private val log = KotlinLogging.logger { }
+
+    private val sessionStartTime = clock.instant().toEpochMilli()
     private val invocationCount = AtomicLong(0L)
     private val initialAccountEquity = AtomicReference<BigDecimal?>(null)
 
-    private val instrumentCache = Caffeine.newBuilder()
-        .expireAfterWrite(tradingProperties.instrumentCacheTtl)
-        .maximumSize(100)
-        .build<String, OkxInstrumentInfo>()
+    private val candles4HCache = ConcurrentHashMap<String, Cached4HData>()
 
-    private val candles4HCache = Candles4HCache()
+    private companion object {
+        const val CANDLE_3M = "3m"
+        const val CANDLE_4H = "4H"
+        const val COUNT_3M = 100
+        const val COUNT_4H = 200
+        const val INTRADAY_SIZE = 10
+        const val AVG_VOL_PERIOD = 20
 
-    override suspend fun loadMarketState(symbols: List<String>): MarketState = withContext(Dispatchers.IO) {
+        const val EMA_20 = 20
+        const val EMA_50 = 50
+        const val RSI_7 = 7
+        const val RSI_14 = 14
+        const val ATR_3 = 3
+        const val ATR_14 = 14
+
+        const val MILLIS_PER_MINUTE = 60000L
+        const val CACHE_KEY_PREFIX = "instrument:"
+    }
+
+    override suspend fun loadMarketState(symbols: List<Symbol>): MarketState = coroutineScope {
         val count = invocationCount.incrementAndGet()
         log.debug { "Loading market state for ${symbols.size} symbols (invocation #$count)" }
 
-        val semaphore = Semaphore(tradingProperties.maxConcurrentSymbols)
+        val fetchStart = clock.instant().toEpochMilli()
 
-        val currencies = symbols.associateWith { symbol ->
-            async(Dispatchers.IO) {
-                semaphore.withPermit {
-                    withTimeout(5000) {
-                        runCatching {
-                            fetchCurrencyData(symbol)
-                        }.getOrElse { e ->
-                            log.error(e) { "Failed to fetch data for $symbol" }
-                            createEmptyCurrencyData(symbol)
-                        }
-                    }
-                }
-            }
-        }.mapValues { it.value.await() }
+        val currenciesDeferred = async(Dispatchers.IO) {
+            val symbolStrings = symbols.map { it.value }
+            streamCurrencyData(symbolStrings).toList()
+        }
 
-
-        val positions = async(Dispatchers.IO) {
+        val positionsDeferred = async(Dispatchers.IO) {
             tracer.traced("fetch_positions") { fetchPositions() }
-        }.await()
-        val account = async(Dispatchers.IO) {
+        }
+
+        val accountDeferred = async(Dispatchers.IO) {
+            val positions = positionsDeferred.await()
             tracer.traced("fetch_account") { fetchAccountInfo(positions) }
         }
 
+        val currencies = currenciesDeferred.await().associateBy { it.symbol }
+
         MarketState(
-            timestamp = System.currentTimeMillis(),
-            minutesSinceStart = (System.currentTimeMillis() - sessionStartTime.get()) / 60000,
+            timestamp = fetchStart,
+            minutesSinceStart = (fetchStart - sessionStartTime) / MILLIS_PER_MINUTE,
             invocationCount = count,
             currencies = currencies,
-            account = account.await(),
-            positions = positions
+            account = accountDeferred.await(),
+            positions = positionsDeferred.await()
         )
     }
 
-    private suspend fun fetchCurrencyData(symbol: String): CurrencyMarketData {
-        val instId = "${symbol}-USDT-SWAP"
-
-        // Fetch current ticker
-        val ticker = rest.fetchTicker(instId)
-        val currentPrice = ticker?.bidPrice?.toBigDecimalOrNull() ?: BigDecimal.ZERO
-
-        // Fetch 3-minute candles
-        val candles = rest.fetchCandles(instId, "3m", 100)
-        val prices = candles.mapNotNull { it.close.toBigDecimalOrNull() }
-
-        // Calculate current indicators
-        val ema20 = IndicatorCalculator.calculateEMA(prices, 20)
-        val macd = IndicatorCalculator.calculateMACD(prices)
-        val rsi7 = IndicatorCalculator.calculateRSI(prices, 7)
-
-        // Calculate progressive indicators for intraday series
-        val intradayEma20 = IndicatorCalculator.calculateProgressiveEMA(prices, 20)
-        val intradayMacd = IndicatorCalculator.calculateProgressiveMACD(prices)
-        val intradayRsi7 = IndicatorCalculator.calculateProgressiveRSI(prices, 7)
-        val intradayRsi14 = IndicatorCalculator.calculateProgressiveRSI(prices, 14)
-
-        // Fetch 4-hour candles for longer-term context
-        val candles4h = fetch4HCandlesWithCache(symbol, instId)
-        val prices4h = candles4h.mapNotNull { it.close.toBigDecimalOrNull() }
-
-        val ema20_4h = IndicatorCalculator.calculateEMA(prices4h, 20)
-        val ema50_4h = IndicatorCalculator.calculateEMA(prices4h, 50)
-        val atr3_4h = IndicatorCalculator.calculateATR(candles4h, 3)
-        val atr14_4h = IndicatorCalculator.calculateATR(candles4h, 14)
-
-        val volume4h = candles4h.lastOrNull()?.volume?.toBigDecimalOrNull() ?: BigDecimal.ZERO
-        val avgVolume4h = calculateAverageVolume(candles4h, last = 20)
-
-        val macd4h = IndicatorCalculator.calculateProgressiveMACD(prices4h)
-        val rsi14_4h = IndicatorCalculator.calculateProgressiveRSI(prices4h, 14)
-
-
-        // Ensure exactly 10 values in 4H series (pad with zeros if needed)
-        val macd4hPadded = macd4h.takeLast(10).let { list ->
-            if (list.size < 10) {
-                List(10 - list.size) { BigDecimal.ZERO } + list
-            } else {
-                list
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun streamCurrencyData(symbols: List<String>): Flow<CurrencyMarketData> {
+        return symbols.asFlow()
+            .flatMapMerge(concurrency = tradingProperties.maxConcurrentSymbols) { symbol ->
+                flow {
+                    val data = runCatching {
+                        withTimeout(5000L) { fetchCurrencyData(symbol) }
+                    }.getOrElse { e ->
+                        log.error(e) { "Failed to fetch data for $symbol" }
+                        createEmptyCurrencyData(symbol)
+                    }
+                    emit(data)
+                }
             }
+    }
+
+    suspend fun fetchCurrencyData(symbol: String): CurrencyMarketData = coroutineScope {
+        val instId = InstrumentId.fromSymbol(symbol).value
+
+        val tickerDef = async { rest.fetchTicker(instId) }
+        val candles3mDef = async { rest.fetchCandles(instId, CANDLE_3M, COUNT_3M) }
+        val candles4hDef = async { fetch4HCandlesWithCache(symbol, instId) }
+        val fundingDef = async { rest.fetchFundingRate(instId) }
+        val oiDef = async { rest.fetchOpenInterest(instId) }
+
+        val candles3m = candles3mDef.await()
+        val prices3m = candles3m.mapNotNull { it.close.toDecimal() }
+        val intradayIndicatorsDef = async(Dispatchers.Default) {
+            calculateIntradayIndicators(prices3m)
         }
 
-        val rsi14_4hPadded = rsi14_4h.takeLast(10).let { list ->
-            if (list.size < 10) {
-                List(10 - list.size) { BigDecimal.ZERO } + list
-            } else {
-                list
-            }
+        val candles4h = candles4hDef.await()
+        val prices4h = candles4h.mapNotNull { it.close.toDecimal() }
+        val indicators4hDef = async(Dispatchers.Default) {
+            calculate4HIndicators(candles4h, prices4h)
         }
 
-        // Fetch funding rate and open interest
-        val fundingRate = rest.fetchFundingRate(instId)
-        val openInterest = rest.fetchOpenInterest(instId)
+        val ticker = tickerDef.await()
+        // ERROR 1 FIX: Handle nullability with default ZERO
+        val currentPrice = ticker?.bidPrice.toDecimal() ?: BigDecimal.ZERO
 
-        return CurrencyMarketData(
+        val intraday = intradayIndicatorsDef.await()
+        val ind4h = indicators4hDef.await()
+
+        CurrencyMarketData(
             symbol = symbol,
             currentPrice = currentPrice,
-            currentEma20 = ema20,
-            currentMacd = macd,
-            currentRsi7 = rsi7,
-            openInterest = openInterest,
-            fundingRate = fundingRate,
-            intradayPrices = prices.takeLast(10),
-            intradayEma20 = intradayEma20.takeLast(10),
-            intradayMacd = intradayMacd.takeLast(10),
-            intradayRsi7 = intradayRsi7.takeLast(10),
-            intradayRsi14 = intradayRsi14.takeLast(10),
-            ema20_4h = ema20_4h,
-            ema50_4h = ema50_4h,
-            atr3_4h = atr3_4h,
-            atr14_4h = atr14_4h,
-            volume4h = volume4h,
-            avgVolume4h = avgVolume4h,
-            macd4h = macd4hPadded,
-            rsi14_4h = rsi14_4hPadded
+            currentEma20 = intraday.currentEma20,
+            currentMacd = intraday.currentMacd,
+            currentRsi7 = intraday.currentRsi7,
+            openInterest = oiDef.await(),
+            fundingRate = fundingDef.await(),
+            intradayPrices = intraday.prices,
+            intradayEma20 = intraday.ema20,
+            intradayMacd = intraday.macd,
+            intradayRsi7 = intraday.rsi7,
+            intradayRsi14 = intraday.rsi14,
+            ema20_4h = ind4h.ema20,
+            ema50_4h = ind4h.ema50,
+            atr3_4h = ind4h.atr3,
+            atr14_4h = ind4h.atr14,
+            volume4h = ind4h.volume,
+            avgVolume4h = ind4h.avgVolume,
+            macd4h = ind4h.macd,
+            rsi14_4h = ind4h.rsi14
         )
+    }
+
+    private suspend fun calculateIntradayIndicators(prices: List<BigDecimal>): IntradayIndicators = coroutineScope {
+        val c = cachedIndicatorCalculator
+        val curEma20 = async { c.calculateEMA(prices, EMA_20) }
+        val curMacd = async { c.calculateMACD(prices) }
+        val curRsi7 = async { c.calculateRSI(prices, RSI_7) }
+
+        val progEma20 = async { c.calculateProgressiveEMA(prices, EMA_20) }
+        val progMacd = async { c.calculateProgressiveMACD(prices) }
+        val progRsi7 = async { c.calculateProgressiveRSI(prices, RSI_7) }
+        val progRsi14 = async { c.calculateProgressiveRSI(prices, RSI_14) }
+
+        IntradayIndicators(
+            currentEma20 = curEma20.await(),
+            currentMacd = curMacd.await(),
+            currentRsi7 = curRsi7.await(),
+            prices = prices.takeLast(INTRADAY_SIZE),
+            ema20 = progEma20.await().takeLast(INTRADAY_SIZE),
+            macd = progMacd.await().takeLast(INTRADAY_SIZE),
+            rsi7 = progRsi7.await().takeLast(INTRADAY_SIZE),
+            rsi14 = progRsi14.await().takeLast(INTRADAY_SIZE)
+        )
+    }
+
+    private suspend fun calculate4HIndicators(
+        candles: List<OkxCandleResponse>,
+        prices: List<BigDecimal>
+    ): Indicators4H = coroutineScope {
+        val c = cachedIndicatorCalculator
+
+        val ema20 = async { c.calculateEMA(prices, EMA_20) }
+        val ema50 = async { c.calculateEMA(prices, EMA_50) }
+        val atr3 = async { c.calculateATR(candles, ATR_3) }
+        val atr14 = async { c.calculateATR(candles, ATR_14) }
+        val macd = async { c.calculateProgressiveMACD(prices) }
+        val rsi14 = async { c.calculateProgressiveRSI(prices, RSI_14) }
+
+        // ERROR 2 FIX: Handle nullability
+        val volume = candles.lastOrNull()?.volume.toDecimal() ?: BigDecimal.ZERO
+        val avgVol = calculateAverageVolume(candles, AVG_VOL_PERIOD)
+
+        Indicators4H(
+            ema20 = ema20.await(),
+            ema50 = ema50.await(),
+            atr3 = atr3.await(),
+            atr14 = atr14.await(),
+            volume = volume,
+            avgVolume = avgVol,
+            macd = padSeries(macd.await(), INTRADAY_SIZE),
+            rsi14 = padSeries(rsi14.await(), INTRADAY_SIZE)
+        )
+    }
+
+    private suspend fun fetch4HCandlesWithCache(symbol: String, instId: String): List<OkxCandleResponse> {
+        val newCandles = rest.fetchCandles(instId, CANDLE_4H, COUNT_4H)
+        if (newCandles.isEmpty()) {
+            log.warn { "No 4H candles for $symbol" }
+            return emptyList()
+        }
+
+        val lastTimestamp = newCandles.firstOrNull()?.timestamp?.toLongOrNull() ?: 0L
+        val closePriceHash = newCandles.firstOrNull()?.close.hashCode()
+        val newHash = 31 * lastTimestamp + closePriceHash
+
+        val cached = candles4HCache[symbol]
+
+        if (cached != null && cached.dataHash == newHash) {
+            return cached.candles
+        }
+
+        candles4HCache[symbol] = Cached4HData(newCandles, lastTimestamp, newHash)
+        return newCandles
+    }
+
+    private suspend fun fetchAccountInfo(prefetchedPositions: List<Position>): AccountInfo {
+        val acc = rest.fetchAccount()
+        val totalEquity = acc.totalEquity.toDecimal() ?: BigDecimal.ZERO
+        val availableBalance = acc.availableBalance.toDecimal() ?: BigDecimal.ZERO
+
+        // ERROR 3 FIX: Ensure baseline is non-null for comparison
+        val baseline = initialAccountEquity.updateAndGet { current ->
+            current ?: totalEquity
+        } ?: totalEquity // Fallback only needed for strict compiler safety, though unlikely to be null here
+
+        val totalReturnPct = if (baseline > BigDecimal.ZERO) {
+            (totalEquity - baseline)
+                .divide(baseline, 6, RoundingMode.HALF_UP)
+                .multiply(BigDecimal(100))
+        } else BigDecimal.ZERO
+
+        val effectiveCash = if (prefetchedPositions.isEmpty() && availableBalance.compareTo(BigDecimal.ZERO) == 0) {
+            totalEquity
+        } else {
+            availableBalance
+        }
+
+        return AccountInfo(
+            totalReturn = totalReturnPct,
+            availableCash = effectiveCash,
+            accountValue = totalEquity,
+            sharpeRatio = null
+        )
+    }
+
+    private suspend fun fetchPositions(): List<Position> {
+        return rest.fetchOpenPositions().mapNotNull { pos ->
+            runCatching {
+                // ERROR 4 FIX: Use Elvis operator for mandatory BigDecimal fields
+                Position(
+                    symbol = pos.instrumentId.substringBefore("-"),
+                    quantity = pos.quantity.toDecimal() ?: BigDecimal.ZERO,
+                    entryPrice = pos.averagePrice.toDecimal() ?: BigDecimal.ZERO,
+                    currentPrice = pos.markPrice.toDecimal() ?: BigDecimal.ZERO,
+                    liquidationPrice = pos.liquidationPrice.toDecimal()?.takeIf { it > BigDecimal.ZERO },
+                    unrealizedPnl = pos.unrealizedPnl.toDecimal() ?: BigDecimal.ZERO,
+                    leverage = pos.leverage.toIntOrNull()
+                )
+            }.onFailure { log.warn { "Position parse error: ${pos.instrumentId}" } }.getOrNull()
+        }
+    }
+
+    override suspend fun loadInstrument(instrumentId: InstrumentId): TradeResult<OkxInstrumentInfo> {
+        val instId = instrumentId.value
+        val key = "$CACHE_KEY_PREFIX$instId"
+
+        return runCatching {
+            // ERROR 5 FIX: Pass 'fetcher' as a named argument because it's not the last parameter in definition
+            val info = smartCache.getTyped<OkxInstrumentInfo>(
+                key = key,
+                level = SmartCacheStrategy.CacheLevel.L3,
+                fetcher = {
+                    rest.getSwapInstrument(instId)
+                        ?: throw IllegalArgumentException("Instrument not found")
+                }
+            )
+            TradeResult.Success(info)
+        }.fold(
+            onSuccess = { it },
+            onFailure = { e -> mapError(e, instId) }
+        )
+    }
+
+    override suspend fun getLastPrice(instrumentId: InstrumentId): TradeResult<BigDecimal?> {
+        val instId = instrumentId.value
+        return runCatching {
+            val t = rest.fetchTicker(instId)
+            // ERROR 6 FIX: Safe call '?.takeIf' on result of 'toDecimal()'
+            val price = t?.lastPrice.toDecimal()?.takeIf { it > BigDecimal.ZERO }
+                ?: t?.askPrice.toDecimal()?.takeIf { it > BigDecimal.ZERO }
+                ?: t?.bidPrice.toDecimal()?.takeIf { it > BigDecimal.ZERO }
+
+            TradeResult.Success(price)
+        }.getOrElse { mapError(it, instId) }
+    }
+
+    override suspend fun placeMarketOrderWithTpSl(
+        instrumentId: InstrumentId,
+        side: String,
+        contracts: BigDecimal,
+        tp: BigDecimal?,
+        sl: BigDecimal?,
+        tickSz: BigDecimal,
+        clOrdId: String,
+        tag: String?,
+        marginMode: MarginMode
+    ): TradeResult<PlaceOrderOutcome> {
+        return try {
+            val res = rest.placeMarketOrderWithAttach(
+                instId = instrumentId.value,
+                side = side,
+                tdMode = marginMode.asOkxApiValue,
+                szContracts = contracts.quantizeToString(),
+                tpPx = tp?.quantizeToString(tickSz),
+                slPx = sl?.quantizeToString(tickSz),
+                posSide = null,
+                clOrdId = clOrdId,
+                tag = tag
+            )
+
+            if (res != null && res.sCode == "0") {
+                TradeResult.Success(PlaceOrderOutcome(true, res.ordId, "Placed"))
+            } else {
+                TradeResult.Failure.ApiError(
+                    res?.sCode ?: "Unknown",
+                    res?.sMsg ?: "Order rejected"
+                )
+            }
+        } catch (e: Exception) {
+            TradeResult.Failure.NetworkError("Order failed", e)
+        }
+    }
+
+    override suspend fun setLeverage(instrumentId: InstrumentId, leverage: Int, marginMode: MarginMode): TradeResult<Boolean> {
+        return runCatching {
+            TradeResult.Success(rest.setLeverage(instrumentId.value, leverage, marginMode))
+        }.getOrElse { mapError(it, instrumentId.value) }
+    }
+
+    // =========================================================================
+    // Helpers
+    // =========================================================================
+
+    private fun mapError(e: Throwable, id: String): TradeResult.Failure = when (e) {
+        is ClientRequestException -> TradeResult.Failure.NetworkError("HTTP ${e.response.status}", e)
+        is IllegalArgumentException -> TradeResult.Failure.ApiError("BAD_ARG", e.message ?: "")
+        else -> TradeResult.Failure.ApiError("UNKNOWN", "Error on $id: ${e.message}", e)
     }
 
     private fun createEmptyCurrencyData(symbol: String) = CurrencyMarketData(
@@ -178,223 +383,61 @@ class OkxExchangeAdapter(
         currentRsi7 = BigDecimal.ZERO
     )
 
-    private suspend fun fetchAccountInfo(prefetchedPositions: List<Position>? = null): AccountInfo {
-        val acc = rest.fetchAccount()
-        val totalEq = acc.totalEquity.toBigDecimalOrNull() ?: BigDecimal.ZERO
-        val avail = acc.availableBalance.toBigDecimalOrNull() ?: BigDecimal.ZERO
-
-        val baseline = initialAccountEquity.get() ?: run {
-            initialAccountEquity.set(totalEq)
-            totalEq
-        }
-
-        val totalReturnPct = if (baseline > BigDecimal.ZERO) {
-            totalEq.subtract(baseline)
-                .divide(baseline, 6, RoundingMode.HALF_UP)
-                .multiply(BigDecimal(100))
-        } else {
-            BigDecimal.ZERO
-        }
-
-        val positions = prefetchedPositions ?: fetchPositions()
-        val availableCash = if (positions.isEmpty() && avail == BigDecimal.ZERO && totalEq > BigDecimal.ZERO) {
-            totalEq
-        } else {
-            avail
-        }
-
-        return AccountInfo(
-            totalReturn = totalReturnPct,
-            availableCash = availableCash,
-            accountValue = totalEq,
-            sharpeRatio = null
-        )
+    private fun padSeries(series: List<BigDecimal>, targetSize: Int): List<BigDecimal> {
+        val last = series.takeLast(targetSize)
+        return if (last.size < targetSize) {
+            List(targetSize - last.size) { BigDecimal.ZERO } + last
+        } else last
     }
 
-    private suspend fun fetchPositions(): List<Position> {
-        val positions = rest.fetchOpenPositions()
-        return positions.mapNotNull { pos ->
-            try {
-                Position(
-                    symbol = pos.instrumentId.substringBefore("-"),
-                    quantity = pos.quantity.toBigDecimalOrNull() ?: BigDecimal.ZERO,
-                    entryPrice = pos.averagePrice.toBigDecimalOrNull() ?: BigDecimal.ZERO,
-                    currentPrice = pos.markPrice.toBigDecimalOrNull() ?: BigDecimal.ZERO,
-                    liquidationPrice = pos.liquidationPrice.toBigDecimalOrNull(),
-                    unrealizedPnl = pos.unrealizedPnl.toBigDecimalOrNull() ?: BigDecimal.ZERO,
-                    leverage = pos.leverage.toIntOrNull()
-                )
-            } catch (e: Exception) {
-                log.warn(e) { "Failed to parse position: ${pos.instrumentId}" }
-                null
-            }
-        }
-    }
-
-    /**
-     * Fetch 4H candles with caching to avoid recalculations.
-     * Checks if data has changed since last fetch.
-     */
-    private suspend fun fetch4HCandlesWithCache(symbol: String, instId: String): List<OkxCandleResponse> {
-        val newCandles = rest.fetchCandles(instId, "4H", 200)
-
-        if (newCandles.isEmpty()) {
-            log.warn { "No 4H candles returned for $symbol" }
-            return emptyList()
-        }
-
-        val newHash = Candles4HCache.generateHash(newCandles)
-        val lastTimestamp = newCandles.lastOrNull()?.timestamp?.toLongOrNull() ?: Long.MAX_VALUE
-
-        val cached = candles4HCache.get(symbol)
-
-        // If hash matches, data hasn't changed - return cached candles
-        if (cached != null && cached.dataHash == newHash) {
-            log.debug { "4H data unchanged for $symbol, using cached version" }
-            return cached.candles
-        }
-
-        // Data changed or no cache - update cache
-        log.debug { "4H data updated for $symbol (hash: $newHash)" }
-        candles4HCache.put(
-            symbol,
-            Cached4HData(
-                candles = newCandles,
-                lastCandleTimestamp = lastTimestamp,
-                dataHash = newHash
-            )
-        )
-
-        return newCandles
-    }
-
-    private fun calculateAverageVolume(candles: List<OkxCandleResponse>, last: Int? = null): BigDecimal {
+    private fun calculateAverageVolume(candles: List<OkxCandleResponse>, limit: Int): BigDecimal {
         if (candles.isEmpty()) return BigDecimal.ZERO
-        val candlesToUse = if (last != null && candles.size > last) {
-            candles.takeLast(last)
-        } else {
-            candles
-        }
-        val volumes = candlesToUse.mapNotNull { it.volume.toBigDecimalOrNull() }
-        return if (volumes.isNotEmpty()) {
-            volumes.fold(BigDecimal.ZERO, BigDecimal::add)
-                .divide(BigDecimal(volumes.size), 10, RoundingMode.HALF_UP)
-        } else {
-            BigDecimal.ZERO
-        }
+        val subset = if (candles.size > limit) candles.takeLast(limit) else candles
+        val sum = subset.mapNotNull { it.volume.toDecimal() }.fold(BigDecimal.ZERO, BigDecimal::add)
+        return if (subset.isNotEmpty()) {
+            sum.divide(BigDecimal(subset.size), 10, RoundingMode.HALF_UP)
+        } else BigDecimal.ZERO
     }
 
-    override suspend fun loadInstrument(instId: String): TradeResult<OkxInstrumentInfo> {
+    private fun String?.toDecimal(default: BigDecimal? = null): BigDecimal? {
+        if (this.isNullOrBlank()) return default
         return try {
-            val cached = instrumentCache.getIfPresent(instId)
-            if (cached != null)
-                return TradeResult.Success(cached)
-
-            val instrumentInfo = rest.getSwapInstrument(instId)
-                ?: return TradeResult.Failure.ApiError(
-                    code = "INSTRUMENT_NOT_FOUND",
-                    message = "Instrument $instId not found"
-                )
-
-            instrumentCache.put(instId, instrumentInfo)
-            TradeResult.Success(instrumentInfo)
-        } catch (e: ClientRequestException) {
-            TradeResult.Failure.NetworkError(
-                message = "HTTP ${e.response.status.value} fetching instrument $instId",
-                cause = e
-            )
-        } catch (e: Exception) {
-            TradeResult.Failure.ApiError(
-                code = "UNKNOWN_ERROR",
-                message = "Error loading instrument $instId: ${e.message}",
-                cause = e
-            )
+            BigDecimal(this)
+        } catch (_: Exception) {
+            default
         }
     }
 
-    override suspend fun getLastPrice(instId: String): TradeResult<BigDecimal?> {
-        return try {
-            val t = rest.fetchTicker(instId)
-            val lastPrice = t?.lastPrice?.toBigDecimalOrNull()
-                ?: t?.askPrice?.toBigDecimalOrNull()
-                ?: t?.bidPrice?.toBigDecimalOrNull()
-
-            TradeResult.Success(lastPrice)
-        } catch (e: Exception) {
-            TradeResult.Failure.ApiError(
-                code = "UNKOWN_ERROR",
-                message = "Error loading instrument $instId: ${e.message}",
-                cause = e
-            )
-        }
+    private fun BigDecimal.quantizeToString(tickSize: BigDecimal? = null): String {
+        val q = if (tickSize != null) this.quantize(tickSize) else this
+        return q.stripTrailingZeros().toPlainString()
     }
 
-    override suspend fun setLeverage(instId: String, leverage: Int, marginMode: MarginMode): TradeResult<Boolean> =
-        try {
-            val leverage = rest.setLeverage(
-                instId,
-                leverage,
-                marginMode
-            )
+    private data class IntradayIndicators(
+        val currentEma20: BigDecimal,
+        val currentMacd: BigDecimal,
+        val currentRsi7: BigDecimal,
+        val prices: List<BigDecimal>,
+        val ema20: List<BigDecimal>,
+        val macd: List<BigDecimal>,
+        val rsi7: List<BigDecimal>,
+        val rsi14: List<BigDecimal>
+    )
 
-            TradeResult.Success(leverage)
-        } catch (e: Exception) {
-            TradeResult.Failure.ApiError(
-                code = "UNKNOWN_ERROR",
-                message = "Failed to set leverage $leverage for $instId in ${marginMode.asOkxApiValue} mode",
-                cause = e
-            )
-        }
+    private data class Indicators4H(
+        val ema20: BigDecimal,
+        val ema50: BigDecimal,
+        val atr3: BigDecimal,
+        val atr14: BigDecimal,
+        val volume: BigDecimal,
+        val avgVolume: BigDecimal,
+        val macd: List<BigDecimal>,
+        val rsi14: List<BigDecimal>
+    )
 
-    override suspend fun placeMarketOrderWithTpSl(
-        instId: String,
-        side: String,
-        contracts: BigDecimal,
-        tp: BigDecimal?,
-        sl: BigDecimal?,
-        tickSz: BigDecimal,
-        clOrdId: String,
-        tag: String?,
-        marginMode: MarginMode
-    ): TradeResult<PlaceOrderOutcome> = try {
-        val tpStr = tp?.quantize(tickSz)?.toPlainString()
-        val slStr = sl?.quantize(tickSz)?.toPlainString()
-
-        val res = rest.placeMarketOrderWithAttach(
-            instId = instId,
-            side = side,
-            tdMode = marginMode.asOkxApiValue,
-            szContracts = contracts.stripTrailingZeros().toPlainString(),
-            tpPx = tpStr,
-            slPx = slStr,
-            posSide = null,
-            clOrdId = clOrdId,
-            tag = tag
-        )
-
-        when {
-            res == null -> TradeResult.Failure.ApiError(
-                code = "ORDER_REJECTED",
-                message = "Order placement failed"
-            )
-
-            res.sCode == "0" -> TradeResult.Success(
-                PlaceOrderOutcome(
-                    ok = true,
-                    ordId = res.ordId,
-                    message = "Order placed successfully"
-                )
-            )
-
-            else -> TradeResult.Failure.ApiError(
-                code = res.sCode ?: "UNKNOWN",
-                message = res.sMsg ?: "Order rejected"
-            )
-        }
-    } catch (e: Exception) {
-        TradeResult.Failure.NetworkError(
-            message = "Failed to place order: ${e.message}",
-            cause = e
-        )
-    }
+    private data class Cached4HData(
+        val candles: List<OkxCandleResponse>,
+        val lastCandleTimestamp: Long,
+        val dataHash: Long
+    )
 }

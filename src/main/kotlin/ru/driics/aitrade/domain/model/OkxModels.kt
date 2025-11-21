@@ -1,4 +1,4 @@
-package ru.driics.aitrade.model
+package ru.driics.aitrade.domain.model
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty

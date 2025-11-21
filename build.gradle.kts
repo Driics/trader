@@ -28,6 +28,7 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-webflux")
     implementation("org.springframework.boot:spring-boot-starter-validation")
+    implementation("jakarta.validation:jakarta.validation-api:3.0.2")
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("org.jetbrains.kotlin:kotlin-reflect")
     implementation(platform("org.jetbrains.kotlinx:kotlinx-serialization-bom:1.9.0"))
@@ -72,9 +73,12 @@ dependencies {
     // Logging
     implementation("org.springframework.boot:spring-boot-starter-logging")
     implementation("io.github.oshai:kotlin-logging-jvm:7.0.3")
+    implementation("net.logstash.logback:logstash-logback-encoder:7.4") // JSON logging for ELK/Loki
 
     // Cache
     implementation("com.github.ben-manes.caffeine:caffeine:3.2.2")
+    // Caffeine metrics for Micrometer
+    implementation("io.micrometer:micrometer-core")
     
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")

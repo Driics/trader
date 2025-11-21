@@ -4,6 +4,8 @@ import kotlinx.coroutines.flow.Flow
 import org.springframework.context.annotation.Primary
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.domain.ports.*
+import ru.driics.aitrade.domain.types.Symbol
+import ru.driics.aitrade.domain.types.asSymbol
 import java.math.BigDecimal
 
 @Primary
@@ -14,7 +16,7 @@ class HybridMarketDataAdapter(
 ) : MarketDataPort, StreamingMarketDataPort {
 
     // Delegate existing REST behavior
-    override suspend fun loadMarketState(symbols: List<String>) = rest.loadMarketState(symbols)
+    override suspend fun loadMarketState(symbols: List<Symbol>) = rest.loadMarketState(symbols)
 
     // Provide streaming APIs
     override fun getRealtimePrice(instId: String): BigDecimal? = streaming.getRealtimePrice(instId)

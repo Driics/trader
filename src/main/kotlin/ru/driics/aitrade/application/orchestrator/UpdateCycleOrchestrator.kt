@@ -1,19 +1,26 @@
 package ru.driics.aitrade.application.orchestrator
 
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import com.fasterxml.jackson.module.kotlin.readValue
-import io.github.oshai.kotlinlogging.KotlinLogging
 import io.micrometer.core.instrument.MeterRegistry
+import io.opentelemetry.api.trace.Tracer
+import kotlinx.coroutines.CancellationException
+import ru.driics.aitrade.application.ai.AiSchemaValidator
+import ru.driics.aitrade.application.ai.ConfidenceCalibrator
+import ru.driics.aitrade.application.ai.SignalNormalizer
 import ru.driics.aitrade.application.usecase.AnalyzePromptUseCase
 import ru.driics.aitrade.application.usecase.BuildPromptUseCase
 import ru.driics.aitrade.application.usecase.ExecuteAiDecisionsUseCase
-import ru.driics.aitrade.common.timedSuspend
+import ru.driics.aitrade.common.logging.BusinessEventLogger
+import ru.driics.aitrade.common.logging.CorrelationId
+import ru.driics.aitrade.common.logging.logger
+import ru.driics.aitrade.common.measureSuspend
+import ru.driics.aitrade.common.traced
+import ru.driics.aitrade.config.TradingProperties
+import ru.driics.aitrade.domain.model.*
 import ru.driics.aitrade.domain.ports.MarketDataPort
-import ru.driics.aitrade.model.AccountInfo
-import ru.driics.aitrade.model.AiTradeDecisionMap
-import ru.driics.aitrade.model.Position
+import ru.driics.aitrade.domain.types.asSymbol
 import java.security.MessageDigest
-import java.util.Locale
+import java.time.Clock
+import java.util.*
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -24,177 +31,286 @@ class UpdateCycleOrchestrator(
     private val market: MarketDataPort,
     private val meterRegistry: MeterRegistry,
     private val autoExecute: Boolean,
-    private val symbols: List<String>
+    private val symbols: List<String>,
+    private val clock: Clock,
+    private val schemaValidator: AiSchemaValidator,
+    private val tradingProperties: TradingProperties,
+    private val confidenceCalibrator: ConfidenceCalibrator,
+    private val tracer: Tracer
 ) {
-    companion object {
-        private val log = KotlinLogging.logger {}
+    private companion object {
+        val log = logger<UpdateCycleOrchestrator>()
+        const val RESPONSE_LOG_LIMIT = 500
+        const val METRIC_CYCLE = "update.cycle"
+        const val METRIC_VALIDATION_REJECTED = "ai.response.validation.rejected"
     }
 
-    private val mapper = jacksonObjectMapper()
-    private val sessionStartTime = AtomicLong(System.currentTimeMillis())
+    // State
+    private val sessionStartTime = AtomicLong(clock.instant().toEpochMilli())
     private val invocationCount = AtomicLong(0L)
     private val lastUpdateTime = AtomicLong(0L)
     private val lastPromptHash = AtomicReference<String?>(null)
 
+    // Components (lazy initialized if heavy, but here lightweight)
+    private val normalizer = SignalNormalizer()
+
     suspend fun runOnce(): UpdateCycleResult {
         val invocation = invocationCount.incrementAndGet()
+        val correlationId = CorrelationId.generate()
 
-        log.info { "╔══════════════════════════════════════════════════════" }
-        log.info { "║ Update Cycle #$invocation" }
-        log.info { "╚══════════════════════════════════════════════════════" }
+        logHeader(invocation)
 
-        val (result, took) = meterRegistry.timedSuspend(
-            "update.cycle",
-            "autoExecute", autoExecute.toString()
-        ) {
-            doRunOnce(invocation)
-        }
+        // Wrap entire cycle in trace & metric
+        return tracer.traced(METRIC_CYCLE, {
+            attr("cycleNumber", invocation)
+            attr("autoExecute", autoExecute)
+            attr("correlationId", correlationId)
+        }) {
+            // Using measureSuspend (from previous context) which returns T
+            // We manually time the whole operation for the result object
+            val start = System.currentTimeMillis()
 
-        lastUpdateTime.set(System.currentTimeMillis())
-
-        log.info { "═══ Update cycle #$invocation completed in ${took}ms ═══\n" }
-
-        return result.copy(executionTimeMs = took)
-    }
-
-    private suspend fun doRunOnce(invocation: Long): UpdateCycleResult {
-        // Stage 1: Build prompt
-        val prompt = try {
-            build.execute(symbols, sessionStartTime.get(), invocation)
-        } catch (e: Exception) {
-            log.error(e) { "Failed to build prompt" }
-            return UpdateCycleResult(
-                success = false,
-                message = "Error: Failed to build prompt - ${e.message}",
-                executionTimeMs = 0,
-                promptSize = 0
-            )
-        }
-
-        val currentHash = hashPrompt(prompt)
-        val previousHash = lastPromptHash.get()
-        if (currentHash == previousHash) {
-            log.info { "Prompt unchanged from previous cycle, skipping AI analysis" }
-            return UpdateCycleResult(
-                success = true,
-                message = "Skipped (prompt unchanged)",
-                executionTimeMs = 0,
-                promptSize = prompt.length,
-                positionsPlaced = 0
-            )
-        }
-        lastPromptHash.set(currentHash)
-
-        // Stage 2: AI analysis
-        val aiResult = try {
-            analyze.execute(prompt)
-        } catch (e: Exception) {
-            log.error(e) { "Failed to analyze prompt" }
-            return UpdateCycleResult(
-                success = false,
-                message = "Error: Failed to analyze prompt - ${e.message}",
-                executionTimeMs = 0,
-                promptSize = prompt.length
-            )
-        }
-
-        if (!aiResult.isSuccess) {
-            log.error { "AI analysis failed: ${aiResult.errorMessage}" }
-            return UpdateCycleResult(
-                success = false,
-                message = "Error: AI analysis failed - ${aiResult.errorMessage}",
-                executionTimeMs = 0,
-                promptSize = prompt.length
-            )
-        }
-
-        log.info { "AI analysis completed successfully" }
-
-        val decisions: AiTradeDecisionMap = try {
-            mapper.readValue(aiResult.response)
-        } catch (e: Exception) {
-            log.error(e) { "Failed to parse AI decisions" }
-            return UpdateCycleResult(
-                success = false,
-                message = "Error: Failed to parse AI decisions - ${e.message}",
-                executionTimeMs = 0,
-                promptSize = prompt.length
-            )
-        }
-
-        logAiDecisionsSummary(decisions)
-
-        var executionResults: List<ru.driics.aitrade.model.AiTradeExecutionResult>? = null
-
-        // Stage 3: Execute decisions (if enabled)
-        if (autoExecute) {
-            try {
-                executionResults = execute.execute(decisions)
-                log.info { "Trade execution completed: ${executionResults.size} decisions processed" }
-            } catch (e: Exception) {
-                log.error(e) { "Failed to execute AI decisions" }
-                return UpdateCycleResult(
-                    success = false,
-                    message = "Warning: AI succeeded but execution failed - ${e.message}",
-                    executionTimeMs = 0,
-                    promptSize = prompt.length
-                )
+            val cycleResult = meterRegistry.measureSuspend(
+                METRIC_CYCLE,
+                "autoExecute", autoExecute.toString()
+            ) {
+                executePipeline(invocation, correlationId)
             }
-        } else {
-            log.info { "Auto-execution disabled, skipping trade placement" }
-        }
 
-        return UpdateCycleResult(
-            success = true,
-            message = "Success",
-            executionTimeMs = 0,
-            promptSize = prompt.length,
-            positionsPlaced = executionResults?.count { it.action == ru.driics.aitrade.model.AIAction.PLACED } ?: 0
-        )
+            val duration = System.currentTimeMillis() - start
+            lastUpdateTime.set(clock.instant().toEpochMilli())
+
+            logFooter(invocation, duration)
+
+            cycleResult.copy(executionTimeMs = duration)
+        }
     }
 
-    suspend fun getAccountInfo(): AccountInfo = market.loadMarketState(symbols).account
+    /**
+     * The main pipeline logic: Build -> Analyze -> Parse -> Guard -> Execute
+     */
+    private suspend fun executePipeline(invocation: Long, cid: String): UpdateCycleResult {
+        // 1. Build Prompt
+        val prompt = stageBuildPrompt(invocation, cid)
+            ?: return errorResult("Failed to build prompt")
 
-    suspend fun getPositions(): List<Position> = market.loadMarketState(symbols).positions
+        // 2. Check Diff
+        if (isPromptUnchanged(prompt)) {
+            log.info { "Prompt unchanged, skipping analysis." }
+            return UpdateCycleResult(true, "Skipped (unchanged)", 0, prompt.length)
+        }
 
-    fun getSessionStartTime(): Long = sessionStartTime.get()
+        // 3. AI Analysis
+        val aiResult = stageAiAnalysis(prompt, cid)
+        if (aiResult == null || !aiResult.isSuccess) {
+            return errorResult("AI analysis failed: ${aiResult?.errorMessage}", prompt.length)
+        }
 
-    fun getInvocationCount(): Long = invocationCount.get()
+        // 4. Parse & Validate
+        val rawDecisions = stageParseResponse(aiResult.response, prompt.length, cid)
+            ?: return errorResult("AI response validation failed", prompt.length)
 
-    fun getLastUpdateTime(): Long? = lastUpdateTime.get().takeIf { it > 0 }
+        // 5. Guard & Normalize
+        val finalDecisions = stageGuardAndNormalize(rawDecisions, prompt.length, cid)
+            ?: return errorResult("All signals rejected by guardrails", prompt.length)
 
-    private fun logAiDecisionsSummary(decisions: AiTradeDecisionMap) {
-        try {
-            log.info { "═══ AI Decisions Summary (${decisions.size} symbols) ═══" }
+        logAiDecisionsSummary(finalDecisions)
 
-            decisions.forEach { (symbol, envelope) ->
-                val args = envelope.args
-                val signal = args.signal.name
-                val confidence = args.confidence?.let { String.format(Locale.ROOT, "%.2f", it.toDouble()) } ?: "N/A"
-                val leverage = args.leverage ?: "N/A"
+        // 6. Execute (Optional)
+        val positionsPlaced = if (autoExecute) {
+            stageExecute(finalDecisions, invocation, cid)
+                ?: return errorResult("Execution failed after successful AI", prompt.length)
+        } else {
+            log.info { "Auto-execution disabled." }
+            0
+        }
 
-                val details = buildString {
-                    append("$symbol: $signal")
-                    if (signal != "HOLD") {
-                        append(" | Confidence: $confidence")
-                        append(" | Leverage: $leverage")
-                        args.quantity?.let { append(" | Qty: ${String.format(Locale.ROOT, "%.4f", it.toDouble())}") }
-                        args.riskUsd?.let { append(" | Risk: $${String.format(Locale.ROOT, "%.2f", it.toDouble())}") }
-                    }
+        // 7. Success Event
+        BusinessEventLogger.updateCycle(invocation, 0, finalDecisions.size, positionsPlaced, true)
+
+        return UpdateCycleResult(true, "Success", 0, prompt.length, positionsPlaced)
+    }
+
+    // =========================================================================
+    // Pipeline Stages
+    // =========================================================================
+
+    private suspend fun stageBuildPrompt(invocation: Long, cid: String): String? {
+        return traceAndMeasure("build_prompt", cid) {
+            try {
+                build.execute(symbols, sessionStartTime.get(), invocation)
+            } catch (e: Exception) {
+                handleStageError("build_prompt", e)
+                null
+            }
+        }
+    }
+
+    private suspend fun stageAiAnalysis(prompt: String, cid: String): AiAnalysisResponse? {
+        return traceAndMeasure("ai_call", cid, mapOf("promptSize" to prompt.length)) {
+            try {
+                analyze.execute(prompt)
+            } catch (e: Exception) {
+                handleStageError("ai_call", e)
+                null
+            }
+        }
+    }
+
+    private suspend fun stageParseResponse(response: String, promptSize: Int, cid: String): AiTradeDecisionMap? {
+        return traceAndMeasure("parse", cid, mapOf("responseSize" to response.length)) {
+            when (val result = schemaValidator.validateAndParse(response)) {
+                is AiSchemaValidator.ValidationResult.Valid -> result.decisions
+                is AiSchemaValidator.ValidationResult.Rejected -> {
+                    recordValidationRejection(result.reason)
+                    log.error { "AI schema rejected: ${result.reason}" }
+                    BusinessEventLogger.error("ai_schema_rejected", IllegalArgumentException(result.reason), "response" to response.take(RESPONSE_LOG_LIMIT))
+                    null
+                }
+            }
+        }
+    }
+
+    private suspend fun stageGuardAndNormalize(raw: AiTradeDecisionMap, promptSize: Int, cid: String): AiTradeDecisionMap? {
+        return traceAndMeasure("guard", cid, mapOf("rawCount" to raw.size)) {
+            val normalized = mutableMapOf<String, AiTradeEnvelope>()
+            var rejected = 0
+
+            for ((symbol, envelope) in raw) {
+                // Normalize
+                val normArgs = normalizer.normalize(envelope.args)?.toAiTradeSignalArgs()
+                if (normArgs == null) {
+                    rejected++; continue
                 }
 
-                log.info { "  • $details" }
+                // Calibrate/Filter
+                when (val cal = confidenceCalibrator.shouldAccept(normArgs)) {
+                    is ConfidenceCalibrator.CalibrationResult.Accepted -> {
+                        normalized[symbol] = AiTradeEnvelope(normArgs)
+                    }
+                    is ConfidenceCalibrator.CalibrationResult.Rejected -> {
+                        log.debug { "Signal rejected ($symbol): ${cal.reason}" }
+                        rejected++
+                    }
+                }
             }
-        } catch (e: Exception) {
-            log.warn { "Could not log AI decisions summary: ${e.message}" }
+
+            if (normalized.isEmpty()) {
+                log.warn { "All ${raw.size} signals rejected." }
+                null
+            } else {
+                log.info { "Processed signals: ${normalized.size} accepted, $rejected rejected." }
+                normalized
+            }
         }
     }
 
-    private fun hashPrompt(prompt: String): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        val hash = digest.digest(prompt.toByteArray())
-        return hash.joinToString("") { "%02x".format(it) }
+    private suspend fun stageExecute(decisions: AiTradeDecisionMap, invocation: Long, cid: String): Int? {
+        return traceAndMeasure("execute", cid, mapOf("count" to decisions.size)) {
+            try {
+                val results = execute.execute(decisions)
+                log.info { "Execution complete. Processed ${results.size} results." }
+                results.count { it.action == AIAction.PLACED }
+            } catch (e: Exception) {
+                handleStageError("execute", e)
+                null
+            }
+        }
     }
+
+    // =========================================================================
+    // Helpers & Utilities
+    // =========================================================================
+
+    private suspend inline fun <T> traceAndMeasure(
+        stage: String,
+        cid: String,
+        attrs: Map<String, Any> = emptyMap(),
+        crossinline block: suspend () -> T
+    ): T = tracer.traced("$METRIC_CYCLE.$stage", {
+        attr("correlationId", cid)
+        attrs.forEach { (k, v) ->
+            when(v) {
+                is String -> attr(k, v)
+                is Long -> attr(k, v)
+                is Int -> attr(k, v.toLong())
+                is Boolean -> attr(k, v)
+            }
+        }
+    }) {
+        meterRegistry.measureSuspend("$METRIC_CYCLE.$stage") {
+            block()
+        }
+    }
+
+    private fun handleStageError(stage: String, e: Exception) {
+        if (e is CancellationException) throw e
+        meterRegistry.counter("$METRIC_CYCLE.$stage.error").increment()
+        log.error(e) { "Error in stage: $stage" }
+    }
+
+    private fun isPromptUnchanged(prompt: String): Boolean {
+        val hash = hashPrompt(prompt)
+        if (hash == lastPromptHash.get()) return true
+        lastPromptHash.set(hash)
+        return false
+    }
+
+    private fun hashPrompt(prompt: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(prompt.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+
+    private fun recordValidationRejection(reason: String) {
+        val tag = reason.take(50).replace(Regex("[^a-zA-Z0-9_\\-]"), "_").lowercase()
+        meterRegistry.counter(METRIC_VALIDATION_REJECTED, "reason", tag).increment()
+    }
+
+    private fun errorResult(msg: String, promptSize: Int = 0) =
+        UpdateCycleResult(false, "Error: $msg", 0, promptSize)
+
+    // =========================================================================
+    // Logging & Info Accessors
+    // =========================================================================
+
+    private fun logHeader(i: Long) {
+        log.info { "╔══════════════════════════════════════════════════════" }
+        log.info { "║ Update Cycle #$i" }
+        log.info { "╚══════════════════════════════════════════════════════" }
+    }
+
+    private fun logFooter(i: Long, took: Long) {
+        log.info { "═══ Cycle #$i completed in ${took}ms ═══\n" }
+    }
+
+    private fun logAiDecisionsSummary(decisions: AiTradeDecisionMap) {
+        runCatching {
+            log.info { "═══ AI Decisions (${decisions.size}) ═══" }
+            decisions.forEach { (sym, env) ->
+                log.info { "  • ${formatDecision(sym, env)}" }
+            }
+        }.onFailure { log.warn(it) { "Log summary failed" } }
+    }
+
+    private fun formatDecision(sym: String, env: AiTradeEnvelope): String {
+        val a = env.args
+        if (a.signal == AiSignal.HOLD) return "$sym: HOLD"
+
+        return buildString {
+            append("$sym: ${a.signal}")
+            a.confidence?.let { append(" | Conf: ${"%.2f".format(Locale.ROOT, it)}") }
+            a.leverage?.let { append(" | Lev: $it") }
+            a.quantity?.let { append(" | Qty: ${"%.4f".format(Locale.ROOT, it)}") }
+            a.riskUsd?.let { append(" | Risk: $${"%.2f".format(Locale.ROOT, it)}") }
+        }
+    }
+
+    // Public Accessors for Health Checks / Status
+    suspend fun getAccountInfo(): AccountInfo = market.loadMarketState(symbols.map { it.asSymbol() }).account
+    suspend fun getPositions(): List<Position> = market.loadMarketState(symbols.map { it.asSymbol() }).positions
+    fun getSessionStartTime(): Long = sessionStartTime.get()
+    fun getInvocationCount(): Long = invocationCount.get()
+    fun getLastUpdateTime(): Long? = lastUpdateTime.get().takeIf { it > 0 }
 }
 
 data class UpdateCycleResult(

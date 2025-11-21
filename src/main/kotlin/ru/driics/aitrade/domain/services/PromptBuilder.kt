@@ -1,10 +1,12 @@
 package ru.driics.aitrade.domain.services
 
-import ru.driics.aitrade.model.MarketState
-import java.time.LocalDateTime
+import ru.driics.aitrade.domain.model.CurrencyMarketData
+import ru.driics.aitrade.domain.model.MarketState
+import java.time.Clock
+import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * Pure domain service for building trading prompts.
@@ -12,114 +14,130 @@ import java.util.concurrent.TimeUnit
  */
 object PromptBuilder {
 
+    private val DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS")
+        .withZone(ZoneId.of("UTC"))
+
     fun build(
         marketState: MarketState,
         sessionStartTime: Long,
-        invocationCount: Long
-    ): String {
-        val minutesSinceStart = TimeUnit.MILLISECONDS.toMinutes(
-            System.currentTimeMillis() - sessionStartTime
-        )
-        val currentTime = LocalDateTime.now(ZoneId.of("UTC"))
-            .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS"))
+        invocationCount: Long,
+        clock: Clock = Clock.systemUTC()
+    ): String = buildString {
+        val now = clock.instant()
+        val duration = (now.toEpochMilli() - sessionStartTime).milliseconds
+        val timeStr = DATE_FORMATTER.format(now)
 
-        return buildString {
-            appendHeader(minutesSinceStart, currentTime, invocationCount)
-            appendMarketData(marketState)
-            appendAccountInfo(marketState)
-        }
+        appendHeader(duration.inWholeMinutes, timeStr, invocationCount)
+        appendMarketData(marketState)
+        appendAccountInfo(marketState)
     }
 
+    fun buildMarketDataSection(marketState: MarketState): String = buildString {
+        appendMarketData(marketState)
+    }
+
+    fun buildAccountInfoSection(marketState: MarketState): String = buildString {
+        appendAccountInfo(marketState)
+    }
+
+    // =========================================================================
+    // Private Builders
+    // =========================================================================
+
     private fun StringBuilder.appendHeader(minutes: Long, time: String, count: Long) {
-        append("It has been $minutes minutes since you started trading. ")
-        append("The current time is $time and you've been invoked $count times. ")
-        append("Below, we are providing you with a variety of state data, price data, and predictive signals so you can discover alpha. ")
-        append("Below that is your current account information, value, performance, positions, etc. ")
-        append("ALL OF THE PRICE OR SIGNAL DATA BELOW IS ORDERED: OLDEST → NEWEST\n")
-        append("Timeframes note: Unless stated otherwise in a section title, intraday series are provided at 3‑minute intervals. ")
-        append("If a coin uses a different interval, it is explicitly stated in that coin's section.\n\n")
+        appendLine("""
+            It has been $minutes minutes since you started trading. The current time is $time and you've been invoked $count times.
+            Below, we are providing you with a variety of state data, price data, and predictive signals so you can discover alpha.
+            Below that is your current account information, value, performance, positions, etc.
+            ALL OF THE PRICE OR SIGNAL DATA BELOW IS ORDERED: OLDEST → NEWEST
+            Timeframes note: Unless stated otherwise in a section title, intraday series are provided at 3‑minute intervals. If a coin uses a different interval, it is explicitly stated in that coin's section.
+        """.trimIndent())
+        appendLine()
     }
 
     private fun StringBuilder.appendMarketData(marketState: MarketState) {
-        append("CURRENT MARKET STATE FOR ALL COINS\n")
+        appendLine("CURRENT MARKET STATE FOR ALL COINS")
 
-        for ((symbol, data) in marketState.currencies) {
-            append("ALL $symbol DATA\n")
-            append("current_price = ${PromptFormatter.formatNumber(data.currentPrice)}, ")
-            append("current_ema20 = ${PromptFormatter.formatNumber(data.currentEma20)}, ")
-            append("current_macd = ${PromptFormatter.formatNumber(data.currentMacd)}, ")
-            append("current_rsi (7 period) = ${PromptFormatter.formatNumber(data.currentRsi7)}\n")
-
-            if (data.openInterest != null || data.fundingRate != null) {
-                append("In addition, here is the latest $symbol open interest and funding rate for perps (the instrument you are trading):\n")
-                data.openInterest?.let {
-                    append("Open Interest: Latest: ${PromptFormatter.formatNumber(it)} Average: ${PromptFormatter.formatNumber(it)}\n")
-                }
-                data.fundingRate?.let {
-                    append("Funding Rate: ${PromptFormatter.formatScientific(it)}\n")
-                }
-            }
-
-            if (data.intradayPrices.isNotEmpty()) {
-                append("Intraday series (3‑minute intervals, oldest → latest):\n")
-                append("Mid prices: ${PromptFormatter.formatNumberList(data.intradayPrices)}\n")
-
-                if (data.intradayEma20.isNotEmpty()) {
-                    append("EMA indicators (20‑period): ${PromptFormatter.formatNumberList(data.intradayEma20)}\n")
-                }
-                if (data.intradayMacd.isNotEmpty()) {
-                    append("MACD indicators: ${PromptFormatter.formatNumberList(data.intradayMacd)}\n")
-                }
-                if (data.intradayRsi7.isNotEmpty()) {
-                    append("RSI indicators (7‑Period): ${PromptFormatter.formatNumberList(data.intradayRsi7)}\n")
-                }
-                if (data.intradayRsi14.isNotEmpty()) {
-                    append("RSI indicators (14‑Period): ${PromptFormatter.formatNumberList(data.intradayRsi14)}\n")
-                }
-            }
-
-            if (data.ema20_4h != null || data.ema50_4h != null) {
-                append("Longer‑term context (4‑hour timeframe):\n")
-
-                if (data.ema20_4h != null && data.ema50_4h != null) {
-                    append("20‑Period EMA: ${PromptFormatter.formatNumber(data.ema20_4h)} vs. 50‑Period EMA: ${PromptFormatter.formatNumber(data.ema50_4h)}\n")
-                }
-
-                if (data.atr3_4h != null && data.atr14_4h != null) {
-                    append("3‑Period ATR: ${PromptFormatter.formatNumber(data.atr3_4h)} vs. 14‑Period ATR: ${PromptFormatter.formatNumber(data.atr14_4h)}\n")
-                }
-
-                if (data.volume4h != null && data.avgVolume4h != null) {
-                    append("Current Volume: ${PromptFormatter.formatNumber(data.volume4h)} vs. Average Volume: ${PromptFormatter.formatNumber(data.avgVolume4h)}\n")
-                }
-
-                if (data.macd4h.isNotEmpty()) {
-                    append("MACD indicators: ${PromptFormatter.formatNumberList(data.macd4h)}\n")
-                }
-
-                if (data.rsi14_4h.isNotEmpty()) {
-                    append("RSI indicators (14‑Period): ${PromptFormatter.formatNumberList(data.rsi14_4h)}\n")
-                }
-            }
-
-            append("\n")
+        marketState.currencies.forEach { (symbol, data) ->
+            appendCurrencyData(symbol, data)
+            appendLine()
         }
     }
 
-    private fun StringBuilder.appendAccountInfo(marketState: MarketState) {
-        append("HERE IS YOUR ACCOUNT INFORMATION & PERFORMANCE\n")
-        append("Current Total Return (percent): ${PromptFormatter.formatPercent(marketState.account.totalReturn)}\n")
-        append("Available Cash (USD): ${PromptFormatter.formatMoneyUsd(marketState.account.availableCash)}\n")
-        append("Current Account Value (USD): ${PromptFormatter.formatMoneyUsd(marketState.account.accountValue)}\n")
+    private fun StringBuilder.appendCurrencyData(symbol: String, data: CurrencyMarketData) = with(data) {
+        appendLine("ALL $symbol DATA")
+        appendLine("current_price = ${PromptFormatter.formatNumber(currentPrice)}, " +
+                "current_ema20 = ${PromptFormatter.formatNumber(currentEma20)}, " +
+                "current_macd = ${PromptFormatter.formatNumber(currentMacd)}, " +
+                "current_rsi (7 period) = ${PromptFormatter.formatNumber(currentRsi7)}")
+
+        // Derivatives Data
+        if (openInterest != null || fundingRate != null) {
+            appendLine("In addition, here is the latest $symbol open interest and funding rate for perps (the instrument you are trading):")
+            openInterest?.let {
+                val fmt = PromptFormatter.formatNumber(it)
+                appendLine("Open Interest: Latest: $fmt Average: $fmt")
+            }
+            fundingRate?.let {
+                appendLine("Funding Rate: ${PromptFormatter.formatScientific(it)}")
+            }
+        }
+
+        // Intraday Series
+        if (intradayPrices.isNotEmpty()) {
+            appendLine("Intraday series (3‑minute intervals, oldest → latest):")
+            appendLine("Mid prices: ${PromptFormatter.formatNumberList(intradayPrices)}")
+
+            if (intradayEma20.isNotEmpty()) appendLine("EMA indicators (20‑period): ${PromptFormatter.formatNumberList(intradayEma20)}")
+            if (intradayMacd.isNotEmpty())  appendLine("MACD indicators: ${PromptFormatter.formatNumberList(intradayMacd)}")
+            if (intradayRsi7.isNotEmpty())  appendLine("RSI indicators (7‑Period): ${PromptFormatter.formatNumberList(intradayRsi7)}")
+            if (intradayRsi14.isNotEmpty()) appendLine("RSI indicators (14‑Period): ${PromptFormatter.formatNumberList(intradayRsi14)}")
+        }
+
+        // 4H Context
+        appendLongTermContext(data)
+    }
+
+    private fun StringBuilder.appendLongTermContext(data: CurrencyMarketData) = with(data) {
+        // Check if any relevant 4H data exists
+        if (ema20_4h == null && ema50_4h == null) return
+
+        appendLine("Longer‑term context (4‑hour timeframe):")
+
+        if (ema20_4h != null && ema50_4h != null) {
+            appendLine("20‑Period EMA: ${PromptFormatter.formatNumber(ema20_4h)} vs. 50‑Period EMA: ${PromptFormatter.formatNumber(ema50_4h)}")
+        }
+
+        if (atr3_4h != null && atr14_4h != null) {
+            appendLine("3‑Period ATR: ${PromptFormatter.formatNumber(atr3_4h)} vs. 14‑Period ATR: ${PromptFormatter.formatNumber(atr14_4h)}")
+        }
+
+        if (volume4h != null && avgVolume4h != null) {
+            appendLine("Current Volume: ${PromptFormatter.formatNumber(volume4h)} vs. Average Volume: ${PromptFormatter.formatNumber(avgVolume4h)}")
+        }
+
+        if (macd4h.isNotEmpty()) {
+            appendLine("MACD indicators: ${PromptFormatter.formatNumberList(macd4h)}")
+        }
+
+        if (rsi14_4h.isNotEmpty()) {
+            appendLine("RSI indicators (14‑Period): ${PromptFormatter.formatNumberList(rsi14_4h)}")
+        }
+    }
+
+    private fun StringBuilder.appendAccountInfo(marketState: MarketState) = with(marketState.account) {
+        appendLine("HERE IS YOUR ACCOUNT INFORMATION & PERFORMANCE")
+        appendLine("Current Total Return (percent): ${PromptFormatter.formatPercent(totalReturn)}")
+        appendLine("Available Cash (USD): ${PromptFormatter.formatMoneyUsd(availableCash)}")
+        appendLine("Current Account Value (USD): ${PromptFormatter.formatMoneyUsd(accountValue)}")
 
         if (marketState.positions.isNotEmpty()) {
             append("Current live positions & performance: ")
-            append(PromptFormatter.formatPositions(marketState.positions))
-            append("\n")
+            appendLine(PromptFormatter.formatPositions(marketState.positions))
         }
 
-        marketState.account.sharpeRatio?.let {
-            append("Sharpe Ratio: ${PromptFormatter.formatNumber(it)}\n")
+        sharpeRatio?.let {
+            appendLine("Sharpe Ratio: ${PromptFormatter.formatNumber(it)}")
         }
     }
 }

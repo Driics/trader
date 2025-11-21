@@ -2,7 +2,6 @@ package ru.driics.aitrade.service
 
 import org.springframework.stereotype.Service
 import ru.driics.aitrade.config.OkxProperties
-import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -14,42 +13,52 @@ import javax.crypto.spec.SecretKeySpec
 class OkxAuthService(
     private val okxProperties: OkxProperties
 ) {
-    fun createAuthHeaders(method: String, requestPath: String, body: String = ""): Map<String, String> {
-        val timestamp = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+    private companion object {
+        const val HMAC_ALGO = "HmacSHA256"
+
+        // DateTimeFormatter is thread-safe and immutable
+        val TIMESTAMP_FORMATTER: DateTimeFormatter = DateTimeFormatter
+            .ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
             .withZone(ZoneOffset.UTC)
-            .format(Instant.now())
+    }
 
-        val message = "$timestamp${method.uppercase()}$requestPath$body"
+    // Optimization: Create the KeySpec once, as it is immutable and thread-safe.
+    // This avoids repeated byte array conversions and object allocations.
+    private val secretKeySpec by lazy {
+        SecretKeySpec(okxProperties.secretKey.toByteArray(Charsets.UTF_8), HMAC_ALGO)
+    }
 
-        val mac = Mac.getInstance("HmacSHA256")
-        val secretKey = SecretKeySpec(okxProperties.secretKey.toByteArray(Charsets.UTF_8), "HmacSHA256")
-        mac.init(secretKey)
+    /**
+     * Generates the required headers for REST API calls.
+     */
+    fun createAuthHeaders(method: String, requestPath: String, body: String = ""): Map<String, String> {
+        val timestamp = TIMESTAMP_FORMATTER.format(Instant.now())
+        val signature = sign(timestamp, method, requestPath, body)
 
-        val signature = Base64.getEncoder().encodeToString(mac.doFinal(message.toByteArray(Charsets.UTF_8)))
-
-        return mapOf(
-            "OK-ACCESS-KEY" to okxProperties.apiKey,
-            "OK-ACCESS-SIGN" to signature,
-            "OK-ACCESS-TIMESTAMP" to timestamp,
-            "OK-ACCESS-PASSPHRASE" to okxProperties.passphrase,
-            "Content-Type" to "application/json"
-        )
+        return buildMap {
+            put("OK-ACCESS-KEY", okxProperties.apiKey)
+            put("OK-ACCESS-SIGN", signature)
+            put("OK-ACCESS-TIMESTAMP", timestamp)
+            put("OK-ACCESS-PASSPHRASE", okxProperties.passphrase)
+            put("Content-Type", "application/json")
+        }
     }
 
     /**
      * Compute OKX signature: Base64(HmacSHA256(timestamp + UPPER(method) + requestPath + body, secretKey)).
-     * Use requestPath ONLY (e.g., "/users/self/verify"), not full URL. Body is "" for WS login.
+     * Used by both REST headers and WebSocket login.
      */
     fun sign(timestamp: String, method: String, requestPath: String, body: String = ""): String {
-        val prehash = buildString {
-            append(timestamp)
-            append(method.uppercase(Locale.ROOT))
-            append(requestPath)
-            append(body)
+        // String templates are often more efficient and readable than StringBuilder for simple concatenations
+        val preHash = "$timestamp${method.uppercase(Locale.ROOT)}$requestPath$body"
+
+        // Mac is NOT thread-safe, so we must instantiate it per request.
+        // However, getInstance is relatively cheap compared to key initialization.
+        val mac = Mac.getInstance(HMAC_ALGO).apply {
+            init(secretKeySpec)
         }
-        val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(okxProperties.secretKey.toByteArray(StandardCharsets.UTF_8), "HmacSHA256"))
-        val digest = mac.doFinal(prehash.toByteArray(StandardCharsets.UTF_8))
-        return Base64.getEncoder().encodeToString(digest)
+
+        val signatureBytes = mac.doFinal(preHash.toByteArray(Charsets.UTF_8))
+        return Base64.getEncoder().encodeToString(signatureBytes)
     }
 }
