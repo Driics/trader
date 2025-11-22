@@ -1,0 +1,93 @@
+version: "3.9"
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector:0.99.0
+    container_name: otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP (optional)
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:13133/"]
+      interval: 15s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    container_name: jaeger
+    ports:
+      - "16686:16686" # Jaeger UI
+    environment:
+      - COLLECTOR_ZIPKIN_HTTP_PORT=9411
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: driics/trader:local
+    container_name: trader-app
+    depends_on:
+      - otel-collector
+      - jaeger
+      # - redis  # uncomment if you enable redis.enabled=true
+    ports:
+      - "8080:8080"
+    environment:
+      # Spring profile
+      - SPRING_PROFILES_ACTIVE=prod
+
+      # OpenTelemetry (Option A: programmatic SDK via OTEL_* env)
+      - OTEL_SERVICE_NAME=trading-system
+      - OTEL_TRACES_EXPORTER=otlp
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_TRACES_SAMPLER=parentbased_always_on
+      - OTEL_RESOURCE_ATTRIBUTES=deployment.environment=local
+
+      # Trading settings (adapt to your config)
+      # Comma-separated list of symbols
+      - TRADING_CURRENCIES=BTC,ETH,SOL,BNB,XRP,DOGE
+      - TRADING_AUTO_EXECUTE=false
+      # Example timeouts (if bound in TradingProperties / application.yml)
+      # - TRADING_OKX_TIMEOUTS_TICKER=2s
+      # - TRADING_OKX_TIMEOUTS_CANDLES=6s
+
+      # OKX credentials (provide real values via .env or secrets in CI/CD)
+      - OKX_API_KEY=${OKX_API_KEY:-changeme}
+      - OKX_API_SECRET=${OKX_API_SECRET:-changeme}
+      - OKX_API_PASSPHRASE=${OKX_API_PASSPHRASE:-changeme}
+      # If your config maps different property names, align here accordingly.
+
+      # OpenRouter / AI keys
+      - OPENROUTER_API_KEYS=${OPENROUTER_API_KEYS:-key1,key2}
+
+      # Optional Redis toggle (if you have RedisCacheAdapter)
+      - REDIS_ENABLED=false
+
+      # Management/actuator (adjust if you use different endpoints)
+      - MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE=health,info,prometheus
+      - MANAGEMENT_HEALTH_LIVENESSSTATE_ENABLED=true
+      - MANAGEMENT_HEALTH_READINESSSTATE_ENABLED=true
+
+    # Limit container resources if desired
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2.0'
+    #       memory: 1g
+
+  # Optional Redis for L2 cache (enable if you wire redis.enabled=true)
+  # redis:
+  #   image: redis:7.2
+  #   container_name: redis
+  #   ports:
+  #     - "6379:6379"
+  #   command: ["redis-server", "--appendonly", "no"]
+
+networks:
+  default:
+    name: trader-net
