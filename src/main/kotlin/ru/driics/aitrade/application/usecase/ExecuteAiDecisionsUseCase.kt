@@ -216,7 +216,7 @@ class ExecuteAiDecisionsUseCase(
             return createSkippedResult(plan, "Failed to set leverage ${sizing.leverage}")
         }
 
-        // 3. Place Order
+        // 3. Place Order (or Simulate if Demo Mode)
         val clOrdId = idempotencyService.generateClOrdId(
             plan.symbol,
             AiTradeSignalArgs(
@@ -230,6 +230,17 @@ class ExecuteAiDecisionsUseCase(
             plan.entryPx,
             clock.instant().toEpochMilli()
         )
+
+        if (tradingProperties.demoMode) {
+            log.info { "DEMO MODE: Simulating ${plan.side} order for ${plan.symbol} (Qty: ${sizing.roundedContracts})" }
+            // Simulate success
+            return handleSuccessfulOrder(
+                plan, 
+                sizing, 
+                clOrdId = "DEMO-$clOrdId", 
+                ordId = "DEMO-ORD-${UUID.randomUUID()}"
+            )
+        }
 
         val outcome = trading.placeMarketOrderWithTpSl(
             instrumentId = plan.instrumentId,

@@ -19,6 +19,7 @@ import ru.driics.aitrade.domain.ports.AiAnalysisPort
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PromptOutputPort
 import ru.driics.aitrade.domain.ports.TradingPort
+import ru.driics.aitrade.domain.services.TradingMetricsService
 import java.time.Clock
 
 @Configuration
@@ -111,21 +112,24 @@ class ApplicationWiring(
         execute: ExecuteAiDecisionsUseCase,
         market: MarketDataPort,
         meterRegistry: MeterRegistry,
+        tradingMetricsService: TradingMetricsService,
         schemaValidator: AiSchemaValidator,
         confidenceCalibrator: ConfidenceCalibrator,
-        tracer: Tracer
+        tracer: Tracer,
+        clock: Clock
     ) = UpdateCycleOrchestrator(
         build = build,
         analyze = analyze,
         execute = execute,
         market = market,
         meterRegistry = meterRegistry,
+        tradingMetricsService = tradingMetricsService,
         autoExecute = tradingProperties.autoExecute,
         symbols = tradingProperties.getCurrenciesList(),
-        clock(),
-        schemaValidator,
-        tradingProperties,
-        confidenceCalibrator,
-        tracer
+        clock = clock,
+        schemaValidator = schemaValidator,
+        tradingProperties = tradingProperties,
+        confidenceCalibrator = confidenceCalibrator,
+        tracer = tracer
     )
 }

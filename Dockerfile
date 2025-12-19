@@ -23,6 +23,11 @@ WORKDIR /opt/app
 # Non-root user
 RUN useradd -r -u 10001 -g root appuser
 
+# Install wget for healthcheck
+RUN apt-get update && \
+    apt-get install -y wget && \
+    rm -rf /var/lib/apt/lists/*
+
 # Copy the fat jar
 COPY --from=build /workspace/build/libs/*.jar /opt/app/app.jar
 

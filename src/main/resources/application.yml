@@ -26,6 +26,16 @@ trading:
   auto-execute: true
   max-concurrent-symbols: 10
   instrument-cache-ttl: 1h  # Aggressive caching: 1 hour TTL
+  
+  # Execution Mode
+  demo-mode: ${TRADING_DEMO_MODE:true} # Set to false to place real orders
+
+  # AI Configuration
+  ai-model: ${TRADING_AI_MODEL:qwen/qwen3-max}
+  ai-timeout-ms: 60000
+  ai-max-retries: 2
+  ai-budget-per-minute: 10
+
 
 # Cache Configuration
 cache:

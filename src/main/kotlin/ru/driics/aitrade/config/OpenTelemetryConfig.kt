@@ -18,8 +18,11 @@ import org.springframework.context.annotation.Configuration
 
 @Configuration
 class OpenTelemetryConfig {
-    private val serviceName: String = "trading-system"
-    private val otlpEndpoint: String = "http://localhost:4317"
+    @Value("\${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4317}")
+    private lateinit var otlpEndpoint: String
+
+    @Value("\${OTEL_SERVICE_NAME:trading-system}")
+    private lateinit var serviceName: String
 
     @Bean
     fun openTelemetry(): OpenTelemetry {

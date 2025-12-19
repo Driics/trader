@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import ru.driics.aitrade.common.measureSuspend
 import ru.driics.aitrade.config.OpenRouterProperties
+import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.AiAnalysisResponse
 import ru.driics.aitrade.domain.model.AiService
 import ru.driics.aitrade.domain.model.LastAiAnalysis
@@ -23,6 +24,7 @@ import kotlin.time.measureTimedValue
 class KoogAiService(
     openRouterProperties: OpenRouterProperties,
     private val meterRegistry: MeterRegistry,
+    private val tradingProperties: TradingProperties,
     @Value("\${ai.custom.system-prompt:You are an expert crypto trading analyst.}")
     private val systemPrompt: String
 ) : AiService {
@@ -31,7 +33,6 @@ class KoogAiService(
         val log = KotlinLogging.logger {}
 
         const val PROVIDER_NAME = "koog-openrouter"
-        const val MODEL_ID = "qwen/qwen3-max"
         const val PROMPT_ID = "signal-gen"
         const val METRIC_NAME = "ai.analyze"
         const val CONTEXT_LENGTH = 131_072L
@@ -41,12 +42,14 @@ class KoogAiService(
     private val lastAnalysis = AtomicReference<LastAiAnalysis?>(null)
 
     // Define model configuration once
-    private val llmModel = LLModel(
-        provider = LLMProvider.OpenRouter,
-        id = MODEL_ID,
-        contextLength = CONTEXT_LENGTH,
-        capabilities = listOf(LLMCapability.Temperature, LLMCapability.Completion)
-    )
+    private val llmModel by lazy {
+        LLModel(
+            provider = LLMProvider.OpenRouter,
+            id = tradingProperties.aiModel,
+            contextLength = CONTEXT_LENGTH,
+            capabilities = listOf(LLMCapability.Temperature, LLMCapability.Completion)
+        )
+    }
 
     init {
         val apiKeys = openRouterProperties.getApiKeysList()
@@ -59,12 +62,12 @@ class KoogAiService(
             retryDelayMs = openRouterProperties.retryDelayMs
         )
 
-        log.info { "Initialized KoogAiService with ${apiKeys.size} API key(s)" }
+        log.info { "Initialized KoogAiService with ${apiKeys.size} keys. Model: ${tradingProperties.aiModel}" }
     }
 
     override fun getProviderName(): String = PROVIDER_NAME
 
-    override fun getModel(): String = MODEL_ID
+    override fun getModel(): String = tradingProperties.aiModel
 
     override fun getLastAnalysis(): LastAiAnalysis? = lastAnalysis.get()
 
@@ -75,6 +78,8 @@ class KoogAiService(
             user(prompt)
         }
 
+        val modelId = tradingProperties.aiModel
+
         // 2. Execute with Timing & Error Handling
         // measureTimedValue is idiomatic Kotlin for capturing duration + result
         val (result, duration) = measureTimedValue {
@@ -83,7 +88,7 @@ class KoogAiService(
                 // passing 'this' as TimerScope to potentially set dynamic tags if needed
                 meterRegistry.measureSuspend(
                     metricName = METRIC_NAME,
-                    staticTags = arrayOf("provider", "koog", "model", MODEL_ID)
+                    staticTags = arrayOf("provider", "koog", "model", modelId)
                 ) {
                     rotatingClient.execute(promptRequest, llmModel)
                 }
@@ -103,7 +108,7 @@ class KoogAiService(
 
                 val snapshot = LastAiAnalysis(
                     provider = PROVIDER_NAME,
-                    model = MODEL_ID,
+                    model = modelId,
                     timestamp = timestamp,
                     executionTimeMs = durationMs,
                     success = true,
@@ -114,7 +119,7 @@ class KoogAiService(
 
                 AiAnalysisResponse(
                     provider = PROVIDER_NAME,
-                    model = MODEL_ID,
+                    model = modelId,
                     response = content,
                     executionTimeMs = durationMs,
                     isSuccess = true
@@ -125,7 +130,7 @@ class KoogAiService(
 
                 val snapshot = LastAiAnalysis(
                     provider = PROVIDER_NAME,
-                    model = MODEL_ID,
+                    model = modelId,
                     timestamp = timestamp,
                     executionTimeMs = durationMs,
                     success = false,
@@ -136,7 +141,7 @@ class KoogAiService(
 
                 AiAnalysisResponse(
                     provider = PROVIDER_NAME,
-                    model = MODEL_ID,
+                    model = modelId,
                     response = "",
                     executionTimeMs = durationMs,
                     isSuccess = false,

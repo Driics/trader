@@ -13,3 +13,9 @@ out/
 .DS_Store
 # Docker
 docker-compose.override.yml
+# CI
+.github/
+# Secrets and Configs
+*.env
+config/
+secrets/

@@ -2,280 +2,180 @@ package ru.driics.aitrade.infra.exchange.websocket
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import io.github.oshai.kotlinlogging.KLogger
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.*
 import io.ktor.client.plugins.websocket.*
 import io.ktor.websocket.*
 import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
-import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.withTimeout
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.config.OkxProperties
-import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsAccountUpdate
-import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsOrderUpdate
-import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsPositionUpdate
-import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsTypeRefs
+import ru.driics.aitrade.infra.exchange.websocket.dto.*
 import ru.driics.aitrade.service.OkxAuthService
 import java.time.Clock
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.min
-import kotlin.math.pow
-import kotlin.random.Random
+import kotlin.time.Duration.Companion.seconds
 
 @Component
 class OkxPrivateWebSocketClient(
-    private val httpClient: HttpClient,
+    httpClient: HttpClient,
+    objectMapper: ObjectMapper,
     private val okxProperties: OkxProperties,
     private val okxAuthService: OkxAuthService,
-    private val objectMapper: ObjectMapper,
     private val clock: Clock,
+) : OkxBaseWebSocketClient(
+    httpClient = httpClient,
+    objectMapper = objectMapper,
+    config = WebSocketConfig(pingIntervalMs = 20_000L)
 ) {
-    private val log = KotlinLogging.logger {}
+    override val log: KLogger = KotlinLogging.logger {}
+    override val wsUrl: String get() = okxProperties.privateWsUrl()
 
-    // Lifecycle control
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val isRunning = AtomicBoolean(false)
-    private var activeSession: DefaultClientWebSocketSession? = null
+    // Flows with appropriate configurations
+    private val (_orderFlowMutable, _orderFlow) = FlowFactory.highThroughput<OkxWsOrderUpdate>(512)
+    val orderFlow: SharedFlow<OkxWsOrderUpdate> = _orderFlow
 
-    // Flows
-    // Optimization: Use extraBufferCapacity to handle bursts during high volatility
-    private val _orderFlow = MutableSharedFlow<OkxWsOrderUpdate>(
-        replay = 0, extraBufferCapacity = 512, onBufferOverflow = BufferOverflow.DROP_OLDEST
-    )
-    val orderFlow: SharedFlow<OkxWsOrderUpdate> = _orderFlow.asSharedFlow()
+    private val (_positionFlowMutable, _positionFlow) = FlowFactory.stateful<OkxWsPositionUpdate>(128)
+    val positionFlow: SharedFlow<OkxWsPositionUpdate> = _positionFlow
 
-    private val _positionFlow = MutableSharedFlow<OkxWsPositionUpdate>(
-        replay = 1, extraBufferCapacity = 128, onBufferOverflow = BufferOverflow.DROP_OLDEST
-    )
-    val positionFlow: SharedFlow<OkxWsPositionUpdate> = _positionFlow.asSharedFlow()
+    private val (_accountFlowMutable, _accountFlow) = FlowFactory.stateful<OkxWsAccountUpdate>(64)
+    val accountFlow: SharedFlow<OkxWsAccountUpdate> = _accountFlow
 
-    private val _accountFlow = MutableSharedFlow<OkxWsAccountUpdate>(
-        replay = 1, extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST
-    )
-    val accountFlow: SharedFlow<OkxWsAccountUpdate> = _accountFlow.asSharedFlow()
-
-    // Constants
-    private companion object {
-        const val PING_INTERVAL_MS = 20_000L
-        const val LOGIN_TIMEOUT_MS = 10_000L
-        const val MAX_RECONNECT_DELAY_MS = 30_000L
-        const val CHANNEL_ORDERS = "orders"
-        const val CHANNEL_POSITIONS = "positions"
-        const val CHANNEL_ACCOUNT = "account"
+    private companion object Channels {
+        const val ORDERS = "orders"
+        const val POSITIONS = "positions"
+        const val ACCOUNT = "account"
         const val INST_TYPE_SWAP = "SWAP"
+        val LOGIN_TIMEOUT = 10.seconds
     }
 
     @PostConstruct
-    fun start() {
-        if (isRunning.compareAndSet(false, true)) {
-            log.info { "Starting OKX Private WebSocket Client..." }
-            scope.launch { connectLoop() }
+    override fun start() = super.start()
+
+    @PreDestroy
+    override fun stop() = super.stop()
+
+    // =========================================================================
+    // Session Lifecycle
+    // =========================================================================
+
+    override suspend fun onSessionEstablished(session: DefaultClientWebSocketSession): Boolean {
+        if (!performLogin(session)) {
+            return false
         }
-    }
-
-    private suspend fun connectLoop() {
-        var attempt = 0
-        while (scope.isActive && isRunning.get()) {
-            try {
-                val url = okxProperties.privateWsUrl()
-                httpClient.webSocket(urlString = url, request = {
-                    headers.append("User-Agent", "AiTrader/1.0 (+okx ws)")
-                    headers.append("Accept", "application/json")
-                }) {
-                    log.info { "Connected to OKX Private WS" }
-                    activeSession = this
-
-                    // 1. Login
-                    if (!performLogin(this)) {
-                        close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Login Failed"))
-                        return@webSocket
-                    }
-
-                    // 2. Subscribe
-                    sendSubscriptions(this)
-
-                    // Reset attempts on successful login sequence
-                    attempt = 0
-
-                    // 3. Start Heartbeat & Process Messages
-                    launchHeartbeat()
-                    processIncomingMessages()
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                log.warn(e) { "WS connection error/disconnected" }
-            } finally {
-                activeSession = null
-            }
-
-            if (isRunning.get()) {
-                val delayMs = calculateBackoff(attempt)
-                log.info { "Reconnecting in ${delayMs}ms (attempt $attempt)" }
-                delay(delayMs)
-                attempt++
-            }
-        }
+        sendSubscriptions(session)
+        return true
     }
 
     private suspend fun performLogin(session: DefaultClientWebSocketSession): Boolean {
-        val ts = clock.instant().epochSecond.toString()
-        val sign = okxAuthService.sign(ts, "GET", "/users/self/verify", "")
+        val loginPayload = buildLoginPayload()
+        session.send(Frame.Text(objectMapper.writeValueAsString(loginPayload)))
 
-        val payload = mapOf(
+        return try {
+            withTimeout(LOGIN_TIMEOUT) {
+                awaitLoginResponse(session)
+            }
+        } catch (e: Exception) {
+            log.error(e) { "Login failed" }
+            false
+        }
+    }
+
+    private fun buildLoginPayload(): Map<String, Any> {
+        val timestamp = clock.instant().epochSecond.toString()
+        val signature = okxAuthService.sign(timestamp, "GET", "/users/self/verify", "")
+
+        return mapOf(
             "op" to "login",
             "args" to listOf(
                 mapOf(
                     "apiKey" to okxProperties.apiKey,
                     "passphrase" to okxProperties.passphrase,
-                    "timestamp" to ts,
-                    "sign" to sign
+                    "timestamp" to timestamp,
+                    "sign" to signature
                 )
             )
         )
+    }
 
-        session.send(Frame.Text(objectMapper.writeValueAsString(payload)))
+    private suspend fun awaitLoginResponse(session: DefaultClientWebSocketSession): Boolean {
+        for (frame in session.incoming) {
+            if (frame !is Frame.Text) continue
 
-        return try {
-            withTimeout(LOGIN_TIMEOUT_MS) {
-                // Consume frames until we get a login event
-                for (frame in session.incoming) {
-                    if (frame is Frame.Text) {
-                        val node = runCatching { objectMapper.readTree(frame.readText()) }.getOrNull()
-                        if (node != null && node.path("event").asText() == "login") {
-                            val code = node.path("code").asText()
-                            return@withTimeout if (code == "0") {
-                                log.info { "OKX Login Successful" }
-                                true
-                            } else {
-                                log.error { "OKX Login Failed: ${node.path("msg").asText()}" }
-                                false
-                            }
-                        }
-                    }
-                }
-                false // Channel closed before login
+            val node = runCatching { objectMapper.readTree(frame.readText()) }.getOrNull()
+                ?: continue
+
+            if (node.path("event").asText() != "login") continue
+
+            val code = node.path("code").asText()
+            return if (code == "0") {
+                log.info { "Login successful" }
+                true
+            } else {
+                log.error { "Login rejected: ${node.path("msg").asText()}" }
+                false
             }
-        } catch (e: TimeoutCancellationException) {
-            log.error(e) { "OKX Login timed out" }
-            false
         }
+        return false
     }
 
     private suspend fun sendSubscriptions(session: DefaultClientWebSocketSession) {
-        val subs = listOf(
-            mapOf("channel" to CHANNEL_ORDERS, "instType" to INST_TYPE_SWAP),
-            mapOf("channel" to CHANNEL_POSITIONS, "instType" to INST_TYPE_SWAP),
-            mapOf("channel" to CHANNEL_ACCOUNT)
+        val subscriptions = listOf(
+            mapOf("channel" to ORDERS, "instType" to INST_TYPE_SWAP),
+            mapOf("channel" to POSITIONS, "instType" to INST_TYPE_SWAP),
+            mapOf("channel" to ACCOUNT)
         )
-        val payload = mapOf("op" to "subscribe", "args" to subs)
+
+        val payload = mapOf("op" to "subscribe", "args" to subscriptions)
         session.send(Frame.Text(objectMapper.writeValueAsString(payload)))
-        log.info { "Subscriptions sent" }
+        log.info { "Subscribed to ${subscriptions.size} private channels" }
     }
 
-    private fun DefaultClientWebSocketSession.launchHeartbeat() = launch {
-        while (isActive) {
-            delay(PING_INTERVAL_MS)
-            try {
-                send(Frame.Text("ping"))
-            } catch (e: Exception) {
-                log.debug(e) { "Failed to send ping" }
-                break
-            }
+    // =========================================================================
+    // Message Dispatching
+    // =========================================================================
+
+    override fun dispatchMessage(node: JsonNode) {
+        when {
+            node.has("data") -> dispatchDataUpdate(node)
+            node.has("event") -> handleEventMessage(node)
         }
     }
 
-    private suspend fun DefaultClientWebSocketSession.processIncomingMessages() {
-        for (frame in incoming) {
-            when (frame) {
-                is Frame.Text -> handleTextFrame(frame)
-                is Frame.Ping -> send(Frame.Pong(frame.data)) // Auto-reply to protocol pings
-                is Frame.Close -> log.info { "WS Closed: ${frame.readReason()}" }
-                else -> Unit
-            }
-        }
-    }
-
-    private fun handleTextFrame(frame: Frame.Text) {
-        val text = frame.readText()
-        if (text == "pong") return // OKX text-based pong
-
-        try {
-            // Optimization: Read tree only once
-            val node = objectMapper.readTree(text)
-
-            // Check for data update ("arg" + "data")
-            if (node.has("data")) {
-                dispatchData(node)
-            } else if (node.has("event")) {
-                handleEvent(node)
-            }
-        } catch (e: Exception) {
-            log.error(e) { "Failed to parse WS message: $text" }
-        }
-    }
-
-    private fun dispatchData(node: JsonNode) {
+    private fun dispatchDataUpdate(node: JsonNode) {
         val channel = node.path("arg").path("channel").asText()
 
-        // Using runCatching to prevent one bad message from crashing the loop
         runCatching {
             when (channel) {
-                CHANNEL_ORDERS -> {
-                    // Convert specific node branch or full JSON to DTO
-                    val dto = objectMapper.treeToValue(node, OkxWsTypeRefs.orders)
-                    dto.data?.forEach { _orderFlow.tryEmit(it) }
+                ORDERS -> {
+                    objectMapper.treeToValue(node, OkxWsTypeRefs.orders)
+                        .data
+                        ?.forEach { _orderFlowMutable.tryEmit(it) }
                 }
-                CHANNEL_POSITIONS -> {
-                    val dto = objectMapper.treeToValue(node, OkxWsTypeRefs.positions)
-                    dto.data?.forEach { _positionFlow.tryEmit(it) }
+                POSITIONS -> {
+                    objectMapper.treeToValue(node, OkxWsTypeRefs.positions)
+                        .data
+                        ?.forEach { _positionFlowMutable.tryEmit(it) }
                 }
-                CHANNEL_ACCOUNT -> {
-                    val dto = objectMapper.treeToValue(node, OkxWsTypeRefs.account)
-                    dto.data?.forEach { _accountFlow.tryEmit(it) }
+                ACCOUNT -> {
+                    objectMapper.treeToValue(node, OkxWsTypeRefs.account)
+                        .data
+                        ?.forEach { _accountFlowMutable.tryEmit(it) }
                 }
-                else -> log.trace { "Ignored channel: $channel" }
+                else -> log.trace { "Unhandled channel: $channel" }
             }
         }.onFailure { e ->
-            log.warn(e) { "Mapping error for channel $channel" }
+            log.warn(e) { "Failed to parse $channel update" }
         }
     }
 
-    private fun handleEvent(node: JsonNode) {
-        val event = node.path("event").asText()
-        if (event == "error") {
-            log.error { "WS Error Event: ${node.path("msg").asText()} (code ${node.path("code")})" }
-        } else if (event == "subscribe") {
-            log.debug { "Subscribed: ${node.path("arg")}" }
+    private fun handleEventMessage(node: JsonNode) {
+        when (val event = node.path("event").asText()) {
+            "error" -> log.error { "WS error: ${node.path("msg").asText()} (${node.path("code")})" }
+            "subscribe" -> log.debug { "Subscribed: ${node.path("arg")}" }
+            else -> log.trace { "Event: $event" }
         }
-    }
-
-    private fun calculateBackoff(attempt: Int): Long {
-        val baseDelay = 1000L * (2.0.pow(min(attempt, 6).toDouble())).toLong() // Max 64s base
-        return min(baseDelay, MAX_RECONNECT_DELAY_MS) + Random.nextLong(0, 1000)
-    }
-
-    @PreDestroy
-    fun destroy() {
-        log.info { "Shutting down OKX Private WS..." }
-        isRunning.set(false)
-
-        // Close session first
-        runBlocking {
-            try {
-                withTimeoutOrNull(2000) {
-                    activeSession?.close(CloseReason(CloseReason.Codes.NORMAL, "App Shutdown"))
-                }
-            } catch (_: Exception) {
-                // Ignore errors during shutdown
-            }
-        }
-
-        // Cancel scope
-        scope.cancel()
     }
 }

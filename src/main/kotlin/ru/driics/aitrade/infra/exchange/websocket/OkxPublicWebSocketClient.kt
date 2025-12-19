@@ -1,237 +1,216 @@
 package ru.driics.aitrade.infra.exchange.websocket
 
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import io.github.oshai.kotlinlogging.KLogger
 import io.github.oshai.kotlinlogging.KotlinLogging
 import io.ktor.client.*
 import io.ktor.client.plugins.websocket.*
-import io.ktor.websocket.*
 import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
-import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.config.OkxProperties
 import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsCandleUpdate
 import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsTickerUpdate
 import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsTypeRefs
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.min
-import kotlin.math.pow
-import kotlin.random.Random
+
+/**
+ * Represents a subscription to an OKX public channel.
+ */
+data class ChannelSubscription(
+    val channel: String,
+    val instId: String? = null,
+    val instType: String? = null
+) {
+    fun toArgs(): Map<String, String> = buildMap {
+        put("channel", channel)
+        instId?.let { put("instId", it) }
+        instType?.let { put("instType", it) }
+    }
+}
 
 @Component
 class OkxPublicWebSocketClient(
-    private val httpClient: HttpClient,
+    httpClient: HttpClient,
+    objectMapper: ObjectMapper,
     private val okxProperties: OkxProperties,
-    private val objectMapper: ObjectMapper
-) {
-    private val log = KotlinLogging.logger {}
+) : OkxBaseWebSocketClient(httpClient, objectMapper) {
 
-    // Lifecycle & State
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val isRunning = AtomicBoolean(false)
-    private var activeSession: DefaultClientWebSocketSession? = null
+    override val log: KLogger = KotlinLogging.logger {}
+    override val wsUrl: String get() = okxProperties.publicWsUrl()
 
-    // Subscriptions Registry (Thread-safe)
-    // Set<SubscriptionArg> where SubscriptionArg is a Map representation
-    private val subscriptions = ConcurrentHashMap.newKeySet<Map<String, String>>()
+    // Thread-safe subscription registry
+    private val subscriptions = ConcurrentHashMap.newKeySet<ChannelSubscription>()
+    private val subscriptionMutex = Mutex()
 
     // Flows
-    private val _tickerFlow = MutableSharedFlow<OkxWsTickerUpdate>(
-        replay = 1,
-        extraBufferCapacity = 1024,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST
-    )
-    val tickerFlow: SharedFlow<OkxWsTickerUpdate> = _tickerFlow.asSharedFlow()
+    private val (_tickerFlowMutable, _tickerFlow) = FlowFactory.highThroughput<OkxWsTickerUpdate>(1024)
+    val tickerFlow: SharedFlow<OkxWsTickerUpdate> = _tickerFlow
 
-    private val _candleFlow = MutableSharedFlow<Pair<String, OkxWsCandleUpdate>>(
-        replay = 0,
-        extraBufferCapacity = 512,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST
-    )
-    val candleFlow: SharedFlow<Pair<String, OkxWsCandleUpdate>> = _candleFlow.asSharedFlow()
+    private val (_candleFlowMutable, _candleFlow) = FlowFactory.highThroughput<CandleEvent>(512)
+    val candleFlow: SharedFlow<CandleEvent> = _candleFlow
 
-    private companion object {
-        const val PING_INTERVAL = 20_000L
-        const val MAX_RECONNECT_DELAY = 30_000L
-        const val CHANNEL_TICKERS = "tickers"
-        const val CHANNEL_CANDLES_PREFIX = "candle"
+    /**
+     * Wrapper for candle updates with instrument context.
+     */
+    data class CandleEvent(
+        val instId: String,
+        val period: String,
+        val candle: OkxWsCandleUpdate
+    )
+
+    private companion object Channels {
+        const val TICKERS = "tickers"
+        const val CANDLE_PREFIX = "candle"
     }
 
     @PostConstruct
-    fun start() {
-        if (isRunning.compareAndSet(false, true)) {
-            log.info { "Starting OKX Public WebSocket Client..." }
-            scope.launch { connectLoop() }
-        }
-    }
-
-    private suspend fun connectLoop() {
-        var attempt = 0
-
-        while (scope.isActive && isRunning.get()) {
-            try {
-                val url = okxProperties.publicWsUrl()
-                httpClient.webSocket(urlString = url, request = {
-                    headers.append("User-Agent", "AiTrader/1.0 (+okx ws)")
-                    headers.append("Accept", "application/json")
-                }) {
-                    log.info { "Connected to OKX Public WS: $url" }
-                    activeSession = this
-                    attempt = 0 // Reset backoff on success
-
-                    // 1. Restore Subscriptions
-                    resubscribeAll(this)
-
-                    // 2. Heartbeat
-                    launchHeartbeat()
-
-                    // 3. Process Messages
-                    processIncomingMessages()
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                log.warn { "Public WS disconnected/error: ${e.message}" }
-            } finally {
-                activeSession = null
-            }
-
-            if (isRunning.get()) {
-                val delayMs = calculateBackoff(attempt)
-                log.info { "Reconnecting in ${delayMs}ms (attempt $attempt)" }
-                delay(delayMs)
-                attempt++
-            }
-        }
-    }
-
-    private fun DefaultClientWebSocketSession.launchHeartbeat() = launch {
-        while (isActive) {
-            try {
-                send(Frame.Text("ping"))
-                delay(PING_INTERVAL)
-            } catch (_: Exception) {
-                break // Exit loop to trigger reconnect in main loop
-            }
-        }
-    }
-
-    private suspend fun DefaultClientWebSocketSession.processIncomingMessages() {
-        for (frame in incoming) {
-            when (frame) {
-                is Frame.Text -> handleTextFrame(frame)
-                is Frame.Ping -> send(Frame.Pong(frame.data))
-                is Frame.Close -> log.info { "Public WS server closed connection: ${frame.readReason()}" }
-                else -> Unit
-            }
-        }
-    }
-
-    private fun handleTextFrame(frame: Frame.Text) {
-        val text = frame.readText()
-        if (text == "pong") return
-
-        try {
-            // Optimization: Parse to JsonNode once, then map to DTO
-            val node = objectMapper.readTree(text)
-
-            if (node.has("event")) {
-                // Handle acks/errors
-                return
-            }
-
-            val arg = node.path("arg")
-            val channel = arg.path("channel").asText()
-            val instId = arg.path("instId").asText()
-
-            when {
-                channel == CHANNEL_TICKERS -> {
-                    val dto = objectMapper.treeToValue(node, OkxWsTypeRefs.ticker)
-                    dto.data?.forEach { _tickerFlow.tryEmit(it) }
-                }
-                channel.startsWith(CHANNEL_CANDLES_PREFIX) -> {
-                    val dto = objectMapper.treeToValue(node, OkxWsTypeRefs.candle)
-                    dto.data?.forEach { candle ->
-                        if (instId.isNotEmpty()) {
-                            _candleFlow.tryEmit(instId to candle)
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            log.trace(e) { "Failed to parse message: $text" }
-        }
-    }
-
-    // =========================================================================
-    // Subscription Management
-    // =========================================================================
-
-    suspend fun subscribeTicker(instId: String) {
-        val args = mapOf("channel" to CHANNEL_TICKERS, "instId" to instId)
-        addSubscription(args)
-    }
-
-    suspend fun subscribeCandles(instId: String, period: String) {
-        val args = mapOf("channel" to "$CHANNEL_CANDLES_PREFIX$period", "instId" to instId)
-        addSubscription(args)
-    }
-
-    private suspend fun addSubscription(args: Map<String, String>) {
-        if (subscriptions.add(args)) {
-            // If new, send immediately if connected
-            activeSession?.let { session ->
-                if (session.isActive) {
-                    sendSubscribeOp(session, listOf(args))
-                }
-            }
-        }
-    }
-
-    private suspend fun resubscribeAll(session: DefaultClientWebSocketSession) {
-        if (subscriptions.isNotEmpty()) {
-            log.info { "Resubscribing to ${subscriptions.size} channels..." }
-            // OKX supports batching args
-            sendSubscribeOp(session, subscriptions.toList())
-        }
-    }
-
-    private suspend fun sendSubscribeOp(session: DefaultClientWebSocketSession, args: List<Map<String, String>>) {
-        try {
-            val payload = mapOf(
-                "op" to "subscribe",
-                "args" to args
-            )
-            session.send(Frame.Text(objectMapper.writeValueAsString(payload)))
-        } catch (e: Exception) {
-            log.warn(e) { "Failed to send subscription frame" }
-        }
-    }
-
-    private fun calculateBackoff(attempt: Int): Long {
-        val base = 1000.0 * 2.0.pow(min(attempt, 6)) // Max base ~64 sec
-        return (min(base.toLong(), MAX_RECONNECT_DELAY) + Random.nextLong(0, 1000))
-    }
+    override fun start() = super.start()
 
     @PreDestroy
-    fun destroy() {
-        log.info { "Shutting down OKX Public WS Client" }
-        isRunning.set(false)
-        scope.cancel()
+    override fun stop() = super.stop()
 
-        runBlocking {
-            try {
-                withTimeoutOrNull(2000) {
-                    activeSession?.close(CloseReason(CloseReason.Codes.NORMAL, "App Shutdown"))
+    // =========================================================================
+    // Session Lifecycle
+    // =========================================================================
+
+    override suspend fun onSessionEstablished(session: DefaultClientWebSocketSession): Boolean {
+        resubscribeAll()
+        return true
+    }
+
+    private suspend fun resubscribeAll() {
+        val currentSubs = subscriptions.toList()
+        if (currentSubs.isEmpty()) return
+
+        log.info { "Restoring ${currentSubs.size} subscriptions" }
+        sendSubscribeRequest(currentSubs)
+    }
+
+    // =========================================================================
+    // Subscription API
+    // =========================================================================
+
+    /**
+     * Subscribe to ticker updates for an instrument.
+     */
+    suspend fun subscribeTicker(instId: String) {
+        addSubscription(ChannelSubscription(channel = TICKERS, instId = instId))
+    }
+
+    /**
+     * Subscribe to candlestick updates.
+     * @param instId Instrument ID (e.g., "BTC-USDT-SWAP")
+     * @param period Candlestick period (e.g., "1m", "5m", "1H", "1D")
+     */
+    suspend fun subscribeCandles(instId: String, period: String) {
+        addSubscription(ChannelSubscription(channel = "$CANDLE_PREFIX$period", instId = instId))
+    }
+
+    /**
+     * Unsubscribe from ticker updates.
+     */
+    suspend fun unsubscribeTicker(instId: String) {
+        removeSubscription(ChannelSubscription(channel = TICKERS, instId = instId))
+    }
+
+    /**
+     * Unsubscribe from candlestick updates.
+     */
+    suspend fun unsubscribeCandles(instId: String, period: String) {
+        removeSubscription(ChannelSubscription(channel = "$CANDLE_PREFIX$period", instId = instId))
+    }
+
+    private suspend fun addSubscription(sub: ChannelSubscription) {
+        subscriptionMutex.withLock {
+            if (subscriptions.add(sub)) {
+                if (isConnected) {
+                    sendSubscribeRequest(listOf(sub))
                 }
-            } catch (_: Exception) {
-                // ignore
             }
+        }
+    }
+
+    private suspend fun removeSubscription(sub: ChannelSubscription) {
+        subscriptionMutex.withLock {
+            if (subscriptions.remove(sub)) {
+                if (isConnected) {
+                    sendUnsubscribeRequest(listOf(sub))
+                }
+            }
+        }
+    }
+
+    private suspend fun sendSubscribeRequest(subs: List<ChannelSubscription>) {
+        val payload = mapOf(
+            "op" to "subscribe",
+            "args" to subs.map { it.toArgs() }
+        )
+        sendMessage(payload)
+    }
+
+    private suspend fun sendUnsubscribeRequest(subs: List<ChannelSubscription>) {
+        val payload = mapOf(
+            "op" to "unsubscribe",
+            "args" to subs.map { it.toArgs() }
+        )
+        sendMessage(payload)
+    }
+
+    // =========================================================================
+    // Message Dispatching
+    // =========================================================================
+
+    override fun dispatchMessage(node: JsonNode) {
+        if (node.has("event")) {
+            handleEventMessage(node)
+            return
+        }
+
+        if (!node.has("data")) return
+
+        val arg = node.path("arg")
+        val channel = arg.path("channel").asText()
+        val instId = arg.path("instId").asText()
+
+        dispatchDataUpdate(channel, instId, node)
+    }
+
+    private fun dispatchDataUpdate(channel: String, instId: String, node: JsonNode) {
+        runCatching {
+            when {
+                channel == TICKERS -> {
+                    objectMapper.treeToValue(node, OkxWsTypeRefs.ticker)
+                        .data
+                        ?.forEach { _tickerFlowMutable.tryEmit(it) }
+                }
+
+                channel.startsWith(CANDLE_PREFIX) -> {
+                    val period = channel.removePrefix(CANDLE_PREFIX)
+                    objectMapper.treeToValue(node, OkxWsTypeRefs.candle)
+                        .data
+                        ?.filter { instId.isNotEmpty() }
+                        ?.forEach {
+                            _candleFlowMutable.tryEmit(CandleEvent(instId, period, it))
+                        }
+                }
+
+                else -> log.trace { "Unhandled channel: $channel" }
+            }
+        }.onFailure { e ->
+            log.warn(e) { "Failed to parse $channel update" }
+        }
+    }
+
+    private fun handleEventMessage(node: JsonNode) {
+        when (val event = node.path("event").asText()) {
+            "subscribe" -> log.debug { "Subscribed: ${node.path("arg")}" }
+            "unsubscribe" -> log.debug { "Unsubscribed: ${node.path("arg")}" }
+            "error" -> log.error { "Error: ${node.path("msg").asText()} (${node.path("code")})" }
         }
     }
 }

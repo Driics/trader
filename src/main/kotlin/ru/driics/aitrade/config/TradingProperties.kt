@@ -45,10 +45,14 @@ data class TradingProperties(
     var okxTimeouts: OkxTimeouts = OkxTimeouts(),
 
     // AI call configuration
+    var aiModel: String = "qwen/qwen3-max", // Default AI model
     var aiTimeoutMs: Long = 60_000, // 60 seconds default timeout
     var aiMaxRetries: Int = 2, // Retries for transient errors
     var aiBudgetPerMinute: Long = 10, // Max AI requests per minute
-    var aiCooldownMs: Duration? = Duration.ofMinutes(5) // Cooldown between trades per symbol
+    var aiCooldownMs: Duration? = Duration.ofMinutes(5), // Cooldown between trades per symbol
+
+    // Execution Mode
+    var demoMode: Boolean = true // If true, orders are simulated (dry-run)
 ) {
     fun getCurrenciesList(): List<String> =
         currencies.map { it.trim().uppercase(Locale.ROOT) }
@@ -58,13 +62,13 @@ data class TradingProperties(
 }
 
 data class OkxTimeouts(
-    var ticker: Duration = Duration.ofSeconds(2),
-    var candles: Duration = Duration.ofSeconds(6),
-    var funding: Duration = Duration.ofSeconds(3),
-    var openInterest: Duration = Duration.ofSeconds(3),
-    var account: Duration = Duration.ofSeconds(4),
-    var positions: Duration = Duration.ofSeconds(4),
-    var instruments: Duration = Duration.ofSeconds(4),
-    var setLeverage: Duration = Duration.ofSeconds(6),
-    var placeOrder: Duration = Duration.ofSeconds(8)
+    var ticker: Duration = Duration.ofSeconds(5),
+    var candles: Duration = Duration.ofSeconds(10),
+    var funding: Duration = Duration.ofSeconds(5),
+    var openInterest: Duration = Duration.ofSeconds(5),
+    var account: Duration = Duration.ofSeconds(10),
+    var positions: Duration = Duration.ofSeconds(10),
+    var instruments: Duration = Duration.ofSeconds(10),
+    var setLeverage: Duration = Duration.ofSeconds(10),
+    var placeOrder: Duration = Duration.ofSeconds(15)
 )

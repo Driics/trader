@@ -19,6 +19,7 @@ import ru.driics.aitrade.common.measureSuspend
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.*
 import ru.driics.aitrade.domain.ports.MarketDataPort
+import ru.driics.aitrade.domain.services.TradingMetricsService
 import ru.driics.aitrade.domain.types.asSymbol
 import java.security.MessageDigest
 import java.time.Clock
@@ -32,6 +33,7 @@ class UpdateCycleOrchestrator(
     private val execute: ExecuteAiDecisionsUseCase,
     private val market: MarketDataPort,
     private val meterRegistry: MeterRegistry,
+    private val tradingMetricsService: TradingMetricsService,
     private val autoExecute: Boolean,
     private val symbols: List<String>,
     private val clock: Clock,
@@ -207,6 +209,12 @@ class UpdateCycleOrchestrator(
                 when (val cal = confidenceCalibrator.shouldAccept(normArgs)) {
                     is ConfidenceCalibrator.CalibrationResult.Accepted -> {
                         normalized[symbol] = AiTradeEnvelope(normArgs)
+                        // Record accepted signal metric
+                        tradingMetricsService.recordAiSignal(
+                            symbol = symbol,
+                            signal = normArgs.signal.toString(),
+                            confidence = normArgs.confidence?.toDouble() ?: 0.0
+                        )
                     }
                     is ConfidenceCalibrator.CalibrationResult.Rejected -> {
                         log.debug { "Signal rejected ($symbol): ${cal.reason}" }

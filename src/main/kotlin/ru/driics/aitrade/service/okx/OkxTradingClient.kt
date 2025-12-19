@@ -23,6 +23,7 @@ import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.MarginMode
 import ru.driics.aitrade.domain.model.OkxPlaceOrderApiResponse
 import ru.driics.aitrade.domain.model.OkxPlaceOrderData
+import ru.driics.aitrade.domain.services.TradingMetricsService
 import ru.driics.aitrade.service.OkxAuthService
 
 /**
@@ -35,7 +36,8 @@ class OkxTradingClient(
     okxAuthService: OkxAuthService,
     meterRegistry: MeterRegistry,
     objectMapper: ObjectMapper,
-    tradingProperties: TradingProperties
+    tradingProperties: TradingProperties,
+    private val tradingMetricsService: TradingMetricsService
 ) : OkxClientBase(
     okxProperties, okxKtorClient, okxAuthService, meterRegistry, objectMapper, tradingProperties,
     LoggerFactory.getLogger(OkxTradingClient::class.java)
@@ -116,8 +118,19 @@ class OkxTradingClient(
 
             if (!apiResponse.isSuccess()) {
                 handleOrderFailure(apiResponse, instId, clOrdId)
+                // Record metric failure
+                tradingMetricsService.recordOrderRejected(
+                    symbol = instId.substringBefore("-"),
+                    reason = apiResponse.msg ?: "API Error ${apiResponse.code}"
+                )
                 null
             } else {
+                // Record metric success
+                tradingMetricsService.recordOrderPlaced(
+                    symbol = instId.substringBefore("-"),
+                    side = side,
+                    type = ORD_TYPE_MARKET
+                )
                 apiResponse.firstOrNull()
             }
         }

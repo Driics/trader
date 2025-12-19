@@ -3,20 +3,20 @@ package ru.driics.aitrade.config
 import io.ktor.client.*
 import io.ktor.client.engine.cio.*
 import io.ktor.client.plugins.*
+import io.ktor.client.plugins.compression.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.plugins.logging.*
 import io.ktor.client.plugins.websocket.*
 import io.ktor.client.request.*
-import io.ktor.http.HttpHeaders.ContentEncoding
 import io.ktor.serialization.kotlinx.json.*
-import io.netty.handler.codec.compression.StandardCompressionOptions.deflate
-import io.netty.handler.codec.compression.StandardCompressionOptions.gzip
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.serialization.json.Json
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.env.Environment
+import java.io.EOFException
+import java.net.SocketTimeoutException
 import kotlin.time.Duration.Companion.seconds
 
 @Configuration
@@ -35,7 +35,8 @@ class OkxKtorClientConfig {
             endpoint {
                 maxConnectionsPerRoute = 20
                 pipelineMaxSize = 10
-                keepAliveTime = 30_000
+                // Reduced keepAliveTime to avoid stale connections in Docker/NAT environments
+                keepAliveTime = 15_000
                 connectTimeout = 10_000
                 connectAttempts = 3
             }
@@ -61,7 +62,7 @@ class OkxKtorClientConfig {
             socketTimeoutMillis = maxBusinessSlaMs + 1_000L
         }
 
-        // 4. Compression (Fixed: Using Ktor native DSL, not Netty)
+        // 4. Compression
         install(ContentEncoding) {
             gzip()
             deflate()
@@ -96,6 +97,13 @@ class OkxKtorClientConfig {
         install(HttpRequestRetry) {
             // Retry 5xx errors up to 2 times
             retryOnServerErrors(maxRetries = 2)
+            // Retry on common network errors (EOF, Timeout) which happen frequently in containers
+            retryOnExceptionIf(maxRetries = 3) { _, cause ->
+                cause is EOFException ||
+                cause is SocketTimeoutException ||
+                cause is io.ktor.client.network.sockets.SocketTimeoutException ||
+                cause is java.net.SocketException
+            }
             exponentialDelay()
         }
 
