@@ -154,6 +154,13 @@ class OkxExchangeAdapter(
         TradeResult.Success(rest.setLeverage(instrumentId.value, leverage, marginMode))
     }.getOrElse { it.toTradeFailure(instrumentId.value) }
 
+    override suspend fun getTodaysRealizedPnlUsd(now: java.time.Instant): TradeResult<java.math.BigDecimal> {
+        // STUB: real /account/bills integration deferred to roadmap item X2.a.
+        // Returning ZERO means the risk gate's daily-loss check sees "no loss today",
+        // which matches the documented fail-open behaviour in the X2 design spec.
+        return TradeResult.Success(java.math.BigDecimal.ZERO)
+    }
+
     // =========================================================================
     // Currency Data Fetching
     // =========================================================================
