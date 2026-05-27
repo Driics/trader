@@ -44,6 +44,7 @@ _Generated 2026-05-25 from a read-only audit. Branch: `feature/mr-29`._
 | X1 | Persistence for orders, fills, PnL snapshots (Postgres + Flyway, behind a `TradeJournalPort`) | Currently no audit trail; can't compute true return | L | backend-architect |
 | X2.a | Wire OKX `/account/bills` for real daily-PnL gate (currently `getTodaysRealizedPnlUsd` is stubbed to ZERO → daily-loss gate fails open) | Without this, the daily-loss auto-trip is inert; only kill-switch + position-count gates are live | M | backend-architect |
 | X2.b | Eliminate the double `loadMarketState` per cycle introduced by Task 8 (orchestrator now fetches positions for `RiskContext`, then use-case re-fetches for execution) | Wasted OKX API quota; risks rate-limit churn | S | executor |
+| X2.c | End-to-end integration test: POST `/api/trading/kill-switch`, run a cycle, assert zero orders placed and `risk.gate.blocked{source=MANUAL_KILL}` counter increments | Locks in the full chain; current tests only cover units in isolation | S | qa |
 | X3 | AI cost/latency budget enforcement via `ai-budget-per-minute` + circuit breaker on OpenRouter | Multi-key rotation exists but no spend cap visible | M | executor |
 | X4 | Grafana dashboards + alerts (cycle duration, WS disconnects, order reject rate, AI failure rate) committed under `infra/monitoring/` | Prometheus is scraping but no dashboards-as-code | M | devops |
 | X5 | Backtest/replay harness using recorded WS frames + `IndicatorCalculator` | Enables strategy iteration without burning real capital | L | backend-architect |
