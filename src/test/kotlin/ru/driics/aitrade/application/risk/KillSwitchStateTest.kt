@@ -59,6 +59,25 @@ class KillSwitchStateTest {
     }
 
     @Test
+    fun `AUTO trip does not overwrite an active MANUAL trip`() {
+        val state = KillSwitchState(fixedClock(Instant.parse("2026-05-27T12:00:00Z")))
+        val manual = state.trip("operator pause", KillSwitchSnapshot.Source.MANUAL)
+        val attempted = state.trip("daily loss", KillSwitchSnapshot.Source.AUTO_DAILY_LOSS)
+        assertEquals(KillSwitchSnapshot.Source.MANUAL, attempted.source)
+        assertEquals("operator pause", attempted.reason)
+        assertEquals(manual, state.snapshot())
+    }
+
+    @Test
+    fun `MANUAL trip overwrites an existing AUTO trip`() {
+        val state = KillSwitchState(fixedClock(Instant.parse("2026-05-27T12:00:00Z")))
+        state.trip("daily loss", KillSwitchSnapshot.Source.AUTO_DAILY_LOSS)
+        val manual = state.trip("operator pause", KillSwitchSnapshot.Source.MANUAL)
+        assertEquals(KillSwitchSnapshot.Source.MANUAL, manual.source)
+        assertEquals("operator pause", manual.reason)
+    }
+
+    @Test
     fun `MANUAL trip survives UTC day rollover`() {
         val tripTime = Instant.parse("2026-05-27T23:50:00Z")
         val nextDay = Instant.parse("2026-05-28T00:05:00Z")

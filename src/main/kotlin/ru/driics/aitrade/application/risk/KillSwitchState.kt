@@ -17,15 +17,26 @@ class KillSwitchState(private val clock: Clock) {
 
     private val ref = AtomicReference(KillSwitchSnapshot.disabled())
 
+    /**
+     * Returns the current snapshot. Side effect: if a stale AUTO_DAILY_LOSS trip
+     * has crossed a UTC midnight, this method CAS-clears it. The CAS-miss path
+     * is benign — a concurrent writer's value is fresher than what we'd have
+     * written, so returning `ref.get()` is correct.
+     */
     fun snapshot(): KillSwitchSnapshot {
         val current = ref.get()
-        if (current.shouldAutoClear(clock)) {
+        if (current.shouldAutoClear()) {
             val cleared = KillSwitchSnapshot.disabled()
             return if (ref.compareAndSet(current, cleared)) cleared else ref.get()
         }
         return current
     }
 
+    /**
+     * Trips the kill-switch. MANUAL trips always win and overwrite any prior state.
+     * AUTO trips refuse to overwrite an existing MANUAL trip — the operator's
+     * pause is sticky. Returns the snapshot that is actually in effect after the call.
+     */
     fun trip(reason: String, source: KillSwitchSnapshot.Source): KillSwitchSnapshot {
         val next = KillSwitchSnapshot(
             enabled = true,
@@ -33,8 +44,18 @@ class KillSwitchState(private val clock: Clock) {
             since = clock.instant(),
             source = source,
         )
-        ref.set(next)
-        return next
+        if (source == KillSwitchSnapshot.Source.MANUAL) {
+            ref.set(next)
+            return next
+        }
+        // AUTO: yield to any active MANUAL trip; otherwise CAS-install ours.
+        while (true) {
+            val current = ref.get()
+            if (current.enabled && current.source == KillSwitchSnapshot.Source.MANUAL) {
+                return current
+            }
+            if (ref.compareAndSet(current, next)) return next
+        }
     }
 
     fun clear(): KillSwitchSnapshot {
@@ -48,7 +69,7 @@ class KillSwitchState(private val clock: Clock) {
         ref.set(snapshot)
     }
 
-    private fun KillSwitchSnapshot.shouldAutoClear(clock: Clock): Boolean {
+    private fun KillSwitchSnapshot.shouldAutoClear(): Boolean {
         if (!enabled || source != KillSwitchSnapshot.Source.AUTO_DAILY_LOSS) return false
         val since = this.since ?: return false
         val today = LocalDate.ofInstant(clock.instant(), ZoneOffset.UTC)
