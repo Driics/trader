@@ -12,6 +12,7 @@ import ru.driics.aitrade.application.ai.ConfidenceCalibrator
 import ru.driics.aitrade.application.ai.PromptTemplateService
 import ru.driics.aitrade.application.orchestrator.UpdateCycleOrchestrator
 import ru.driics.aitrade.application.risk.KillSwitchState
+import ru.driics.aitrade.application.risk.RiskGate
 import ru.driics.aitrade.application.usecase.AnalyzePromptUseCase
 import ru.driics.aitrade.application.usecase.BuildPromptUseCase
 import ru.driics.aitrade.application.usecase.ExecuteAiDecisionsUseCase
@@ -85,19 +86,32 @@ class ApplicationWiring(
     )
 
     @Bean
+    fun riskGate(
+        riskGateProperties: RiskGateProperties,
+        killSwitchState: KillSwitchState,
+        meterRegistry: MeterRegistry,
+    ) = RiskGate(
+        props = riskGateProperties,
+        killSwitch = killSwitchState,
+        meterRegistry = meterRegistry,
+    )
+
+    @Bean
     fun executeAiUseCase(
         trading: TradingPort,
         market: MarketDataPort,
         clock: Clock,
         confidenceCalibrator: ConfidenceCalibrator,
-        meterRegistry: MeterRegistry
+        meterRegistry: MeterRegistry,
+        riskGate: RiskGate,
     ) = ExecuteAiDecisionsUseCase(
         trading = trading,
         market = market,
         tradingProperties = tradingProperties,
         clock = clock,
         confidenceCalibrator = confidenceCalibrator,
-        meterRegistry = meterRegistry
+        meterRegistry = meterRegistry,
+        riskGate = riskGate,
     )
 
     @Bean
