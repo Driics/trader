@@ -6,6 +6,9 @@ import kotlinx.coroutines.flow.*
 import ru.driics.aitrade.application.ai.ActionGuard
 import ru.driics.aitrade.application.ai.ConfidenceCalibrator
 import ru.driics.aitrade.application.ai.IdempotencyService
+import ru.driics.aitrade.application.risk.RiskContext
+import ru.driics.aitrade.application.risk.RiskDecision
+import ru.driics.aitrade.application.risk.RiskGate
 import ru.driics.aitrade.common.logging.BusinessEventLogger
 import ru.driics.aitrade.common.logging.logger
 import ru.driics.aitrade.config.TradingProperties
@@ -32,7 +35,8 @@ class ExecuteAiDecisionsUseCase(
     private val tradingProperties: TradingProperties,
     private val clock: Clock,
     private val confidenceCalibrator: ConfidenceCalibrator,
-    private val meterRegistry: MeterRegistry
+    private val meterRegistry: MeterRegistry,
+    private val riskGate: RiskGate,
 ) {
     private companion object {
         val log = logger<ExecuteAiDecisionsUseCase>()
@@ -58,7 +62,10 @@ class ExecuteAiDecisionsUseCase(
      * - Executes plans with concurrency limits
      */
     @OptIn(ExperimentalCoroutinesApi::class)
-    suspend fun execute(decisions: AiTradeDecisionMap): List<AiTradeExecutionResult> = coroutineScope {
+    suspend fun execute(
+        decisions: AiTradeDecisionMap,
+        riskContext: RiskContext,
+    ): List<AiTradeExecutionResult> = coroutineScope {
         log.info { "Executing AI trading decisions for ${decisions.size} symbols" }
 
         val supportedSymbols = tradingProperties.getCurrenciesList().toSet()
@@ -100,7 +107,7 @@ class ExecuteAiDecisionsUseCase(
                 flow {
                     emit(
                         runCatching {
-                            executePlan(ready.plan, state.account.availableCash)
+                            executePlan(ready.plan, state.account.availableCash, riskContext)
                         }.getOrElse { e ->
                             log.error(e) { "Failed to execute plan for ${ready.plan.symbol}" }
                             createErrorResult(ready.plan, e.message ?: "Unknown execution error")
@@ -193,7 +200,20 @@ class ExecuteAiDecisionsUseCase(
     // Execution Phase
     // =========================================================================
 
-    private suspend fun executePlan(plan: OrderPlan, availableUsd: BigDecimal): AiTradeExecutionResult {
+    private suspend fun executePlan(
+        plan: OrderPlan,
+        availableUsd: BigDecimal,
+        riskContext: RiskContext,
+    ): AiTradeExecutionResult {
+        when (val d = riskGate.evaluate(riskContext)) {
+            is RiskDecision.Allow -> Unit
+            is RiskDecision.Block -> {
+                recordRiskBlock(d.source.name)
+                BusinessEventLogger.orderRejected(plan.symbol, null, d.reason, "RISK_${d.source.name}")
+                return createSkippedResult(plan, "RiskGate(${d.source}): ${d.reason}")
+            }
+        }
+
         // 1. Sizing
         val sizing = sizingPolicy.size(
             OrderSizingPolicy.SizingInput(
@@ -354,6 +374,10 @@ class ExecuteAiDecisionsUseCase(
 
     private fun String?.extractPositive(): BigDecimal? =
         this?.toBigDecimalOrNull()?.takeIf { it.isPositive() }
+
+    private fun recordRiskBlock(source: String) {
+        meterRegistry.counter("risk.gate.blocked", "source", source).increment()
+    }
 
     private fun recordGuardRejection(reason: String) {
         val normalized = reason.take(REASON_TAG_LIMIT)
