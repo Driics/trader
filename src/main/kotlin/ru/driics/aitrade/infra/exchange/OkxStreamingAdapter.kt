@@ -1,12 +1,10 @@
-package ru.driics.aitrade.infra.exchange
+package ru.driics.aitrade.infra.exchange.adapter
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.*
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.ports.OrderEvent
@@ -28,142 +26,175 @@ class OkxStreamingAdapter(
     private val privateWs: OkxPrivateWebSocketClient,
     private val tradingProperties: TradingProperties
 ) : StreamingMarketDataPort {
+
     private val log = KotlinLogging.logger {}
 
-    // Use Default dispatcher for mapping/calculations, but consider IO if downstream is blocking
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        log.error(throwable) { "Uncaught exception in streaming coroutine" }
+    }
 
-    // Thread-safe cache for synchronous access
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + exceptionHandler
+    )
+
     private val lastPriceCache = ConcurrentHashMap<String, BigDecimal>()
 
-    private companion object {
-        const val INSTRUMENT_SUFFIX = "-USDT-SWAP"
-        const val TIMEFRAME_1M = "1m"
-        const val TIMEFRAME_4H = "4H"
+    // Shared flow: map once, filter per subscriber
+    private val allPriceUpdates: SharedFlow<PriceUpdate> by lazy {
+        publicWs.tickerFlow
+            .mapNotNull { it.toDomain() }
+            .shareIn(
+                scope = scope,
+                started = SharingStarted.WhileSubscribed(stopTimeoutMillis = 5000),
+                replay = 0
+            )
     }
+
+    // =========================================================================
+    // Lifecycle
+    // =========================================================================
 
     @PostConstruct
     fun init() {
-        // 1. Configure Subscriptions
-        // The WS clients will handle queuing these and sending them when the connection is ready.
-        tradingProperties.getCurrenciesList().forEach { symbol ->
-            val instId = symbol.toInstId()
-            runCatching {
-                scope.launch {
-                    publicWs.subscribeTicker(instId)
-                    publicWs.subscribeCandles(instId, TIMEFRAME_1M)
-                    publicWs.subscribeCandles(instId, TIMEFRAME_4H)
-                }
-            }.onFailure { e ->
-                log.error(e) { "Failed to queue subscriptions for $instId" }
-            }
+        val instruments = tradingProperties.getCurrenciesList()
+
+        if (instruments.isEmpty()) {
+            log.warn { "No instruments configured for market data subscription" }
+            return
         }
 
-        // 2. Start internal cache maintenance
-        scope.launch {
-            publicWs.tickerFlow.collect { tick ->
-                val price = tick.last.toBigDecimalOrNull()
-                if (price != null) {
-                    lastPriceCache[tick.instId] = price
-                }
-            }
-        }
+        log.info { "Initializing OKX streaming for ${instruments.size} instruments" }
+
+        subscribeToInstruments(instruments)
+        startPriceCacheMaintenance()
     }
 
     @PreDestroy
     fun stop() {
-        scope.cancel()
+        log.info { "Shutting down OKX streaming adapter" }
+        scope.cancel("Application shutdown")
     }
 
     // =========================================================================
     // Port Implementation
     // =========================================================================
 
-    override fun getRealtimePrice(instId: String): BigDecimal? = lastPriceCache[instId]
+    override fun getRealtimePrice(instId: String): BigDecimal? =
+        lastPriceCache[instId]
 
     override fun observePriceUpdates(instId: String): Flow<PriceUpdate> =
-        publicWs.tickerFlow
-            .filter { it.instId == instId }
-            .mapNotNull { it.toDomain() }
+        allPriceUpdates.filter { it.instId == instId }
 
     override fun observeOrderUpdates(): Flow<OrderEvent> =
-        privateWs.orderFlow
-            .mapNotNull { it.toDomain() }
+        privateWs.orderFlow.mapNotNull { it.toDomain() }
 
     override fun observePositionUpdates(): Flow<PositionEvent> =
-        privateWs.positionFlow
-            .mapNotNull { it.toDomain() }
+        privateWs.positionFlow.mapNotNull { it.toDomain() }
 
     // =========================================================================
-    // Mappers & Extensions
+    // Subscription Management
     // =========================================================================
 
-    private fun String.toInstId() = "$this$INSTRUMENT_SUFFIX"
+    private fun subscribeToInstruments(symbols: List<String>) {
+        scope.launch {
+            symbols.forEach { symbol ->
+                subscribeToInstrument(symbol.toInstId())
+            }
+        }
+    }
+
+    private suspend fun subscribeToInstrument(instId: String) {
+        runCatching {
+            publicWs.subscribeTicker(instId)
+            Timeframe.ALL.forEach { tf ->
+                publicWs.subscribeCandles(instId, tf)
+            }
+        }.onSuccess {
+            log.debug { "Subscribed to $instId" }
+        }.onFailure { e ->
+            log.error(e) { "Failed to subscribe to $instId" }
+        }
+    }
+
+    private fun startPriceCacheMaintenance() {
+        scope.launch {
+            publicWs.tickerFlow
+                .mapNotNull { tick ->
+                    tick.last.toBigDecimalOrNull()?.let { tick.instId to it }
+                }
+                .collect { (instId, price) ->
+                    lastPriceCache[instId] = price
+                }
+        }
+    }
+
+    // =========================================================================
+    // Domain Mappers
+    // =========================================================================
 
     private fun OkxWsTickerUpdate.toDomain(): PriceUpdate? {
-        val price = this.last.parseBigDecimal("ticker price") ?: return null
-        val timestamp = this.ts.parseInstant("ticker ts") ?: return null
-
         return PriceUpdate(
-            instId = this.instId,
-            price = price,
-            timestamp = timestamp
+            instId = instId,
+            price = last.parseBigDecimal("ticker.last") ?: return null,
+            timestamp = ts.parseEpochMillis("ticker.ts") ?: return null
         )
     }
 
     private fun OkxWsOrderUpdate.toDomain(): OrderEvent? {
-        // Required fields
-        val timestamp = this.ts.parseInstant("order ts") ?: return null
-
         return OrderEvent(
-            instId = this.instId,
-            orderId = this.ordId,
-            clOrdId = this.clOrdId,
-            state = this.state,
-            side = this.side,
-            // Optional/Nullable fields in domain
-            avgPx = this.avgPx?.toBigDecimalOrNull(),
-            timestamp = timestamp
+            instId = instId,
+            orderId = ordId,
+            clOrdId = clOrdId,
+            state = state,
+            side = side,
+            avgPx = avgPx?.toBigDecimalOrNull(),
+            timestamp = ts.parseEpochMillis("order.ts") ?: return null
         )
     }
 
     private fun OkxWsPositionUpdate.toDomain(): PositionEvent? {
-        val pos = this.pos.parseBigDecimal("pos size") ?: return null
-        val avgPx = this.avgPx.parseBigDecimal("pos avgPx") ?: return null
-        val upl = this.upl.parseBigDecimal("pos upl") ?: return null
-        val timestamp = this.ts.parseInstant("pos ts") ?: return null
-
         return PositionEvent(
-            instId = this.instId,
-            pos = pos,
-            avgPx = avgPx,
-            upl = upl,
-            timestamp = timestamp
+            instId = instId,
+            pos = pos.parseBigDecimal("position.pos") ?: return null,
+            avgPx = avgPx.parseBigDecimal("position.avgPx") ?: return null,
+            upl = upl.parseBigDecimal("position.upl") ?: return null,
+            timestamp = ts.parseEpochMillis("position.ts") ?: return null
         )
     }
 
-    /**
-     * Helper to parse BigDecimal with consistent error logging
-     */
-    private fun String?.parseBigDecimal(fieldName: String): BigDecimal? {
-        if (this.isNullOrBlank()) return null
-        return try {
-            BigDecimal(this)
-        } catch (e: NumberFormatException) {
-            log.warn(e) { "Invalid $fieldName format: '$this'" }
-            null
-        }
+    // =========================================================================
+    // Parsing Extensions
+    // =========================================================================
+
+    private fun String?.parseBigDecimal(field: String): BigDecimal? {
+        if (isNullOrBlank()) return null
+        return runCatching { BigDecimal(this) }
+            .onFailure { log.warn { "Invalid $field: '$this'" } }
+            .getOrNull()
     }
 
-    /**
-     * Helper to parse Epoch Millis String to Instant
-     */
-    private fun String?.parseInstant(fieldName: String): Instant? {
-        val longVal = this?.toLongOrNull()
-        if (longVal == null) {
-            log.debug { "Missing or invalid $fieldName: '$this'" }
+    private fun String?.parseEpochMillis(field: String): Instant? {
+        val millis = this?.toLongOrNull()
+        if (millis == null) {
+            if (!isNullOrBlank()) log.debug { "Invalid $field: '$this'" }
             return null
         }
-        return Instant.ofEpochMilli(longVal)
+        return Instant.ofEpochMilli(millis)
+    }
+
+    private fun String.toInstId(): String = "${this}${INSTRUMENT_SUFFIX}"
+
+    // =========================================================================
+    // Constants
+    // =========================================================================
+
+    private companion object {
+        const val INSTRUMENT_SUFFIX = "-USDT-SWAP"
+    }
+
+    private object Timeframe {
+        const val M1 = "1m"
+        const val H4 = "4H"
+        val ALL = listOf(M1, H4)
     }
 }
