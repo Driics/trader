@@ -8,74 +8,149 @@ import org.springframework.stereotype.Service
 import java.math.BigDecimal
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.DoubleAdder
 
 @Service
 class TradingMetricsService(private val meterRegistry: MeterRegistry) {
 
     private val currentBalance = AtomicReference(BigDecimal.ZERO)
-    private val pnlBySymbol = ConcurrentHashMap<String, Double>()
+    private val cumulativePnlBySymbol = ConcurrentHashMap<String, DoubleAdder>()
+
+    private val counters = ConcurrentHashMap<String, Counter>()
+    private val summaries = ConcurrentHashMap<String, DistributionSummary>()
 
     init {
-        // Gauge for total account balance (equity)
-        Gauge.builder("trading.balance.total.usd", currentBalance) { it.get().toDouble() }
-            .description("Total account equity in USD (USDT)")
-            .register(meterRegistry)
+        registerBalanceGauge()
     }
+
+    // ==================== Public API ====================
 
     fun updateAccountBalance(balance: BigDecimal) {
         currentBalance.set(balance)
     }
 
-    fun recordOrderPlaced(symbol: String, side: String, type: String = "market") {
-        Counter.builder("trading.orders.placed")
-            .tag("symbol", symbol)
-            .tag("side", side)
-            .tag("type", type)
-            .description("Total number of orders placed")
-            .register(meterRegistry)
-            .increment()
+    fun recordOrderPlaced(symbol: String, side: String, type: String = DEFAULT_ORDER_TYPE) {
+        counter(
+            key = "order:placed:$symbol:$side:$type",
+            name = Metrics.ORDERS_PLACED,
+            description = "Total number of orders placed",
+            tags = arrayOf("symbol" to symbol, "side" to side, "type" to type)
+        ).increment()
     }
 
     fun recordOrderRejected(symbol: String, reason: String) {
-        Counter.builder("trading.orders.rejected")
-            .tag("symbol", symbol)
-            .tag("reason", reason)
-            .description("Total number of orders rejected")
-            .register(meterRegistry)
-            .increment()
+        val normalizedReason = reason.sanitizeAsTag()
+
+        counter(
+            key = "order:rejected:$symbol:$normalizedReason",
+            name = Metrics.ORDERS_REJECTED,
+            description = "Total number of orders rejected",
+            tags = arrayOf("symbol" to symbol, "reason" to normalizedReason)
+        ).increment()
     }
 
     fun recordTradePnl(symbol: String, pnl: BigDecimal) {
-        // 1. Record the individual trade PnL in a distribution summary (histogram)
-        DistributionSummary.builder("trading.pnl.trade")
-            .tag("symbol", symbol)
-            .description("Distribution of realized PnL per trade")
-            .register(meterRegistry)
-            .record(pnl.toDouble())
+        val pnlValue = pnl.toDouble()
 
-        // 2. Update the cumulative PnL gauge for this symbol (approximate)
-        pnlBySymbol.merge(symbol, pnl.toDouble()) { old, new -> old + new }
-        
-        // Ensure the gauge is registered (idempotent)
-        Gauge.builder("trading.pnl.cumulative", pnlBySymbol) { it[symbol] ?: 0.0 }
-            .tag("symbol", symbol)
-            .description("Cumulative realized PnL for the symbol since restart")
-            .register(meterRegistry)
+        summary(
+            key = "pnl:$symbol",
+            name = Metrics.PNL_TRADE,
+            description = "Distribution of realized PnL per trade",
+            tags = arrayOf("symbol" to symbol)
+        ).record(pnlValue)
+
+        getOrCreateCumulativePnl(symbol).add(pnlValue)
     }
 
     fun recordAiSignal(symbol: String, signal: String, confidence: Double) {
-        Counter.builder("ai.signals.total")
-            .tag("symbol", symbol)
-            .tag("signal", signal)
-            .description("Total number of AI signals generated")
-            .register(meterRegistry)
-            .increment()
+        val baseKey = "ai:$symbol:$signal"
+        val tags = arrayOf("symbol" to symbol, "signal" to signal)
 
-        DistributionSummary.builder("ai.confidence")
-            .tag("symbol", symbol)
-            .tag("signal", signal)
-            .description("Distribution of AI confidence scores")
+        counter(
+            key = baseKey,
+            name = Metrics.AI_SIGNALS,
+            description = "Total number of AI signals generated",
+            tags = tags
+        ).increment()
+
+        summary(
+            key = baseKey,
+            name = Metrics.AI_CONFIDENCE,
+            description = "Distribution of AI confidence scores",
+            tags = tags
+        ).record(confidence)
+    }
+
+    // ==================== Private Helpers ====================
+
+    private fun registerBalanceGauge() {
+        Gauge.builder(Metrics.BALANCE_TOTAL, currentBalance) { it.get().toDouble() }
+            .description("Total account equity in USD (USDT)")
             .register(meterRegistry)
-            .record(confidence)
+    }
+
+    private fun counter(
+        key: String,
+        name: String,
+        description: String,
+        tags: Array<out Pair<String, String>>
+    ): Counter = counters.computeIfAbsent(key) {
+        Counter.builder(name)
+            .description(description)
+            .withTags(tags)
+            .register(meterRegistry)
+    }
+
+    private fun summary(
+        key: String,
+        name: String,
+        description: String,
+        tags: Array<out Pair<String, String>>
+    ): DistributionSummary = summaries.computeIfAbsent(key) {
+        DistributionSummary.builder(name)
+            .description(description)
+            .withTags(tags)
+            .register(meterRegistry)
+    }
+
+    private fun getOrCreateCumulativePnl(symbol: String): DoubleAdder =
+        cumulativePnlBySymbol.computeIfAbsent(symbol) { sym ->
+            DoubleAdder().also { adder ->
+                Gauge.builder(Metrics.PNL_CUMULATIVE, adder, DoubleAdder::sum)
+                    .tag("symbol", sym)
+                    .description("Cumulative realized PnL for the symbol since restart")
+                    .register(meterRegistry)
+            }
+        }
+
+    // ==================== Extensions ====================
+
+    private fun Counter.Builder.withTags(tags: Array<out Pair<String, String>>): Counter.Builder =
+        apply { tags.forEach { (key, value) -> tag(key, value) } }
+
+    private fun DistributionSummary.Builder.withTags(tags: Array<out Pair<String, String>>): DistributionSummary.Builder =
+        apply { tags.forEach { (key, value) -> tag(key, value) } }
+
+    private fun String.sanitizeAsTag(): String =
+        take(MAX_TAG_LENGTH)
+            .replace(TAG_SANITIZER_REGEX, "_")
+            .lowercase()
+
+    // ==================== Constants ====================
+
+    private object Metrics {
+        const val BALANCE_TOTAL = "trading.balance.total.usd"
+        const val ORDERS_PLACED = "trading.orders.placed"
+        const val ORDERS_REJECTED = "trading.orders.rejected"
+        const val PNL_TRADE = "trading.pnl.trade"
+        const val PNL_CUMULATIVE = "trading.pnl.cumulative"
+        const val AI_SIGNALS = "ai.signals.total"
+        const val AI_CONFIDENCE = "ai.confidence"
+    }
+
+    companion object {
+        private const val MAX_TAG_LENGTH = 30
+        private const val DEFAULT_ORDER_TYPE = "market"
+        private val TAG_SANITIZER_REGEX = Regex("[^a-zA-Z0-9_\\-]")
     }
 }
