@@ -23,7 +23,8 @@ trading:
     - XRP
     - DOGE
   time-zone: UTC
-  auto-execute: true
+  # Safety: default OFF. Must be explicitly enabled via TRADING_AUTO_EXECUTE=true.
+  auto-execute: ${TRADING_AUTO_EXECUTE:false}
   max-concurrent-symbols: 10
   instrument-cache-ttl: 1h  # Aggressive caching: 1 hour TTL
   
