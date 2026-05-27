@@ -18,10 +18,15 @@ import ru.driics.aitrade.common.logging.BusinessEventLogger
 import ru.driics.aitrade.common.logging.CorrelationId
 import ru.driics.aitrade.common.logging.logger
 import ru.driics.aitrade.common.measureSuspend
+import ru.driics.aitrade.application.risk.KillSwitchState
+import ru.driics.aitrade.application.risk.RiskContext
 import ru.driics.aitrade.domain.model.*
 import ru.driics.aitrade.domain.ports.MarketDataPort
+import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.TradingMetricsService
+import ru.driics.aitrade.domain.types.TradeResult
 import ru.driics.aitrade.domain.types.asSymbol
+import java.math.BigDecimal
 import java.security.MessageDigest
 import java.time.Clock
 import java.util.concurrent.atomic.AtomicLong
@@ -44,6 +49,8 @@ class UpdateCycleOrchestrator(
 
     data class Infrastructure(
         val market: MarketDataPort,
+        val trading: TradingPort,
+        val killSwitchState: KillSwitchState,
         val meterRegistry: MeterRegistry,
         val tradingMetrics: TradingMetricsService,
         val schemaValidator: AiSchemaValidator,
@@ -262,7 +269,27 @@ class UpdateCycleOrchestrator(
         }
 
         return runStage(Stage.EXECUTE_ORDERS, cid, mapOf(Attrs.DECISION_COUNT to decisions.size)) { span ->
-            val results = useCases.execute.execute(decisions)
+            // Build RiskContext once per cycle. PnL read failure -> fail-open (ZERO).
+            val pnl = when (val result = infrastructure.trading.getTodaysRealizedPnlUsd(infrastructure.clock.instant())) {
+                is TradeResult.Success -> result.value
+                is TradeResult.Failure -> {
+                    log.warn { "Failed to read today's realized PnL, defaulting to ZERO (fail-open): ${result.message}" }
+                    BigDecimal.ZERO
+                }
+            }
+            val openPositionsCount = runCatching { loadMarketState().positions.size }
+                .getOrElse { e ->
+                    log.warn(e) { "Failed to load market state for open positions count, defaulting to 0 (fail-open)" }
+                    0
+                }
+            val killSnap = infrastructure.killSwitchState.snapshot()
+            val riskContext = RiskContext(
+                openPositionsCount = openPositionsCount,
+                todaysRealizedPnlUsd = pnl,
+                killSwitch = killSnap,
+            )
+
+            val results = useCases.execute.execute(decisions, riskContext)
 
             val placed = results.count { it.action == AIAction.PLACED }
             val skipped = results.count { it.action == AIAction.SKIPPED }

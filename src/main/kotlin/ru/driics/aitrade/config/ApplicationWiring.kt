@@ -11,6 +11,7 @@ import ru.driics.aitrade.application.ai.AiSchemaValidator
 import ru.driics.aitrade.application.ai.ConfidenceCalibrator
 import ru.driics.aitrade.application.ai.PromptTemplateService
 import ru.driics.aitrade.application.orchestrator.UpdateCycleOrchestrator
+import ru.driics.aitrade.application.risk.KillSwitchState
 import ru.driics.aitrade.application.usecase.AnalyzePromptUseCase
 import ru.driics.aitrade.application.usecase.BuildPromptUseCase
 import ru.driics.aitrade.application.usecase.ExecuteAiDecisionsUseCase
@@ -111,6 +112,8 @@ class ApplicationWiring(
         analyze: AnalyzePromptUseCase,
         execute: ExecuteAiDecisionsUseCase,
         market: MarketDataPort,
+        trading: TradingPort,
+        killSwitchState: KillSwitchState,
         meterRegistry: MeterRegistry,
         tradingMetricsService: TradingMetricsService,
         schemaValidator: AiSchemaValidator,
@@ -118,18 +121,25 @@ class ApplicationWiring(
         tracer: Tracer,
         clock: Clock
     ) = UpdateCycleOrchestrator(
-        build = build,
-        analyze = analyze,
-        execute = execute,
-        market = market,
-        meterRegistry = meterRegistry,
-        tradingMetricsService = tradingMetricsService,
-        autoExecute = tradingProperties.autoExecute,
-        symbols = tradingProperties.getCurrenciesList(),
-        clock = clock,
-        schemaValidator = schemaValidator,
-        tradingProperties = tradingProperties,
-        confidenceCalibrator = confidenceCalibrator,
-        tracer = tracer
+        config = UpdateCycleOrchestrator.OrchestratorConfig(
+            symbols = tradingProperties.getCurrenciesList(),
+            autoExecute = tradingProperties.autoExecute
+        ),
+        useCases = UpdateCycleOrchestrator.UseCases(
+            build = build,
+            analyze = analyze,
+            execute = execute
+        ),
+        infrastructure = UpdateCycleOrchestrator.Infrastructure(
+            market = market,
+            trading = trading,
+            killSwitchState = killSwitchState,
+            meterRegistry = meterRegistry,
+            tradingMetrics = tradingMetricsService,
+            schemaValidator = schemaValidator,
+            confidenceCalibrator = confidenceCalibrator,
+            tracer = tracer,
+            clock = clock
+        )
     )
 }
