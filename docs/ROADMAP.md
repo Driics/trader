@@ -23,19 +23,27 @@ _Generated 2026-05-25 from a read-only audit. Branch: `feature/mr-29`._
 
 ## 2. Roadmap
 
+### Recently shipped on `feature/mr-29`
+| # | Goal | Status |
+|---|---|---|
+| N1 | WS/metrics refactor split into 3 commits | ✅ shipped (`250faa7`, `3063b41`, `0054ca8`) |
+| N2 | `auto-execute` default off + env-overridable | ✅ shipped (`0054ca8`) |
+| N3 | Smoke tests for `OrderSizingPolicy` + existing `IndicatorCalculatorTest` | ✅ shipped (`0054ca8`) |
+| N4 | `logback-spring.xml` committed (dev pretty + prod JSON+Loki) | ✅ shipped (`3063b41`) |
+| X2 | Risk-management hard gates (kill-switch endpoint + auto-trip + position cap) | ✅ shipped (commits `2904eb8`–`47fadae`); user-side verification pending (`gradlew test`) |
+
 ### Now — this week
 | # | Goal | Why | Effort | Owner |
 |---|---|---|---|---|
-| N1 | Land the `feature/mr-29` WS/metrics refactor: split commit, write changelog, open PR | 6 modified files sitting uncommitted = merge risk + lost context | S | executor |
-| N2 | Reconcile `auto-execute`/`demo-mode` defaults across `application.yml` vs `docker-compose.yml` | Prevents accidental live trading on a $0.12 account | S | backend-architect |
-| N3 | Add a smoke test module (`OkxExchangeAdapterTest`, `IndicatorCalculatorTest`, `OrderSizingPolicyTest` with MockK + WireMock — deps already present) | Test tree is empty; refactors are unverified | M | qa |
-| N4 | Commit `logback-spring.xml` + wire `LOG_DIR`/profile activation; verify Loki appender ships locally | Logging doc references infra that isn't checked in | S | devops |
+| N5 | Run `gradlew test` locally to verify X2 implementation, then open the `feature/mr-29` PR | Sandbox could not execute the test suite; verification has to happen on a developer machine | S | qa |
+| N6 | Smoke test for `OkxExchangeAdapter` against WireMock | N3 covered pure domain only; the OKX adapter is still un-tested | M | qa |
 
 ### Next — 2–4 weeks
 | # | Goal | Why | Effort | Owner |
 |---|---|---|---|---|
 | X1 | Persistence for orders, fills, PnL snapshots (Postgres + Flyway, behind a `TradeJournalPort`) | Currently no audit trail; can't compute true return | L | backend-architect |
-| X2 | Risk-management hard gates (max daily loss, max position, kill-switch endpoint) wired into `UpdateCycleOrchestrator` | Prompt allows leverage 5–40; needs out-of-band brake | M | executor |
+| X2.a | Wire OKX `/account/bills` for real daily-PnL gate (currently `getTodaysRealizedPnlUsd` is stubbed to ZERO → daily-loss gate fails open) | Without this, the daily-loss auto-trip is inert; only kill-switch + position-count gates are live | M | backend-architect |
+| X2.b | Eliminate the double `loadMarketState` per cycle introduced by Task 8 (orchestrator now fetches positions for `RiskContext`, then use-case re-fetches for execution) | Wasted OKX API quota; risks rate-limit churn | S | executor |
 | X3 | AI cost/latency budget enforcement via `ai-budget-per-minute` + circuit breaker on OpenRouter | Multi-key rotation exists but no spend cap visible | M | executor |
 | X4 | Grafana dashboards + alerts (cycle duration, WS disconnects, order reject rate, AI failure rate) committed under `infra/monitoring/` | Prometheus is scraping but no dashboards-as-code | M | devops |
 | X5 | Backtest/replay harness using recorded WS frames + `IndicatorCalculator` | Enables strategy iteration without burning real capital | L | backend-architect |
