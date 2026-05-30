@@ -11,6 +11,7 @@ import ru.driics.aitrade.application.risk.RiskDecision
 import ru.driics.aitrade.application.risk.RiskGate
 import ru.driics.aitrade.common.logging.BusinessEventLogger
 import ru.driics.aitrade.common.logging.logger
+import ru.driics.aitrade.config.RiskGateProperties
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.*
 import ru.driics.aitrade.domain.ports.TradingPort
@@ -33,6 +34,7 @@ class ExecuteAiDecisionsUseCase(
     private val confidenceCalibrator: ConfidenceCalibrator,
     private val meterRegistry: MeterRegistry,
     private val riskGate: RiskGate,
+    private val riskGateProperties: RiskGateProperties,
 ) {
     private companion object {
         val log = logger<ExecuteAiDecisionsUseCase>()
@@ -71,6 +73,11 @@ class ExecuteAiDecisionsUseCase(
         // a FRESH trading.getLastPrice() per symbol in buildPlan, so order pricing is not staler.
         val availableUsd = marketState.account.availableCash
 
+        // S3: one reservation counter per cycle, seeded with the frozen open-position count. Plans
+        // execute concurrently below, so the position cap must be enforced per ORDER (atomically),
+        // not against the frozen per-cycle count — otherwise N racing plans all pass the same check.
+        val slots = ConcurrentSlotLimiter(riskContext.openPositionsCount)
+
         // Pipeline: Decision -> Plan -> Execution
         decisions.values.asFlow()
             // Step A: Build Plans (Parallel, CPU-bound mostly)
@@ -98,7 +105,7 @@ class ExecuteAiDecisionsUseCase(
                 flow {
                     emit(
                         runCatching {
-                            executePlan(ready.plan, availableUsd, riskContext)
+                            executePlan(ready.plan, availableUsd, riskContext, slots)
                         }.getOrElse { e ->
                             log.error(e) { "Failed to execute plan for ${ready.plan.symbol}" }
                             createErrorResult(ready.plan, e.message ?: "Unknown execution error")
@@ -195,7 +202,9 @@ class ExecuteAiDecisionsUseCase(
         plan: OrderPlan,
         availableUsd: BigDecimal,
         riskContext: RiskContext,
+        slots: ConcurrentSlotLimiter,
     ): AiTradeExecutionResult {
+        // Portfolio-wide gates: kill-switch, daily-loss, and the frozen position-count check.
         when (val d = riskGate.evaluate(riskContext)) {
             is RiskDecision.Allow -> Unit
             is RiskDecision.Block -> {
@@ -205,70 +214,96 @@ class ExecuteAiDecisionsUseCase(
             }
         }
 
-        // 1. Sizing
-        val sizing = sizingPolicy.size(
-            OrderSizingPolicy.SizingInput(
-                coinQty = plan.coinQty,
-                entryPx = plan.entryPx,
-                ctVal = plan.ctVal,
-                ctValCcy = plan.ctValCcy,
-                lotSz = plan.lotSz,
-                minSz = plan.minSz,
-                leverage = plan.leverage,
-                availableUsd = availableUsd
+        // S3: enforce the position cap PER ORDER, atomically. riskGate's count check above uses the
+        // frozen per-cycle count; under concurrency that lets multiple plans pass the same sub-cap
+        // check. Reserve a slot here so at most (cap - base) orders proceed this cycle. The slot is
+        // released in `finally` on any non-placement exit (skip, rejection, or thrown error).
+        val capEnforced = riskGateProperties.enabled
+        if (capEnforced && !slots.tryReserve(riskGateProperties.maxConcurrentPositions)) {
+            recordRiskBlock(RiskDecision.Source.POSITION_COUNT_CAP.name)
+            BusinessEventLogger.orderRejected(
+                plan.symbol, null,
+                "position cap ${riskGateProperties.maxConcurrentPositions} reached this cycle",
+                "RISK_${RiskDecision.Source.POSITION_COUNT_CAP.name}"
             )
-        ) ?: return createSkippedResult(plan, "Insufficient margin")
-
-        // 2. Set Leverage
-        val marginMode = tradingProperties.getMarginMode()
-        val levOk = trading.setLeverage(plan.instrumentId, sizing.leverage, marginMode).getOrThrow()
-
-        if (!levOk) {
-            return createSkippedResult(plan, "Failed to set leverage ${sizing.leverage}")
+            return createSkippedResult(plan, "RiskGate(POSITION_COUNT_CAP): per-cycle cap reached")
         }
 
-        // 3. Place Order (or Simulate if Demo Mode)
-        val clOrdId = idempotencyService.generateClOrdId(
-            plan.symbol,
-            AiTradeSignalArgs(
-                coin = plan.symbol,
-                signal = if (plan.side == "buy") AiSignal.BUY else AiSignal.SELL,
-                quantity = plan.coinQty,
-                profitTarget = plan.tpPx,
-                stopLoss = plan.slPx,
-                leverage = plan.leverage
-            ),
-            plan.entryPx,
-            clock.instant().toEpochMilli()
-        )
+        var placed = false
+        try {
+            // 1. Sizing
+            val sizing = sizingPolicy.size(
+                OrderSizingPolicy.SizingInput(
+                    coinQty = plan.coinQty,
+                    entryPx = plan.entryPx,
+                    ctVal = plan.ctVal,
+                    ctValCcy = plan.ctValCcy,
+                    lotSz = plan.lotSz,
+                    minSz = plan.minSz,
+                    leverage = plan.leverage,
+                    availableUsd = availableUsd
+                )
+            ) ?: return createSkippedResult(plan, "Insufficient margin")
 
-        if (tradingProperties.demoMode) {
-            log.info { "DEMO MODE: Simulating ${plan.side} order for ${plan.symbol} (Qty: ${sizing.roundedContracts})" }
-            // Simulate success
-            return handleSuccessfulOrder(
-                plan, 
-                sizing, 
-                clOrdId = "DEMO-$clOrdId", 
-                ordId = "DEMO-ORD-${UUID.randomUUID()}"
+            // 2. Set Leverage
+            val marginMode = tradingProperties.getMarginMode()
+            val levOk = trading.setLeverage(plan.instrumentId, sizing.leverage, marginMode).getOrThrow()
+
+            if (!levOk) {
+                return createSkippedResult(plan, "Failed to set leverage ${sizing.leverage}")
+            }
+
+            // 3. Place Order (or Simulate if Demo Mode)
+            val clOrdId = idempotencyService.generateClOrdId(
+                plan.symbol,
+                AiTradeSignalArgs(
+                    coin = plan.symbol,
+                    signal = if (plan.side == "buy") AiSignal.BUY else AiSignal.SELL,
+                    quantity = plan.coinQty,
+                    profitTarget = plan.tpPx,
+                    stopLoss = plan.slPx,
+                    leverage = plan.leverage
+                ),
+                plan.entryPx,
+                clock.instant().toEpochMilli()
             )
-        }
 
-        val outcome = trading.placeMarketOrderWithTpSl(
-            instrumentId = plan.instrumentId,
-            side = plan.side,
-            contracts = sizing.roundedContracts,
-            tp = plan.tpPx,
-            sl = plan.slPx,
-            tickSz = plan.tickSz,
-            clOrdId = clOrdId,
-            tag = IdGenerator.safeTag("ai-signal"),
-            marginMode = marginMode
-        ).getOrThrow()
+            if (tradingProperties.demoMode) {
+                log.info { "DEMO MODE: Simulating ${plan.side} order for ${plan.symbol} (Qty: ${sizing.roundedContracts})" }
+                // Simulate success
+                val result = handleSuccessfulOrder(
+                    plan,
+                    sizing,
+                    clOrdId = "DEMO-$clOrdId",
+                    ordId = "DEMO-ORD-${UUID.randomUUID()}"
+                )
+                placed = true
+                return result
+            }
 
-        return if (outcome.ok) {
-            handleSuccessfulOrder(plan, sizing, clOrdId, outcome.ordId)
-        } else {
-            handleFailedOrder(plan, clOrdId, outcome.message)
+            val outcome = trading.placeMarketOrderWithTpSl(
+                instrumentId = plan.instrumentId,
+                side = plan.side,
+                contracts = sizing.roundedContracts,
+                tp = plan.tpPx,
+                sl = plan.slPx,
+                tickSz = plan.tickSz,
+                clOrdId = clOrdId,
+                tag = IdGenerator.safeTag("ai-signal"),
+                marginMode = marginMode
+            ).getOrThrow()
+
+            return if (outcome.ok) {
+                val result = handleSuccessfulOrder(plan, sizing, clOrdId, outcome.ordId)
+                placed = true
+                result
+            } else {
+                handleFailedOrder(plan, clOrdId, outcome.message)
+            }
+        } finally {
+            // Release the reserved slot unless an order was actually placed. Covers every
+            // non-placement exit, including thrown errors from setLeverage/placeOrder.
+            if (capEnforced && !placed) slots.release()
         }
     }
 

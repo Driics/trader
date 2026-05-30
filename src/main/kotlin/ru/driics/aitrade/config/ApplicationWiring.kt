@@ -103,6 +103,7 @@ class ApplicationWiring(
         confidenceCalibrator: ConfidenceCalibrator,
         meterRegistry: MeterRegistry,
         riskGate: RiskGate,
+        riskGateProperties: RiskGateProperties,
     ) = ExecuteAiDecisionsUseCase(
         trading = trading,
         tradingProperties = tradingProperties,
@@ -110,6 +111,7 @@ class ApplicationWiring(
         confidenceCalibrator = confidenceCalibrator,
         meterRegistry = meterRegistry,
         riskGate = riskGate,
+        riskGateProperties = riskGateProperties,
     )
 
     @Bean

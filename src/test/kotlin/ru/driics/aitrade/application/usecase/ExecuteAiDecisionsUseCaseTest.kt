@@ -9,6 +9,7 @@ import ru.driics.aitrade.application.ai.ConfidenceCalibrator
 import ru.driics.aitrade.application.risk.KillSwitchSnapshot
 import ru.driics.aitrade.application.risk.RiskContext
 import ru.driics.aitrade.application.risk.RiskGate
+import ru.driics.aitrade.config.RiskGateProperties
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.AccountInfo
 import ru.driics.aitrade.domain.model.AiSignal
@@ -44,6 +45,7 @@ class ExecuteAiDecisionsUseCaseTest {
         confidenceCalibrator = confidenceCalibrator,
         meterRegistry = meterRegistry,
         riskGate = riskGate,
+        riskGateProperties = RiskGateProperties(),
     )
 
     private fun snapshot(
