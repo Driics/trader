@@ -138,9 +138,12 @@ class UpdateCycleOrchestrator(
         // 1. Build Prompt (P2: also yields the single market snapshot for this cycle)
         val promptResult = stageBuildPrompt(invocation, cid).getOrElse { return it.toResult() }
         val prompt = promptResult.prompt
+        val promptHash = prompt.sha256()
 
-        // 2. Check for changes
-        if (isPromptUnchanged(prompt)) {
+        // 2. Check for changes. S5: this is a PURE check — the dedup hash is advanced only after a
+        // fully successful cycle (step 7), so a failure in any stage below does not leave the hash
+        // advanced and silently skip the next identical prompt.
+        if (isPromptUnchanged(promptHash)) {
             log.info { "Prompt unchanged, skipping analysis" }
             Span.current().setAttribute(Attrs.SKIPPED, true)
             return UpdateCycleResult.skipped(prompt.length)
@@ -161,7 +164,12 @@ class UpdateCycleOrchestrator(
         val positionsPlaced = stageExecute(finalDecisions, promptResult.marketState, cid)
             .getOrElse { return it.toResult(prompt.length) }
 
-        // 7. Record Success
+        // 7. Record Success. S5: advance the dedup hash ONLY now that the entire cycle has
+        // succeeded. Any stage failure above returns early before this point, so the next identical
+        // prompt is retried rather than skipped. Manual mode (autoExecute=false, placed=0) reaches
+        // here and is intentionally treated as a successful cycle for dedup purposes.
+        lastPromptHash.set(promptHash)
+
         BusinessEventLogger.updateCycle(
             cycle = invocation,
             errors = 0,
@@ -385,15 +393,8 @@ class UpdateCycleOrchestrator(
     private suspend fun loadMarketState(): MarketState =
         infrastructure.market.loadMarketState(config.symbols.map { it.asSymbol() })
 
-    private fun isPromptUnchanged(prompt: String): Boolean {
-        val hash = prompt.sha256()
-        return if (hash == lastPromptHash.get()) {
-            true
-        } else {
-            lastPromptHash.set(hash)
-            false
-        }
-    }
+    /** Pure check (S5). The hash is advanced only on a fully successful cycle, never here. */
+    private fun isPromptUnchanged(promptHash: String): Boolean = promptHash == lastPromptHash.get()
 
     private fun recordValidationRejection(reason: String) {
         val sanitized = reason.take(50).replace(TAG_SANITIZER_REGEX, "_").lowercase()

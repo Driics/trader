@@ -151,4 +151,41 @@ class UpdateCycleOrchestratorTest {
         assertEquals(0, result.positionsPlaced)
         coVerify(exactly = 0) { execute.execute(any(), any(), any()) }
     }
+
+    // =========================================================================
+    // S5 — dedup hash advances only on a fully successful cycle
+    // =========================================================================
+
+    @Test
+    fun `failed cycle does not advance dedup hash, so an identical prompt re-runs (S5)`() = runBlocking {
+        coEvery { build.execute(any(), any(), any()) } returns PromptResult("PROMPT-TEXT", marketState)
+        // Analysis fails downstream of the prompt-changed check.
+        coEvery { analyze.execute(any()) } returns
+            AiAnalysisResponse("test", "test", "", 0L, false, "boom")
+
+        val orch = orchestrator(autoExecute = true, riskEnabled = true)
+        val first = orch.runOnce()
+        val second = orch.runOnce()
+
+        assertFalse(first.success)
+        assertFalse(second.success)
+        // If the hash had been advanced on the first (failed) run, the second would skip analysis.
+        coVerify(exactly = 2) { analyze.execute(any()) }
+    }
+
+    @Test
+    fun `successful cycle advances dedup hash, so an identical prompt is skipped next time (S5)`() = runBlocking {
+        stubPipelineUpToExecute()
+        coEvery { trading.getTodaysRealizedPnlUsd(any()) } returns TradeResult.Success(BigDecimal.ZERO)
+        coEvery { execute.execute(any(), any(), any()) } returns emptyList()
+
+        val orch = orchestrator(autoExecute = true, riskEnabled = true)
+        val first = orch.runOnce()
+        val second = orch.runOnce()
+
+        assertTrue(first.success)
+        assertTrue(second.success)
+        assertTrue(second.message.contains("Skipped"), "identical prompt should be skipped after a successful cycle")
+        coVerify(exactly = 1) { analyze.execute(any()) } // second run skipped before analysis
+    }
 }
