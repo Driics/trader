@@ -397,8 +397,11 @@ class UpdateCycleOrchestrator(
     private fun isPromptUnchanged(promptHash: String): Boolean = promptHash == lastPromptHash.get()
 
     private fun recordValidationRejection(reason: String) {
-        val sanitized = reason.take(50).replace(TAG_SANITIZER_REGEX, "_").lowercase()
-        infrastructure.meterRegistry.counter(Metrics.VALIDATION_REJECTED, "reason", sanitized).increment()
+        // S9: collapse the free-text reason to a small fixed code so the metric tag cardinality stays
+        // bounded (the detailed reason is still logged in stageParseResponse).
+        infrastructure.meterRegistry
+            .counter(Metrics.VALIDATION_REJECTED, "reason", classifyValidationRejection(reason))
+            .increment()
     }
 
     // =========================================================================
@@ -537,6 +540,29 @@ class UpdateCycleOrchestrator(
             MessageDigest.getInstance("SHA-256")
         }
     }
+}
+
+/**
+ * Maps a free-text AI schema-rejection reason to a small, stable metric code (S9). Keeps the
+ * "ai.response.validation.rejected" metric's `reason` tag bounded to a known set instead of an
+ * unbounded sanitized string. The full reason is preserved in logs, not the metric.
+ */
+internal fun classifyValidationRejection(reason: String): String = when {
+    reason.contains("Invalid JSON", ignoreCase = true) -> "json_invalid"
+    reason.contains("Failed to parse", ignoreCase = true) -> "parse_failed"
+    reason.contains("Empty response", ignoreCase = true) -> "empty"
+    reason.contains("Bean validation", ignoreCase = true) -> "bean_validation"
+    reason.contains("Coin mismatch", ignoreCase = true) -> "coin_mismatch"
+    reason.contains("Confidence", ignoreCase = true) -> "confidence_range"
+    reason.contains("Leverage", ignoreCase = true) -> "leverage_range"
+    reason.contains("Profit target", ignoreCase = true) ||
+        reason.contains("Stop loss", ignoreCase = true) -> "price_range"
+    reason.contains("Quantity", ignoreCase = true) -> "quantity_range"
+    reason.contains("Risk USD", ignoreCase = true) -> "risk_range"
+    reason.contains("requires quantity or riskUsd", ignoreCase = true) -> "missing_size"
+    reason.contains("Invalid signal", ignoreCase = true) -> "signal_invalid"
+    reason.contains("All signals rejected", ignoreCase = true) -> "all_signals_rejected"
+    else -> "other"
 }
 
 // =========================================================================
