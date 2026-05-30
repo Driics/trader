@@ -20,6 +20,7 @@ import ru.driics.aitrade.infra.cache.CachedIndicatorCalculator
 import ru.driics.aitrade.infra.cache.SmartCacheStrategy
 import ru.driics.aitrade.infra.cache.getTyped
 import ru.driics.aitrade.service.OkxRestClient
+import ru.driics.aitrade.service.okx.OkxCallOutcome
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Clock
@@ -122,8 +123,8 @@ class OkxExchangeAdapter(
         clOrdId: String,
         tag: String?,
         marginMode: MarginMode
-    ): TradeResult<PlaceOrderOutcome> = runCatching {
-        val response = rest.placeMarketOrderWithAttach(
+    ): TradeResult<PlaceOrderOutcome> = when (
+        val outcome = rest.placeMarketOrderWithAttach(
             instId = instrumentId.value,
             side = side,
             tdMode = marginMode.asOkxApiValue,
@@ -134,26 +135,35 @@ class OkxExchangeAdapter(
             clOrdId = clOrdId,
             tag = tag
         )
-
-        if (response?.sCode == "0") {
-            TradeResult.Success(PlaceOrderOutcome(true, response.ordId, "Placed"))
-        } else {
-            TradeResult.Failure.ApiError(
-                code = response?.sCode ?: "UNKNOWN",
-                message = response?.sMsg ?: "Order rejected"
-            )
-        }
-    }.getOrElse { e ->
-        TradeResult.Failure.NetworkError("Order failed: ${e.message}", e)
+    ) {
+        // Success implies the exchange accepted the order (sCode == "0") — see OkxPlaceOrderApiResponse.isSuccess().
+        is OkxCallOutcome.Success -> TradeResult.Success(
+            PlaceOrderOutcome(ok = true, ordId = outcome.value.ordId, message = "Placed")
+        )
+        is OkxCallOutcome.RejectedByExchange ->
+            TradeResult.Failure.ApiError(code = outcome.code, message = outcome.message)
+        // S4: a timeout on order placement is NOT a clean rejection — the order MAY exist. Surface
+        // it distinctly so the caller treats it as an error (and the clOrdId guards any retry).
+        is OkxCallOutcome.TimeoutUnknown ->
+            TradeResult.Failure.ApiError(code = "TIMEOUT_UNKNOWN", message = outcome.message)
+        is OkxCallOutcome.TransportError ->
+            outcome.cause?.let { TradeResult.Failure.NetworkError(outcome.message, it) }
+                ?: TradeResult.Failure.ApiError(code = "TRANSPORT_ERROR", message = outcome.message)
     }
 
     override suspend fun setLeverage(
         instrumentId: InstrumentId,
         leverage: Int,
         marginMode: MarginMode
-    ): TradeResult<Boolean> = runCatching {
-        TradeResult.Success(rest.setLeverage(instrumentId.value, leverage, marginMode))
-    }.getOrElse { it.toTradeFailure(instrumentId.value) }
+    ): TradeResult<Boolean> = when (val outcome = rest.setLeverage(instrumentId.value, leverage, marginMode)) {
+        is OkxCallOutcome.Success -> TradeResult.Success(true)
+        // Clean rejection: leverage unchanged -> the caller skips the trade as a business decision.
+        is OkxCallOutcome.RejectedByExchange -> TradeResult.Success(false)
+        // Timeout/transport: do NOT assume the leverage stuck; surface as failure (trade skipped as error).
+        is OkxCallOutcome.TimeoutUnknown -> TradeResult.Failure.ApiError("TIMEOUT_UNKNOWN", outcome.message)
+        is OkxCallOutcome.TransportError -> outcome.cause?.let { TradeResult.Failure.NetworkError(outcome.message, it) }
+            ?: TradeResult.Failure.ApiError("TRANSPORT_ERROR", outcome.message)
+    }
 
     /**
      * Sums realized PnL across account bills generated since the start of the current UTC day

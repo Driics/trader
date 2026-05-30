@@ -59,7 +59,7 @@ class OkxTradingClient(
         leverage: Int,
         marginMode: MarginMode,
         posSide: String? = null
-    ): Boolean {
+    ): OkxCallOutcome<Unit> {
         val payload = buildMap {
             put("instId", instId)
             put("lever", leverage.toString())
@@ -75,13 +75,14 @@ class OkxTradingClient(
             contextTags = mapOf("instId" to instId)
         ) { responseBody ->
             val responseMap = objectMapper.readValue<Map<String, Any>>(responseBody)
-            val isSuccess = responseMap["code"]?.toString() == "0"
-
-            if (!isSuccess) {
+            val code = responseMap["code"]?.toString()
+            if (code == "0") {
+                OkxCallOutcome.Success(Unit)
+            } else {
                 log.warn("Set leverage failed for $instId: $responseBody")
+                OkxCallOutcome.RejectedByExchange(code ?: "UNKNOWN", "Set leverage failed for $instId")
             }
-            isSuccess
-        } ?: false
+        }
     }
 
     @Retry(name = METRIC_NAME)
@@ -97,7 +98,7 @@ class OkxTradingClient(
         posSide: String? = null,
         clOrdId: String? = null,
         tag: String? = TAG_AI_SIGNAL
-    ): OkxPlaceOrderData? {
+    ): OkxCallOutcome<OkxPlaceOrderData> {
         val payload = buildOrderPayload(instId, side, tdMode, szContracts, tpPx, slPx, posSide, clOrdId, tag)
 
         val mdcTags = buildMap {
@@ -118,12 +119,15 @@ class OkxTradingClient(
 
             if (!apiResponse.isSuccess()) {
                 handleOrderFailure(apiResponse, instId, clOrdId)
-                // Record metric failure
+                // Prefer the order-level reject code/msg (sCode/sMsg) over the envelope's.
+                val data = apiResponse.firstOrNull()
+                val code = data?.sCode?.takeIf { it.isNotBlank() && it != "0" } ?: apiResponse.code
+                val msg = data?.sMsg?.takeIf { it.isNotBlank() } ?: apiResponse.msg.ifBlank { "Order rejected" }
                 tradingMetricsService.recordOrderRejected(
                     symbol = instId.substringBefore("-"),
-                    reason = apiResponse.msg ?: "API Error ${apiResponse.code}"
+                    reason = msg
                 )
-                null
+                OkxCallOutcome.RejectedByExchange(code.ifBlank { "UNKNOWN" }, msg)
             } else {
                 // Record metric success
                 tradingMetricsService.recordOrderPlaced(
@@ -131,7 +135,13 @@ class OkxTradingClient(
                     side = side,
                     type = ORD_TYPE_MARKET
                 )
-                apiResponse.firstOrNull()
+                // isSuccess() already guarantees a non-null first element with sCode == "0".
+                val data = apiResponse.firstOrNull()
+                if (data != null) {
+                    OkxCallOutcome.Success(data)
+                } else {
+                    OkxCallOutcome.RejectedByExchange("EMPTY", "Order accepted but no order data returned")
+                }
             }
         }
     }
@@ -155,8 +165,8 @@ class OkxTradingClient(
         timeoutMs: Long,
         contextTags: Map<String, String> = emptyMap(),
         extraMetricTags: Array<String> = emptyArray(),
-        responseMapper: (String) -> T
-    ): T? {
+        responseMapper: (String) -> OkxCallOutcome<T>
+    ): OkxCallOutcome<T> {
         var status = "ok"
 
         // Setup MDC for this execution
@@ -174,25 +184,37 @@ class OkxTradingClient(
                             setBody(bodyJson)
                         }
 
-                        // Explicitly check HTTP status before parsing body
+                        // Distinguish a definitive rejection (HTTP 4xx) from a transport error (5xx).
                         if (!response.status.isSuccess()) {
-                            throw ClientRequestException(response, "HTTP ${response.status}")
+                            val code = response.status.value
+                            status(mapHttpStatusToMetric(code))
+                            if (code in 400..499) {
+                                OkxCallOutcome.RejectedByExchange(code.toString(), "HTTP $code for $operationName")
+                            } else {
+                                OkxCallOutcome.TransportError("HTTP $code for $operationName")
+                            }
+                        } else {
+                            responseMapper(response.bodyAsText())
                         }
-
-                        responseMapper(response.bodyAsText())
                     }
                 } catch (e: TimeoutCancellationException) {
+                    // The request may or may not have taken effect on the exchange.
                     status("timeout")
-                    log.error("Timeout during $operationName",e)
-                    null
+                    log.error("Timeout during $operationName", e)
+                    OkxCallOutcome.TimeoutUnknown("Timeout after ${timeoutMs}ms during $operationName")
                 } catch (e: ClientRequestException) {
-                    status(mapHttpStatusToMetric(e.response.status.value))
-                    log.error("HTTP error during $operationName: ${e.response.status}",e)
-                    null
+                    val code = e.response.status.value
+                    status(mapHttpStatusToMetric(code))
+                    log.error("HTTP error during $operationName: ${e.response.status}", e)
+                    if (code in 400..499) {
+                        OkxCallOutcome.RejectedByExchange(code.toString(), "HTTP $code for $operationName")
+                    } else {
+                        OkxCallOutcome.TransportError("HTTP $code for $operationName", e)
+                    }
                 } catch (e: Exception) {
                     status("error")
                     log.error("Unexpected error during $operationName", e)
-                    null
+                    OkxCallOutcome.TransportError(e.message ?: "Unexpected error during $operationName", e)
                 }
             }
         }
