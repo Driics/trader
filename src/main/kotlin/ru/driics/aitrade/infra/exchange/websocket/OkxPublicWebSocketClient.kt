@@ -10,8 +10,6 @@ import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.config.OkxProperties
 import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsCandleUpdate
@@ -44,9 +42,10 @@ class OkxPublicWebSocketClient(
     override val log: KLogger = KotlinLogging.logger {}
     override val wsUrl: String get() = okxProperties.publicWsUrl()
 
-    // Thread-safe subscription registry
+    // Thread-safe subscription registry. A concurrent set is enough: add()/remove() are atomic and
+    // return true only for the first caller, so the subscribe/unsubscribe gate is race-free without a
+    // separate mutex (and OKX is idempotent on re-subscribe).
     private val subscriptions = ConcurrentHashMap.newKeySet<ChannelSubscription>()
-    private val subscriptionMutex = Mutex()
 
     // Flows
     private val _tickerFlowMutable = FlowFactory.highThroughput<OkxWsTickerUpdate>(1024).first
@@ -127,22 +126,14 @@ class OkxPublicWebSocketClient(
     }
 
     private suspend fun addSubscription(sub: ChannelSubscription) {
-        subscriptionMutex.withLock {
-            if (subscriptions.add(sub)) {
-                if (isConnected) {
-                    sendSubscribeRequest(listOf(sub))
-                }
-            }
+        if (subscriptions.add(sub) && isConnected) {
+            sendSubscribeRequest(listOf(sub))
         }
     }
 
     private suspend fun removeSubscription(sub: ChannelSubscription) {
-        subscriptionMutex.withLock {
-            if (subscriptions.remove(sub)) {
-                if (isConnected) {
-                    sendUnsubscribeRequest(listOf(sub))
-                }
-            }
+        if (subscriptions.remove(sub) && isConnected) {
+            sendUnsubscribeRequest(listOf(sub))
         }
     }
 
