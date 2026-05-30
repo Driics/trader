@@ -1,0 +1,17 @@
+# Profile: capture-okx
+# One-shot capture of real OKX bills + positions-history for B0 PnL reconciliation.
+# This profile makes capture SAFE: it can never place an order while running.
+#
+#   ./gradlew.bat bootRun --args='--spring.profiles.active=capture-okx'
+#
+# OkxPnlCaptureRunner writes ./data/okx-capture/ (gitignored) then stops the JVM.
+trading:
+  # Hard-off: even if the scheduler fires mid-capture, the execute stage places nothing.
+  auto-execute: false
+
+ai:
+  trade:
+    scheduler:
+      # Push the first (and only) tick far out so the cycle does not run during capture.
+      initial-delay-ms: 86400000   # 24h
+      interval-ms: 86400000

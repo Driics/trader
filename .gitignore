@@ -40,3 +40,7 @@ out/
 ### Kotlin ###
 .kotlin
 prompt.txt
+
+### App runtime + captured OKX account data (NEVER commit) ###
+# Holds the S2 kill-switch state file and ./data/okx-capture/ (real bills/positions payloads).
+/data/
