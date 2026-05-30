@@ -22,6 +22,7 @@ import io.opentelemetry.api.trace.Tracer
 import ru.driics.aitrade.domain.ports.AiAnalysisPort
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PromptOutputPort
+import ru.driics.aitrade.domain.ports.StreamingMarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.TradingMetricsService
 import java.time.Clock
@@ -110,6 +111,7 @@ class ApplicationWiring(
         meterRegistry: MeterRegistry,
         riskGate: RiskGate,
         riskGateProperties: RiskGateProperties,
+        streaming: StreamingMarketDataPort,
     ) = ExecuteAiDecisionsUseCase(
         trading = trading,
         tradingProperties = tradingProperties,
@@ -118,6 +120,7 @@ class ApplicationWiring(
         meterRegistry = meterRegistry,
         riskGate = riskGate,
         riskGateProperties = riskGateProperties,
+        streaming = streaming,
     )
 
     @Bean

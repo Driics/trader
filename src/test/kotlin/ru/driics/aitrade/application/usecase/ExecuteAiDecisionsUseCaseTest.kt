@@ -24,6 +24,7 @@ import ru.driics.aitrade.domain.model.AiTradeSignalArgs
 import ru.driics.aitrade.domain.model.MarketState
 import ru.driics.aitrade.domain.model.OkxInstrumentInfo
 import ru.driics.aitrade.domain.ports.PlaceOrderOutcome
+import ru.driics.aitrade.domain.ports.StreamingMarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.types.TradeResult
 import java.math.BigDecimal
@@ -43,6 +44,7 @@ class ExecuteAiDecisionsUseCaseTest {
     private val trading = mockk<TradingPort>(relaxed = true)
     private val confidenceCalibrator = mockk<ConfidenceCalibrator>(relaxed = true)
     private val riskGate = mockk<RiskGate>(relaxed = true)
+    private val streaming = mockk<StreamingMarketDataPort>(relaxed = true)
     private val meterRegistry = SimpleMeterRegistry()
 
     private val props = TradingProperties(currencies = listOf("BTC"))
@@ -55,6 +57,7 @@ class ExecuteAiDecisionsUseCaseTest {
         meterRegistry = meterRegistry,
         riskGate = riskGate,
         riskGateProperties = RiskGateProperties(),
+        streaming = streaming,
     )
 
     private fun snapshot(

@@ -14,6 +14,7 @@ import ru.driics.aitrade.common.logging.logger
 import ru.driics.aitrade.config.RiskGateProperties
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.*
+import ru.driics.aitrade.domain.ports.StreamingMarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.IdGenerator
 import ru.driics.aitrade.domain.services.OrderSizingPolicy
@@ -35,11 +36,16 @@ class ExecuteAiDecisionsUseCase(
     private val meterRegistry: MeterRegistry,
     private val riskGate: RiskGate,
     private val riskGateProperties: RiskGateProperties,
+    private val streaming: StreamingMarketDataPort,
 ) {
     private companion object {
         val log = logger<ExecuteAiDecisionsUseCase>()
         const val GUARD_METRIC_NAME = "guard.rejected"
         const val REASON_TAG_LIMIT = 50
+
+        // Phase 3 step 2: a WS price older than this (or from a disconnected socket) is not counted
+        // as fresh for the parity comparison. ~5s comfortably exceeds OKX's sub-second ticker cadence.
+        const val PRICE_PARITY_MAX_AGE_MS = 5_000L
     }
 
     private val minConfidence = tradingProperties.minConfidence
@@ -137,6 +143,11 @@ class ExecuteAiDecisionsUseCase(
         val inst = trading.loadInstrument(instrumentId).getOrThrow()
         val lastPrice = trading.getLastPrice(instrumentId).getOrNull()
             ?: return PlanResult.Skip(symbol, "No price available")
+
+        // Phase 3 step 2 (parity observer): compare the fresh WS price against the REST price we just
+        // read, but KEEP USING the REST value below. Inert evidence-gathering — it produces the
+        // WS-vs-REST delta that gates the step-3 value-swap. No flag, no behaviour change.
+        logPriceParity(instrumentId, lastPrice)
 
         // 3. Idempotency Check
         val signalKey = idempotencyService.signalKey(symbol, args, lastPrice)
@@ -418,4 +429,34 @@ class ExecuteAiDecisionsUseCase(
             .lowercase()
         meterRegistry.counter(GUARD_METRIC_NAME, "reason", normalized).increment()
     }
+
+    /**
+     * Phase 3 step 2: log the fresh WS price next to the REST price actually used for this plan, so
+     * we can see the WS-vs-REST delta over a real run before trusting the WS price for entry sizing
+     * (step 3). Pure observation — never changes pricing. ws=null means the socket was disconnected
+     * or the last tick was older than [PRICE_PARITY_MAX_AGE_MS] (the guarded, safe-to-ignore case).
+     */
+    private fun logPriceParity(instrumentId: InstrumentId, restPrice: BigDecimal) {
+        val wsFresh = streaming.getFreshPrice(instrumentId.value, PRICE_PARITY_MAX_AGE_MS)
+        if (wsFresh == null) {
+            log.info { "price-parity ${instrumentId.value}: ws=null(stale/disconnected) rest=$restPrice" }
+            return
+        }
+        val deltaBps = priceDeltaBps(wsFresh, restPrice)
+        log.info { "price-parity ${instrumentId.value}: ws=$wsFresh rest=$restPrice deltaBps=$deltaBps" }
+    }
+}
+
+/**
+ * Absolute WS-vs-REST price gap in basis points, |ws - rest| / rest * 10_000, scaled to 2 dp.
+ * Extracted + pinned because this number IS the Phase-3 step-2 evidence the step-3 value-swap is
+ * judged on — a wrong formula would silently justify (or block) trusting the WS price. Returns ZERO
+ * when restPrice is zero (no meaningful ratio).
+ */
+internal fun priceDeltaBps(wsPrice: BigDecimal, restPrice: BigDecimal): BigDecimal {
+    if (restPrice.signum() == 0) return BigDecimal.ZERO
+    return (wsPrice - restPrice).abs()
+        .divide(restPrice, 8, RoundingMode.HALF_UP)
+        .multiply(BigDecimal(10_000))
+        .setScale(2, RoundingMode.HALF_UP)
 }
