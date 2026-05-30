@@ -9,6 +9,8 @@ import io.ktor.client.plugins.websocket.*
 import io.ktor.websocket.*
 import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.withTimeout
@@ -78,6 +80,15 @@ class OkxPrivateWebSocketClient(
             withTimeout(LOGIN_TIMEOUT) {
                 awaitLoginResponse(session)
             }
+        } catch (e: TimeoutCancellationException) {
+            // A real login timeout: unhealthy, but NOT a cancellation to propagate. Return false so
+            // the connection is treated as failed and the backoff/reconnect path runs.
+            log.warn { "Login timed out after $LOGIN_TIMEOUT" }
+            false
+        } catch (e: CancellationException) {
+            // Genuine cancellation (e.g. app shutdown cancelling the scope mid-login): propagate it
+            // instead of mislabeling a clean teardown as an ERROR "Login failed" with a stack trace.
+            throw e
         } catch (e: Exception) {
             log.error(e) { "Login failed" }
             false
