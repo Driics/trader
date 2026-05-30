@@ -39,7 +39,6 @@ data class WebSocketConfig(
     val baseReconnectDelayMs: Long = 1_000L,
     val maxBackoffExponent: Int = 6,
     val jitterMs: Long = 1_000L,
-    val userAgent: String = "AiTrader/1.0"
 ) {
     init {
         require(pingIntervalMs > 0) { "pingIntervalMs must be positive" }
@@ -142,7 +141,6 @@ abstract class OkxBaseWebSocketClient(
     private suspend fun runConnectionAttempt(): Boolean {
         return try {
             httpClient.webSocket(urlString = wsUrl) {
-                configureHeaders()
                 handleSession(this)
             }
             true
@@ -157,10 +155,6 @@ abstract class OkxBaseWebSocketClient(
             }
             updateState(ConnectionState.Disconnected)
         }
-    }
-
-    private fun WebSocketSession.configureHeaders() {
-        // Headers are set in the request block, not here
     }
 
     private suspend fun handleSession(session: DefaultClientWebSocketSession) {
