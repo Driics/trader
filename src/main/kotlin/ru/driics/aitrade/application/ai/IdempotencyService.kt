@@ -104,32 +104,29 @@ class IdempotencyService(
     }
 
     /**
-     * Generates a unique key for a signal for deduplication.
+     * Generates a content-based dedup key for a signal.
+     *
+     * S8: the time dimension is handled entirely by the sliding-TTL cache ([isDuplicate] /
+     * [recordSignal]). The key no longer floors wall-clock time into a window, so two near-identical
+     * signals that previously straddled a window boundary now share a key and the later one is
+     * correctly recognised as a duplicate while still within the TTL.
      */
     fun signalKey(
         symbol: String,
         signal: AiTradeSignalArgs,
-        entryPrice: BigDecimal,
-        timestampWindowMinutes: Long = 2
-    ): String {
-        val windowMs = timestampWindowMinutes * MILLIS_PER_MINUTE
-        val window = clock.instant().toEpochMilli() / windowMs
-        
-        return buildString {
-            append(symbol.uppercase())
-            append("|")
-            append(signal.signal.name)
-            append("|")
-            append(entryPrice.toPlainString())
-            append("|")
-            append(signal.profitTarget?.toPlainString() ?: "")
-            append("|")
-            append(signal.stopLoss?.toPlainString() ?: "")
-            append("|")
-            append(signal.leverage ?: "")
-            append("|")
-            append(window)
-        }
+        entryPrice: BigDecimal
+    ): String = buildString {
+        append(symbol.uppercase())
+        append("|")
+        append(signal.signal.name)
+        append("|")
+        append(entryPrice.toPlainString())
+        append("|")
+        append(signal.profitTarget?.toPlainString() ?: "")
+        append("|")
+        append(signal.stopLoss?.toPlainString() ?: "")
+        append("|")
+        append(signal.leverage ?: "")
     }
 }
 

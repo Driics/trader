@@ -88,15 +88,16 @@ class IdempotencyServiceTest {
     }
 
     @Test
-    fun `CURRENT behaviour - signalKey changes across a floor-window boundary (S8 will change this)`() {
-        // Two calls 150s apart straddle the 2-minute floor window, so the keys differ today
-        // even though the signals are otherwise identical. S8 aligns this with the sliding TTL.
+    fun `signalKey is time-independent so near-identical signals collide (S8)`() {
+        // Two calls 150s apart previously straddled the 2-minute floor window and produced different
+        // keys, so the later near-duplicate slipped through. After S8 the key is purely content-based:
+        // it collides, and the sliding TTL alone governs the dedup window.
         val early = IdempotencyService(Clock.fixed(t0, ZoneOffset.UTC))
         val later = IdempotencyService(Clock.fixed(t0.plusSeconds(150), ZoneOffset.UTC))
 
         val k1 = early.signalKey("BTC", args(), BigDecimal("65000"))
         val k2 = later.signalKey("BTC", args(), BigDecimal("65000"))
-        assertNotEquals(k1, k2, "today the floor-window makes near-identical signals look distinct")
+        assertEquals(k1, k2, "content-identical signals must share a key regardless of wall-clock time")
     }
 
     @Test
