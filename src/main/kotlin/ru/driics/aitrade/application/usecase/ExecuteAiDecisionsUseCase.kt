@@ -13,12 +13,10 @@ import ru.driics.aitrade.common.logging.BusinessEventLogger
 import ru.driics.aitrade.common.logging.logger
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.*
-import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.IdGenerator
 import ru.driics.aitrade.domain.services.OrderSizingPolicy
 import ru.driics.aitrade.domain.types.InstrumentId
-import ru.driics.aitrade.domain.types.asSymbol
 import ru.driics.aitrade.domain.types.getOrNull
 import ru.driics.aitrade.domain.types.getOrThrow
 import ru.driics.aitrade.domain.util.isPositive
@@ -27,11 +25,9 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Clock
 import java.util.*
-import kotlin.time.Duration.Companion.seconds
 
 class ExecuteAiDecisionsUseCase(
     private val trading: TradingPort,
-    private val market: MarketDataPort,
     private val tradingProperties: TradingProperties,
     private val clock: Clock,
     private val confidenceCalibrator: ConfidenceCalibrator,
@@ -40,7 +36,6 @@ class ExecuteAiDecisionsUseCase(
 ) {
     private companion object {
         val log = logger<ExecuteAiDecisionsUseCase>()
-        const val MARKET_STATE_TIMEOUT_SECONDS = 30L
         const val GUARD_METRIC_NAME = "guard.rejected"
         const val REASON_TAG_LIMIT = 50
     }
@@ -65,22 +60,18 @@ class ExecuteAiDecisionsUseCase(
     suspend fun execute(
         decisions: AiTradeDecisionMap,
         riskContext: RiskContext,
+        marketState: MarketState,
     ): List<AiTradeExecutionResult> = coroutineScope {
         log.info { "Executing AI trading decisions for ${decisions.size} symbols" }
 
         val supportedSymbols = tradingProperties.getCurrenciesList().toSet()
 
-        // 1. Load Market State (Pre-fetch)
-        val state = try {
-            withTimeout(MARKET_STATE_TIMEOUT_SECONDS.seconds) {
-                market.loadMarketState(supportedSymbols.map { it.asSymbol() })
-            }
-        } catch (e: Exception) {
-            log.error(e) { "Failed to load market state within timeout" }
-            return@coroutineScope emptyList()
-        }
+        // P2: market state is loaded once per cycle by BuildPromptUseCase and threaded in here,
+        // rather than re-loaded. Available cash comes from that snapshot; entry pricing still uses
+        // a FRESH trading.getLastPrice() per symbol in buildPlan, so order pricing is not staler.
+        val availableUsd = marketState.account.availableCash
 
-        // 2. Pipeline: Decision -> Plan -> Execution
+        // Pipeline: Decision -> Plan -> Execution
         decisions.values.asFlow()
             // Step A: Build Plans (Parallel, CPU-bound mostly)
             .map { envelope ->
@@ -107,7 +98,7 @@ class ExecuteAiDecisionsUseCase(
                 flow {
                     emit(
                         runCatching {
-                            executePlan(ready.plan, state.account.availableCash, riskContext)
+                            executePlan(ready.plan, availableUsd, riskContext)
                         }.getOrElse { e ->
                             log.error(e) { "Failed to execute plan for ${ready.plan.symbol}" }
                             createErrorResult(ready.plan, e.message ?: "Unknown execution error")

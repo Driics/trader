@@ -3,6 +3,7 @@ package ru.driics.aitrade.application.usecase
 import io.github.oshai.kotlinlogging.KotlinLogging
 import ru.driics.aitrade.application.ai.PromptTemplateService
 import ru.driics.aitrade.config.TradingProperties
+import ru.driics.aitrade.domain.model.MarketState
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PromptOutputPort
 import ru.driics.aitrade.domain.services.PromptBuilder
@@ -26,11 +27,11 @@ class BuildPromptUseCase(
         symbols: List<String>,
         sessionStartMs: Long,
         invocation: Long
-    ): String {
+    ): PromptResult {
         log.info { "Building prompt for ${symbols.size} symbols (invocation #$invocation)" }
 
         val state = market.loadMarketState(symbols.map { it.asSymbol() })
-        
+
         // Use template-based prompt if available, fallback to legacy builder
         val prompt = try {
             buildTemplatePrompt(state, sessionStartMs, invocation)
@@ -46,7 +47,9 @@ class BuildPromptUseCase(
             log.warn { "Failed to write prompt to output" }
         }
 
-        return prompt
+        // P2: return the snapshot alongside the prompt so the orchestrator can thread it
+        // into execution instead of re-loading market state 2 more times per cycle.
+        return PromptResult(prompt = prompt, marketState = state)
     }
 
     private fun buildTemplatePrompt(
@@ -76,3 +79,13 @@ class BuildPromptUseCase(
         )
     }
 }
+
+/**
+ * Result of a prompt build: the rendered [prompt] plus the [marketState] snapshot it was built
+ * from. The orchestrator threads [marketState] into the execute stage so a single market load
+ * serves prompt-building, risk-context construction, and order execution within one cycle (P2).
+ */
+data class PromptResult(
+    val prompt: String,
+    val marketState: MarketState,
+)

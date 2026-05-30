@@ -109,3 +109,38 @@ data class OkxAccountData(
     @JsonProperty("details")
     val details: List<OkxAccountDetail> = emptyList()
 )
+
+/**
+ * A single account bill (ledger entry) from GET /api/v5/account/bills (last 7 days).
+ * Only the fields relevant to realized-PnL accounting are modeled; unknowns are ignored.
+ *
+ * `pnl` carries the profit/loss of the event in the settlement currency (negative = loss).
+ * `ts` is the millisecond epoch the bill was generated. `billId` is the pagination cursor
+ * (passed as `after` to fetch older records).
+ */
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class OkxBillData(
+    @JsonProperty("billId")
+    val billId: String = "",
+
+    @JsonProperty("ts")
+    val timestamp: String = "0",
+
+    @JsonProperty("pnl")
+    val pnl: String = "0",
+
+    @JsonProperty("fee")
+    val fee: String = "0",
+
+    @JsonProperty("ccy")
+    val currency: String = "",
+
+    @JsonProperty("type")
+    val type: String = "",
+
+    @JsonProperty("subType")
+    val subType: String = "",
+
+    @JsonProperty("instType")
+    val instType: String = ""
+)

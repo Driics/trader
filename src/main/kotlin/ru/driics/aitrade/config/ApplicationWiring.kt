@@ -99,14 +99,12 @@ class ApplicationWiring(
     @Bean
     fun executeAiUseCase(
         trading: TradingPort,
-        market: MarketDataPort,
         clock: Clock,
         confidenceCalibrator: ConfidenceCalibrator,
         meterRegistry: MeterRegistry,
         riskGate: RiskGate,
     ) = ExecuteAiDecisionsUseCase(
         trading = trading,
-        market = market,
         tradingProperties = tradingProperties,
         clock = clock,
         confidenceCalibrator = confidenceCalibrator,
@@ -128,6 +126,7 @@ class ApplicationWiring(
         market: MarketDataPort,
         trading: TradingPort,
         killSwitchState: KillSwitchState,
+        riskGateProperties: RiskGateProperties,
         meterRegistry: MeterRegistry,
         tradingMetricsService: TradingMetricsService,
         schemaValidator: AiSchemaValidator,
@@ -148,6 +147,7 @@ class ApplicationWiring(
             market = market,
             trading = trading,
             killSwitchState = killSwitchState,
+            riskGateProperties = riskGateProperties,
             meterRegistry = meterRegistry,
             tradingMetrics = tradingMetricsService,
             schemaValidator = schemaValidator,

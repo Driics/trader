@@ -14,12 +14,14 @@ import ru.driics.aitrade.application.ai.SignalNormalizer
 import ru.driics.aitrade.application.usecase.AnalyzePromptUseCase
 import ru.driics.aitrade.application.usecase.BuildPromptUseCase
 import ru.driics.aitrade.application.usecase.ExecuteAiDecisionsUseCase
+import ru.driics.aitrade.application.usecase.PromptResult
 import ru.driics.aitrade.common.logging.BusinessEventLogger
 import ru.driics.aitrade.common.logging.CorrelationId
 import ru.driics.aitrade.common.logging.logger
 import ru.driics.aitrade.common.measureSuspend
 import ru.driics.aitrade.application.risk.KillSwitchState
 import ru.driics.aitrade.application.risk.RiskContext
+import ru.driics.aitrade.config.RiskGateProperties
 import ru.driics.aitrade.domain.model.*
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort
@@ -51,6 +53,7 @@ class UpdateCycleOrchestrator(
         val market: MarketDataPort,
         val trading: TradingPort,
         val killSwitchState: KillSwitchState,
+        val riskGateProperties: RiskGateProperties,
         val meterRegistry: MeterRegistry,
         val tradingMetrics: TradingMetricsService,
         val schemaValidator: AiSchemaValidator,
@@ -132,8 +135,9 @@ class UpdateCycleOrchestrator(
     // =========================================================================
 
     private suspend fun executePipeline(invocation: Long, cid: String): UpdateCycleResult {
-        // 1. Build Prompt
-        val prompt = stageBuildPrompt(invocation, cid).getOrElse { return it.toResult() }
+        // 1. Build Prompt (P2: also yields the single market snapshot for this cycle)
+        val promptResult = stageBuildPrompt(invocation, cid).getOrElse { return it.toResult() }
+        val prompt = promptResult.prompt
 
         // 2. Check for changes
         if (isPromptUnchanged(prompt)) {
@@ -153,8 +157,9 @@ class UpdateCycleOrchestrator(
 
         logDecisionsSummary(finalDecisions)
 
-        // 6. Execute Orders
-        val positionsPlaced = stageExecute(finalDecisions, cid).getOrElse { return it.toResult(prompt.length) }
+        // 6. Execute Orders (P2: thread the build-stage snapshot in instead of re-loading)
+        val positionsPlaced = stageExecute(finalDecisions, promptResult.marketState, cid)
+            .getOrElse { return it.toResult(prompt.length) }
 
         // 7. Record Success
         BusinessEventLogger.updateCycle(
@@ -178,7 +183,7 @@ class UpdateCycleOrchestrator(
     // Pipeline Stages
     // =========================================================================
 
-    private suspend fun stageBuildPrompt(invocation: Long, cid: String): StageResult<String> =
+    private suspend fun stageBuildPrompt(invocation: Long, cid: String): StageResult<PromptResult> =
         runStage(Stage.BUILD_PROMPT, cid) {
             useCases.build.execute(config.symbols, sessionStartTime, invocation)
         }
@@ -260,7 +265,7 @@ class UpdateCycleOrchestrator(
         }
 
     private suspend fun stageExecute(
-        decisions: AiTradeDecisionMap, cid: String
+        decisions: AiTradeDecisionMap, marketState: MarketState, cid: String
     ): StageResult<Int> {
         if (!config.autoExecute) {
             log.info { "Auto-execution disabled" }
@@ -269,19 +274,26 @@ class UpdateCycleOrchestrator(
         }
 
         return runStage(Stage.EXECUTE_ORDERS, cid, mapOf(Attrs.DECISION_COUNT to decisions.size)) { span ->
-            // Build RiskContext once per cycle. PnL read failure -> fail-open (ZERO).
+            // Build RiskContext once per cycle.
+            // S1: PnL read failure fails CLOSED when risk gating is enabled — we cannot confirm
+            // we're within the daily-loss cap, so we refuse to place orders this cycle (throwing
+            // here surfaces a failed StageResult, so the cycle is not marked successful and the
+            // dedup hash is not advanced — the next cycle retries). If risk gating is disabled,
+            // PnL is irrelevant to execution, so we proceed with ZERO.
             val pnl = when (val result = infrastructure.trading.getTodaysRealizedPnlUsd(infrastructure.clock.instant())) {
                 is TradeResult.Success -> result.value
                 is TradeResult.Failure -> {
-                    log.warn { "Failed to read today's realized PnL, defaulting to ZERO (fail-open): ${result.message}" }
+                    if (infrastructure.riskGateProperties.enabled) {
+                        infrastructure.meterRegistry.counter(Metrics.PNL_READ_FAILED, "action", "skip_cycle").increment()
+                        log.error { "Fail-closed: today's realized PnL unreadable (${result.message}); skipping execution this cycle" }
+                        throw StageException("Fail-closed: PnL read failed (${result.message})")
+                    }
+                    log.warn { "PnL read failed but risk gating disabled; proceeding with ZERO: ${result.message}" }
                     BigDecimal.ZERO
                 }
             }
-            val openPositionsCount = runCatching { loadMarketState().positions.size }
-                .getOrElse { e ->
-                    log.warn(e) { "Failed to load market state for open positions count, defaulting to 0 (fail-open)" }
-                    0
-                }
+            // P2: open-position count comes from the cycle's single market snapshot, not a re-load.
+            val openPositionsCount = marketState.positions.size
             val killSnap = infrastructure.killSwitchState.snapshot()
             val riskContext = RiskContext(
                 openPositionsCount = openPositionsCount,
@@ -289,7 +301,7 @@ class UpdateCycleOrchestrator(
                 killSwitch = killSnap,
             )
 
-            val results = useCases.execute.execute(decisions, riskContext)
+            val results = useCases.execute.execute(decisions, riskContext, marketState)
 
             val placed = results.count { it.action == AIAction.PLACED }
             val skipped = results.count { it.action == AIAction.SKIPPED }
@@ -487,6 +499,7 @@ class UpdateCycleOrchestrator(
     private object Metrics {
         const val CYCLE_PREFIX = "update.cycle"
         const val VALIDATION_REJECTED = "ai.response.validation.rejected"
+        const val PNL_READ_FAILED = "risk.pnl.read_failed"
     }
 
     private object Attrs {

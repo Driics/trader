@@ -23,6 +23,7 @@ import ru.driics.aitrade.service.OkxRestClient
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Clock
+import java.time.temporal.ChronoUnit
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -154,12 +155,67 @@ class OkxExchangeAdapter(
         TradeResult.Success(rest.setLeverage(instrumentId.value, leverage, marginMode))
     }.getOrElse { it.toTradeFailure(instrumentId.value) }
 
-    override suspend fun getTodaysRealizedPnlUsd(now: java.time.Instant): TradeResult<java.math.BigDecimal> {
-        // STUB: real /account/bills integration deferred to roadmap item X2.a.
-        // Returning ZERO means the risk gate's daily-loss check sees "no loss today",
-        // which matches the documented fail-open behaviour in the X2 design spec.
-        return TradeResult.Success(java.math.BigDecimal.ZERO)
+    /**
+     * Sums realized PnL across account bills generated since the start of the current UTC day
+     * (matching [ru.driics.aitrade.application.risk.KillSwitchState]'s UTC auto-clear boundary).
+     *
+     * Pages backwards (newest-first) until a bill predates UTC midnight or the page is short.
+     * A failed page read returns [TradeResult.Failure] so the caller can fail CLOSED (S1) rather
+     * than mistaking an outage for "no loss today".
+     *
+     * !! UNVERIFIED against live OKX !! The per-bill contribution is isolated in
+     * [realizedPnlContribution]; reconcile it in paper trading before trusting live funds (B0).
+     */
+    override suspend fun getTodaysRealizedPnlUsd(now: java.time.Instant): TradeResult<BigDecimal> {
+        val dayStartMs = now.truncatedTo(ChronoUnit.DAYS).toEpochMilli()
+        return try {
+            var after: String? = null
+            var sum = BigDecimal.ZERO
+            var page = 0
+            while (page < MAX_BILL_PAGES) {
+                page++
+                val response = rest.fetchBills(after = after, limit = BILL_PAGE_LIMIT)
+                    ?: return TradeResult.Failure.ApiError(
+                        code = "BILLS_READ_FAILED",
+                        message = "Failed to read account bills (page $page) — failing closed"
+                    )
+                if (!response.isSuccess()) {
+                    return TradeResult.Failure.ApiError(
+                        code = response.code,
+                        message = response.message.ifBlank { "Bills read returned error code ${response.code}" }
+                    )
+                }
+
+                val bills = response.data
+                if (bills.isEmpty()) break
+
+                for (bill in bills) {
+                    val ts = bill.timestamp.toLongOrNull() ?: continue
+                    if (ts >= dayStartMs) sum += bill.realizedPnlContribution()
+                }
+
+                val oldestTs = bills.last().timestamp.toLongOrNull() ?: Long.MIN_VALUE
+                if (oldestTs < dayStartMs || bills.size < BILL_PAGE_LIMIT) break
+                after = bills.last().billId
+            }
+            TradeResult.Success(sum)
+        } catch (e: Exception) {
+            TradeResult.Failure.NetworkError("Error reading today's realized PnL: ${e.message}", e)
+        }
     }
+
+    /**
+     * !! UNVERIFIED against live OKX — THE single money-handling assumption !!
+     *
+     * The daily-loss cap depends on this being correct. We assume each bill's `pnl` field carries
+     * realized trading P&L in the settlement currency (negative = loss) and is zero for non-P&L
+     * bills (transfers, etc.). Funding fees MAY also surface here. This is the ONE knob to reconcile
+     * against the OKX account UI in paper trading before trusting live funds: if funding/fees must
+     * be excluded, filter on [OkxBillData.type]/[OkxBillData.subType] here. See B0 in
+     * docs/architecture-refactor-roadmap.md.
+     */
+    private fun OkxBillData.realizedPnlContribution(): BigDecimal =
+        pnl.toBigDecimalOrNull() ?: BigDecimal.ZERO
 
     // =========================================================================
     // Currency Data Fetching
@@ -457,6 +513,10 @@ class OkxExchangeAdapter(
         const val MILLIS_PER_MINUTE = 60_000L
         const val SERIES_SIZE = 10
         val HUNDRED: BigDecimal = BigDecimal(100)
+
+        // Realized-PnL pagination (B0). Bounded so a misbehaving cursor can't loop forever.
+        const val MAX_BILL_PAGES = 20
+        const val BILL_PAGE_LIMIT = 100
     }
 
     private object Timeframe {

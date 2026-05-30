@@ -68,6 +68,7 @@ data class OkxTimeouts(
     var openInterest: Duration = Duration.ofSeconds(5),
     var account: Duration = Duration.ofSeconds(10),
     var positions: Duration = Duration.ofSeconds(10),
+    var bills: Duration = Duration.ofSeconds(10),
     var instruments: Duration = Duration.ofSeconds(10),
     var setLeverage: Duration = Duration.ofSeconds(10),
     var placeOrder: Duration = Duration.ofSeconds(15)
