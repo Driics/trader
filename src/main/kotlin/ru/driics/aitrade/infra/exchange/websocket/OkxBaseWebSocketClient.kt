@@ -177,9 +177,15 @@ abstract class OkxBaseWebSocketClient(
 
         updateState(ConnectionState.Connected())
 
-        scope.launch {
+        // Run the frame loop INLINE so the enclosing httpClient.webSocket { } block stays suspended
+        // for the entire life of the connection. The previous code detached this into `scope.launch`
+        // and returned immediately, which made ktor close the session right after connect — a
+        // connect -> login -> subscribe -> teardown -> reconnect storm. The heartbeat runs as a child
+        // of this coroutineScope and is cancelled when the frame loop ends (connection drop).
+        // Invariant preserved: `session.incoming` has a single reader at a time (login reads it during
+        // onSessionEstablished, then processIncomingFrames takes over here).
+        coroutineScope {
             val heartbeatJob = launch { runHeartbeat(session) }
-
             try {
                 processIncomingFrames(session)
             } finally {
@@ -222,7 +228,7 @@ abstract class OkxBaseWebSocketClient(
         }
     }
 
-    private fun handleTextFrame(text: String) {
+    internal fun handleTextFrame(text: String) {
         if (text == "pong") return
 
         runCatching {
@@ -233,7 +239,7 @@ abstract class OkxBaseWebSocketClient(
         }
     }
 
-    private fun calculateBackoff(attempt: Int): Long {
+    internal fun calculateBackoff(attempt: Int): Long {
         val exponent = min(attempt, config.maxBackoffExponent)
         val baseDelay = config.baseReconnectDelayMs * 2.0.pow(exponent.toDouble()).toLong()
         val clampedDelay = min(baseDelay, config.maxReconnectDelayMs)
