@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.*
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.random.Random
@@ -39,6 +40,11 @@ data class WebSocketConfig(
     val baseReconnectDelayMs: Long = 1_000L,
     val maxBackoffExponent: Int = 6,
     val jitterMs: Long = 1_000L,
+    // S2: a dropped connection resets the backoff counter only if it stayed up at least this long.
+    val minHealthyUptimeMs: Long = 5_000L,
+    // S3: liveness watchdog forces a reconnect if no inbound frame arrives within pingInterval + grace.
+    val livenessGraceMs: Long = 10_000L,
+    val livenessCheckIntervalMs: Long = 5_000L,
 ) {
     init {
         require(pingIntervalMs > 0) { "pingIntervalMs must be positive" }
@@ -67,6 +73,10 @@ abstract class OkxBaseWebSocketClient(
 
     private val sessionMutex = Mutex()
     private var _activeSession: DefaultClientWebSocketSession? = null
+
+    // S3: written by the frame loop on each inbound frame, read by the liveness watchdog (never a
+    // second reader of `incoming`). 0 = no frame seen yet on the current session.
+    private val lastFrameAtNanos = AtomicLong(0L)
 
     @Volatile
     private var isRunning = false
@@ -122,9 +132,12 @@ abstract class OkxBaseWebSocketClient(
         while (scope.isActive && isRunning) {
             updateState(if (attempt == 0) ConnectionState.Connecting else ConnectionState.Reconnecting(attempt, 0))
 
-            val success = runConnectionAttempt()
+            // S2: only a connection that actually stayed up (healthy) resets the backoff. A rapid drop
+            // — auth reject, server close right after subscribe, immediate error — keeps the counter
+            // growing so we back off instead of tight-looping on a persistent failure.
+            val healthy = runConnectionAttempt()
 
-            if (success) {
+            if (healthy) {
                 attempt = 0
             }
 
@@ -139,11 +152,12 @@ abstract class OkxBaseWebSocketClient(
     }
 
     private suspend fun runConnectionAttempt(): Boolean {
+        var healthy = false
         return try {
             httpClient.webSocket(urlString = wsUrl) {
-                handleSession(this)
+                healthy = handleSession(this)
             }
-            true
+            healthy
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -157,7 +171,9 @@ abstract class OkxBaseWebSocketClient(
         }
     }
 
-    private suspend fun handleSession(session: DefaultClientWebSocketSession) {
+    /** @return true if the connection was healthy — reached Connected and stayed up at least
+     *  [WebSocketConfig.minHealthyUptimeMs]. A false return keeps the reconnect backoff growing (S2). */
+    private suspend fun handleSession(session: DefaultClientWebSocketSession): Boolean {
         sessionMutex.withLock {
             _activeSession = session
         }
@@ -165,35 +181,50 @@ abstract class OkxBaseWebSocketClient(
 
         val initSuccess = onSessionEstablished(session)
         if (!initSuccess) {
+            // S2: init/auth failure is NOT a healthy connection — let the backoff grow rather than
+            // hammer a rejecting server (e.g. bad credentials) every couple of seconds.
             updateState(ConnectionState.Failed("Initialization failed"))
-            return
+            return false
         }
 
         updateState(ConnectionState.Connected())
+        val connectedAtNanos = System.nanoTime()
+        lastFrameAtNanos.set(connectedAtNanos)
 
         // Run the frame loop INLINE so the enclosing httpClient.webSocket { } block stays suspended
         // for the entire life of the connection. The previous code detached this into `scope.launch`
         // and returned immediately, which made ktor close the session right after connect — a
-        // connect -> login -> subscribe -> teardown -> reconnect storm. The heartbeat runs as a child
-        // of this coroutineScope and is cancelled when the frame loop ends (connection drop).
+        // connect -> login -> subscribe -> teardown -> reconnect storm. The heartbeat (S4) and liveness
+        // watchdog (S3) run as children of this coroutineScope and are cancelled when the frame loop
+        // ends (connection drop).
         // Invariant preserved: `session.incoming` has a single reader at a time (login reads it during
         // onSessionEstablished, then processIncomingFrames takes over here).
         coroutineScope {
             val heartbeatJob = launch { runHeartbeat(session) }
+            val watchdogJob = launch { runLivenessWatchdog(session) }
             try {
                 processIncomingFrames(session)
             } finally {
                 heartbeatJob.cancel()
+                watchdogJob.cancel()
                 onSessionClosed()
             }
         }
+
+        val upMillis = (System.nanoTime() - connectedAtNanos) / 1_000_000
+        return upMillis >= config.minHealthyUptimeMs
     }
 
     private suspend fun runHeartbeat(session: DefaultClientWebSocketSession) {
         while (session.isActive) {
             delay(config.pingIntervalMs)
-            val sent = sendPing(session)
-            if (!sent) break
+            if (!sendPing(session)) {
+                // S4: a failed ping means a half-open (write-dead) socket — close it so the frame loop
+                // ends and we reconnect, instead of lingering on a connection we can no longer write to.
+                log.warn { "Heartbeat ping failed; closing session to force reconnect" }
+                runCatching { session.close(CloseReason(CloseReason.Codes.GOING_AWAY, "heartbeat failed")) }
+                break
+            }
         }
     }
 
@@ -209,7 +240,26 @@ abstract class OkxBaseWebSocketClient(
 
     private suspend fun processIncomingFrames(session: DefaultClientWebSocketSession) {
         for (frame in session.incoming) {
+            lastFrameAtNanos.set(System.nanoTime()) // S3: liveness signal for the watchdog
             processFrame(session, frame)
+        }
+    }
+
+    /**
+     * S3: forces a reconnect if no inbound frame — including OKX's pong reply to our heartbeat —
+     * arrives within pingInterval + grace. It observes the [lastFrameAtNanos] timestamp written by the
+     * frame loop and never reads `incoming` itself, so the single-reader invariant holds.
+     */
+    private suspend fun runLivenessWatchdog(session: DefaultClientWebSocketSession) {
+        val staleThresholdMs = config.pingIntervalMs + config.livenessGraceMs
+        while (session.isActive) {
+            delay(config.livenessCheckIntervalMs)
+            val idleMs = (System.nanoTime() - lastFrameAtNanos.get()) / 1_000_000
+            if (idleMs > staleThresholdMs) {
+                log.warn { "No inbound frame for ${idleMs}ms (> ${staleThresholdMs}ms); forcing reconnect" }
+                runCatching { session.close(CloseReason(CloseReason.Codes.GOING_AWAY, "liveness timeout")) }
+                break
+            }
         }
     }
 
