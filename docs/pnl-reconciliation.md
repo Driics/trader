@@ -35,8 +35,12 @@ It writes three files to `./data/okx-capture/` (gitignored — this is real acco
 | `positions-history.json` | today's closed positions (`OkxPositionHistoryData[]`) |
 | `capture-meta.json` | `dayStartMs` = the exact UTC-midnight window the live cap would use |
 
-> Capture **after** a day on which you actually had closed positions (paper/demo trading is fine — OKX
-> demo has its own bills). An empty day reconciles trivially and proves nothing.
+> **Capture on a flat-to-flat intraday day** for a clean result: no position carried in from yesterday,
+> none still open at capture time, but at least one position opened **and closed** during the day
+> (paper/demo is fine). Bills and positions-history are two different accounting *views* and only line up
+> exactly under that condition — see **"A caveat: the two views only agree flat-to-flat"** below. An empty
+> day reconciles trivially and proves nothing; a day with open or carried-over positions produces a
+> non-zero delta that is **funding-attribution noise, not a cap bug**.
 
 ### 2. (Optional) record the OKX UI figure
 
@@ -60,13 +64,22 @@ ui.realizedPnlUsd=-37.42
 
 ### 4. Read the breakdown and interpret
 
-The report ends with a `-- DELTAS --` and a `-- READ-ME --` section. The three outcomes:
+> **A caveat: the two views only agree flat-to-flat.** Bills are a *time-windowed ledger*;
+> positions-history is a *per-closed-position* rollup. They diverge for reasons that are **not cap bugs**:
+> a position still **open** at capture accrues funding *bills* today but has **no** positions-history row;
+> a position **carried in** from yesterday rolls its *entire cumulative* `fundingFee` into today's
+> `realizedPnl`, while its funding bills fall *outside* today's window. So unless you captured on a
+> flat-to-flat day (step 1), expect a non-zero delta and read it as funding noise, **not** a signal to
+> change the knob.
 
-| What you see | Meaning | Action |
+The report ends with `-- DELTAS --` and a `-- READ-ME (hypotheses, not verdicts) --` section. The outcomes
+are hypotheses to confirm, not diagnoses:
+
+| What you see (flat-to-flat capture) | Hypothesis | Action |
 |---|---|---|
-| `bills.pnl - oracle ≈ 0` | The cap's input already matches OKX's realized PnL. | **Done.** The knob is correct. Lock a tolerance (step 6). |
-| `bills.(pnl+fee) - oracle ≈ 0` (but `bills.pnl - oracle` ≠ 0) | OKX folds fees into `realizedPnl`; the cap omits them, so it **under-reports losses** by the fee total. | Make `realizedPnlContribution()` add `fee` (step 5). |
-| neither ≈ 0 | Something else (unmodeled bill types, non-USD currencies, windowing). | Inspect the per-`(type/subType/ccy)` rows; check the `realizedPnl by ccy` line for non-USD settlement. Resolve before trusting the cap. |
+| `bills.pnl - oracle ≈ 0` | The cap's input already matches OKX's realized PnL. | **Likely done.** Confirm across a couple of flat-to-flat days, then lock a tolerance (step 6). |
+| `bills.(pnl+fee) - oracle ≈ 0` (but `bills.pnl - oracle` ≠ 0) | *Possibly* OKX folds fees into `realizedPnl` while the cap omits them (would mean the cap under-reports losses by the fee total). | **Confirm first** on ≥2 flat-to-flat days. Only if it holds with no open/carried positions, make `realizedPnlContribution()` add `fee` (step 5). On a non-flat day this delta is usually just funding. |
+| neither ≈ 0 | Open/carried positions (funding noise), unmodeled bill types, non-USD currencies, or windowing. | Rule out open/carried positions first. Then inspect the per-`(type/subType/ccy)` rows and the `realizedPnl by ccy` line. Do **not** trust the cap until explained. |
 
 Also check:
 - **`realizedPnl identity residual (want ~0)`** — if non-zero, OKX's `realizedPnl` has a component we don't

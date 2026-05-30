@@ -136,20 +136,26 @@ object PnlReconciliation {
 
         private fun interpretation(): String {
             val nonUsd = positions.byCcy.keys.filterNot { it.equals("USDT", true) || it.equals("USD", true) || it.equals("USDC", true) }
-            val sb = StringBuilder("-- READ-ME --\n")
+            val sb = StringBuilder("-- READ-ME (hypotheses, not verdicts) --\n")
+            sb.appendLine("  Bills and positions-history are two accounting VIEWS; they reconcile cleanly ONLY on a")
+            sb.appendLine("  flat-to-flat day (no position carried in from yesterday, none still open at capture).")
+            sb.appendLine("  Funding on a still-open position is a bill today with no oracle row; funding on a carried-in")
+            sb.appendLine("  position rolls fully into today's realizedPnl while its bills fall outside today's window.")
+            sb.appendLine("  Treat any residual as funding-attribution noise UNLESS captured flat-to-flat.")
             if (nonUsd.isNotEmpty()) {
                 sb.appendLine("  ! Non-USD settlement currencies present: $nonUsd. The cap sums these as if USD.")
             }
             val tol = BigDecimal("0.01")
             when {
                 billsVsOracleDelta.abs() <= tol ->
-                    sb.appendLine("  OK: bills.pnl matches the oracle. The cap's realized-PnL input looks correct.")
+                    sb.appendLine("  -> bills.pnl already matches the oracle. The cap's realized-PnL input looks correct.")
                 billsPlusFeeVsOracleDelta.abs() <= tol ->
-                    sb.appendLine("  GAP = fees: oracle folds fees into realizedPnl but the cap omits them. " +
-                        "Make realizedPnlContribution() add `fee` (cap under-reports losses by ${bills.totalFee.toPlainString()}).")
+                    sb.appendLine("  -> HYPOTHESIS (confirm on a flat-to-flat day): the gap equals the fee total " +
+                        "(${bills.totalFee.toPlainString()}) — i.e. the oracle folds fees into realizedPnl and the cap omits them. " +
+                        "Only if it holds with NO open/carried positions, make realizedPnlContribution() add `fee`.")
                 else ->
-                    sb.appendLine("  GAP unexplained by fees alone (${billsVsOracleDelta.toPlainString()}). " +
-                        "Inspect the per-(type/subType) rows above and the OKX bill-type catalogue before trusting the cap.")
+                    sb.appendLine("  -> Gap not explained by fees alone (${billsVsOracleDelta.toPlainString()}). " +
+                        "Check for open/carried positions (funding noise) FIRST; then the per-(type/subType) rows and ccy.")
             }
             return sb.toString().trimEnd()
         }

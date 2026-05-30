@@ -106,9 +106,11 @@ class PnlReconciliationTest {
         assertEquals(0, BigDecimal("-2.0").compareTo(report.bills.totalFee))
         // bills.pnl - oracle = -30 - (-32) = +2 (the cap under-reports the loss by the fee total)
         assertEquals(0, BigDecimal("2.0").compareTo(report.billsVsOracleDelta))
-        // bills.(pnl+fee) - oracle = -32 - (-32) = 0  -> fees fully explain the gap
+        // bills.(pnl+fee) - oracle = -32 - (-32) = 0  -> fees are the candidate explanation
         assertEquals(0, BigDecimal.ZERO.compareTo(report.billsPlusFeeVsOracleDelta))
-        assertTrue(report.render().contains("GAP = fees"), "render must name the fee gap as the diagnosis")
+        val rendered = report.render()
+        assertTrue(rendered.contains("HYPOTHESIS"), "render must frame the fee gap as a hypothesis, not a verdict")
+        assertTrue(rendered.contains("fee total"), "render must point at the fee total as the candidate explanation")
     }
 
     @Test
