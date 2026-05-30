@@ -171,10 +171,10 @@ class UpdateCycleOrchestrator(
         lastPromptHash.set(promptHash)
 
         BusinessEventLogger.updateCycle(
-            cycle = invocation,
-            errors = 0,
-            decisions = finalDecisions.size,
-            placed = positionsPlaced,
+            cycleNumber = invocation,
+            durationMs = 0L,
+            symbolsProcessed = finalDecisions.size,
+            positionsPlaced = positionsPlaced,
             success = true
         )
 

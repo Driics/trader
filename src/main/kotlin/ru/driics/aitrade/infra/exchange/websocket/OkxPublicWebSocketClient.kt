@@ -9,6 +9,7 @@ import io.ktor.client.plugins.websocket.*
 import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.springframework.stereotype.Component
@@ -48,11 +49,11 @@ class OkxPublicWebSocketClient(
     private val subscriptionMutex = Mutex()
 
     // Flows
-    private val (_tickerFlowMutable, _tickerFlow) = FlowFactory.highThroughput<OkxWsTickerUpdate>(1024)
-    val tickerFlow: SharedFlow<OkxWsTickerUpdate> = _tickerFlow
+    private val _tickerFlowMutable = FlowFactory.highThroughput<OkxWsTickerUpdate>(1024).first
+    val tickerFlow: SharedFlow<OkxWsTickerUpdate> = _tickerFlowMutable.asSharedFlow()
 
-    private val (_candleFlowMutable, _candleFlow) = FlowFactory.highThroughput<CandleEvent>(512)
-    val candleFlow: SharedFlow<CandleEvent> = _candleFlow
+    private val _candleFlowMutable = FlowFactory.highThroughput<CandleEvent>(512).first
+    val candleFlow: SharedFlow<CandleEvent> = _candleFlowMutable.asSharedFlow()
 
     /**
      * Wrapper for candle updates with instrument context.

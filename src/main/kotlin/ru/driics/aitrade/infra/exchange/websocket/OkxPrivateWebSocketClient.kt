@@ -10,6 +10,7 @@ import io.ktor.websocket.*
 import jakarta.annotation.PostConstruct
 import jakarta.annotation.PreDestroy
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.withTimeout
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.config.OkxProperties
@@ -34,14 +35,14 @@ class OkxPrivateWebSocketClient(
     override val wsUrl: String get() = okxProperties.privateWsUrl()
 
     // Flows with appropriate configurations
-    private val (_orderFlowMutable, _orderFlow) = FlowFactory.highThroughput<OkxWsOrderUpdate>(512)
-    val orderFlow: SharedFlow<OkxWsOrderUpdate> = _orderFlow
+    private val _orderFlowMutable = FlowFactory.highThroughput<OkxWsOrderUpdate>(512).first
+    val orderFlow: SharedFlow<OkxWsOrderUpdate> = _orderFlowMutable.asSharedFlow()
 
-    private val (_positionFlowMutable, _positionFlow) = FlowFactory.stateful<OkxWsPositionUpdate>(128)
-    val positionFlow: SharedFlow<OkxWsPositionUpdate> = _positionFlow
+    private val _positionFlowMutable = FlowFactory.stateful<OkxWsPositionUpdate>(128).first
+    val positionFlow: SharedFlow<OkxWsPositionUpdate> = _positionFlowMutable.asSharedFlow()
 
-    private val (_accountFlowMutable, _accountFlow) = FlowFactory.stateful<OkxWsAccountUpdate>(64)
-    val accountFlow: SharedFlow<OkxWsAccountUpdate> = _accountFlow
+    private val _accountFlowMutable = FlowFactory.stateful<OkxWsAccountUpdate>(64).first
+    val accountFlow: SharedFlow<OkxWsAccountUpdate> = _accountFlowMutable.asSharedFlow()
 
     private companion object Channels {
         const val ORDERS = "orders"
