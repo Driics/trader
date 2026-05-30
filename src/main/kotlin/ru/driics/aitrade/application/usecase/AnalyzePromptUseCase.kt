@@ -117,18 +117,10 @@ class AnalyzePromptUseCase(
 
     /**
      * Extension to determine if an error string suggests a transient issue.
+     * S7: delegates to [RetryClassification], which matches HTTP status codes on word boundaries so
+     * a code like "500" no longer false-matches inside "5000ms" or a price like "50000".
      */
-    private fun String?.isRetryable(): Boolean {
-        if (this == null) return false
-        val msg = this.lowercase()
-        return msg.contains("timeout") ||
-                msg.contains("rate limit") ||
-                msg.contains("503") ||
-                msg.contains("502") ||
-                msg.contains("500") ||
-                msg.contains("connection") ||
-                msg.contains("reset")
-    }
+    private fun String?.isRetryable(): Boolean = RetryClassification.isRetryable(this)
 
     private fun failureResponse(provider: String, message: String) = AiAnalysisResponse(
         provider = provider,
@@ -147,5 +139,27 @@ class AnalyzePromptUseCase(
         } finally {
             sample.stop(this)
         }
+    }
+}
+
+/**
+ * Classifies an error message as transient (retryable) or not (S7).
+ *
+ * HTTP status codes are matched on word boundaries (`\b500\b`) so a code does not false-match inside
+ * a larger number such as "5000ms" or "50000". Kept as an internal top-level object so the
+ * classification is unit-testable without driving the whole retry loop.
+ */
+internal object RetryClassification {
+    private val RETRYABLE_HTTP_CODES = Regex("\\b(429|500|502|503|504)\\b")
+    private val RETRYABLE_PHRASES = listOf(
+        "timeout", "timed out", "rate limit", "connection", "reset",
+        "temporarily unavailable", "overloaded", "try again"
+    )
+
+    fun isRetryable(message: String?): Boolean {
+        if (message == null) return false
+        val msg = message.lowercase()
+        if (RETRYABLE_PHRASES.any { msg.contains(it) }) return true
+        return RETRYABLE_HTTP_CODES.containsMatchIn(msg)
     }
 }
