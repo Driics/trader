@@ -42,6 +42,7 @@ class OkxAccountClient(
         const val METRIC_NAME = "okxAccount"
         const val PATH_BALANCE = "/api/v5/account/balance"
         const val PATH_POSITIONS = "/api/v5/account/positions"
+        const val PATH_POSITIONS_HISTORY = "/api/v5/account/positions-history"
         const val PATH_BILLS = "/api/v5/account/bills"
         const val INST_TYPE_SWAP = "SWAP"
 
@@ -122,6 +123,37 @@ class OkxAccountClient(
             defaultResult = null
         ) { body ->
             objectMapper.readValue<OkxApiResponse<OkxBillData>>(body)
+        }
+    }
+
+    /**
+     * Fetches closed-position history (newest-first), one page at a time. Serves as the independent
+     * realized-PnL oracle for reconciling the bills-based daily-loss accounting (B0): per OKX,
+     * `realizedPnl = pnl + fee + fundingFee + liqPenalty`.
+     *
+     * Returns the parsed [OkxApiResponse] on a successful HTTP read (caller still checks `isSuccess()`),
+     * or `null` when the read itself failed (timeout / transport / HTTP error).
+     *
+     * @param after pagination cursor: returns records strictly older than this `posId`.
+     * @param limit page size (OKX max 100).
+     */
+    @Retry(name = METRIC_NAME)
+    @RateLimiter(name = METRIC_NAME)
+    @CircuitBreaker(name = METRIC_NAME)
+    suspend fun fetchPositionsHistory(after: String? = null, limit: Int = 100): OkxApiResponse<OkxPositionHistoryData>? {
+        val path = buildString {
+            append(PATH_POSITIONS_HISTORY)
+            append("?instType=").append(INST_TYPE_SWAP)
+            append("&limit=").append(limit)
+            if (!after.isNullOrBlank()) append("&after=").append(after)
+        }
+        return executeSignedRequest<OkxApiResponse<OkxPositionHistoryData>?>(
+            operation = "fetchPositionsHistory",
+            path = path,
+            timeoutMs = tradingProperties.okxTimeouts.positions.toMillis(),
+            defaultResult = null
+        ) { body ->
+            objectMapper.readValue<OkxApiResponse<OkxPositionHistoryData>>(body)
         }
     }
 

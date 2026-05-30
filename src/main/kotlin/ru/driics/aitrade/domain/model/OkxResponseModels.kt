@@ -144,3 +144,68 @@ data class OkxBillData(
     @JsonProperty("instType")
     val instType: String = ""
 )
+
+/**
+ * A single closed-position record from GET /api/v5/account/positions-history.
+ *
+ * Used as the INDEPENDENT reconciliation oracle for the bills-derived daily realized PnL (B0).
+ * Per OKX, `realizedPnl = pnl + fee + fundingFee + liqPenalty`, so summing [realizedPnl] over
+ * positions closed since UTC midnight is OKX's own realized-PnL figure for the day — a deterministic
+ * cross-check against [OkxBillData]-based accounting. `uTime` is the millisecond epoch the position
+ * was last updated (closed). Only fields relevant to PnL reconciliation are modeled; unknowns ignored.
+ *
+ * !! Like the bills path, this is UNVERIFIED against live OKX until reconciled in paper trading. !!
+ */
+@JsonIgnoreProperties(ignoreUnknown = true)
+data class OkxPositionHistoryData(
+    @JsonProperty("instType")
+    val instType: String = "",
+
+    @JsonProperty("instId")
+    val instId: String = "",
+
+    @JsonProperty("mgnMode")
+    val marginMode: String = "",
+
+    @JsonProperty("type")
+    val closeType: String = "",
+
+    @JsonProperty("posId")
+    val posId: String = "",
+
+    @JsonProperty("cTime")
+    val createdTime: String = "0",
+
+    @JsonProperty("uTime")
+    val updatedTime: String = "0",
+
+    @JsonProperty("realizedPnl")
+    val realizedPnl: String = "0",
+
+    @JsonProperty("pnl")
+    val pnl: String = "0",
+
+    @JsonProperty("fee")
+    val fee: String = "0",
+
+    @JsonProperty("fundingFee")
+    val fundingFee: String = "0",
+
+    @JsonProperty("liqPenalty")
+    val liqPenalty: String = "0",
+
+    @JsonProperty("ccy")
+    val currency: String = "",
+
+    @JsonProperty("direction")
+    val direction: String = "",
+
+    @JsonProperty("lever")
+    val leverage: String = "0",
+
+    @JsonProperty("openAvgPx")
+    val openAvgPx: String = "0",
+
+    @JsonProperty("closeAvgPx")
+    val closeAvgPx: String = "0"
+)
