@@ -12,7 +12,9 @@ import ru.driics.aitrade.application.ai.ConfidenceCalibrator
 import ru.driics.aitrade.application.ai.PromptTemplateService
 import ru.driics.aitrade.application.orchestrator.UpdateCycleOrchestrator
 import ru.driics.aitrade.application.risk.KillSwitchState
+import ru.driics.aitrade.application.risk.KillSwitchStore
 import ru.driics.aitrade.application.risk.RiskGate
+import ru.driics.aitrade.infra.risk.FileKillSwitchStore
 import ru.driics.aitrade.application.usecase.AnalyzePromptUseCase
 import ru.driics.aitrade.application.usecase.BuildPromptUseCase
 import ru.driics.aitrade.application.usecase.ExecuteAiDecisionsUseCase
@@ -30,6 +32,10 @@ class ApplicationWiring(
 ) {
     @Bean
     fun clock(): Clock = Clock.systemUTC()
+
+    @Bean
+    fun killSwitchStore(riskGateProperties: RiskGateProperties): KillSwitchStore =
+        FileKillSwitchStore(java.nio.file.Path.of(riskGateProperties.killSwitchFile))
 
     @Bean
     fun promptTemplateService(

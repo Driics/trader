@@ -16,4 +16,7 @@ data class RiskGateProperties(
 
     @field:Min(value = 1, message = "Max concurrent positions must be at least 1")
     var maxConcurrentPositions: Int = 5,
+
+    /** S2: path to the durable kill-switch JSON file (atomic temp+rename). */
+    var killSwitchFile: String = "./data/kill-switch.json",
 )
