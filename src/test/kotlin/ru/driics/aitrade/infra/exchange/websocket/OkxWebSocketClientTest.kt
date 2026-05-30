@@ -5,6 +5,7 @@ import io.ktor.client.HttpClient
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -63,8 +64,15 @@ class OkxWebSocketClientTest {
     fun `ticker message routes to tickerFlow with parsed fields`() = runBlocking {
         val client = publicClient()
         val got = CompletableDeferred<OkxWsTickerUpdate>()
-        val job = launch { client.tickerFlow.collect { got.complete(it) } }
-        client.tickerFlow.subscriptionCount.first { it > 0 } // deterministic: wait until subscribed
+        val subscribed = CompletableDeferred<Unit>()
+        // onSubscription fires after the collector is registered on the (replay-0) flow but before
+        // any value, so awaiting it makes the subsequent emit deterministically reach the collector.
+        val job = launch {
+            client.tickerFlow
+                .onSubscription { subscribed.complete(Unit) }
+                .collect { got.complete(it) }
+        }
+        subscribed.await()
 
         client.handleTextFrame(
             """{"arg":{"channel":"tickers","instId":"BTC-USDT-SWAP"},"data":[{"instId":"BTC-USDT-SWAP","last":"50000.1","ts":"1700000000000"}]}""",
@@ -111,8 +119,13 @@ class OkxWebSocketClientTest {
     fun `candle array message routes to candleFlow`() = runBlocking {
         val client = publicClient()
         val got = CompletableDeferred<OkxPublicWebSocketClient.CandleEvent>()
-        val job = launch { client.candleFlow.collect { got.complete(it) } }
-        client.candleFlow.subscriptionCount.first { it > 0 }
+        val subscribed = CompletableDeferred<Unit>()
+        val job = launch {
+            client.candleFlow
+                .onSubscription { subscribed.complete(Unit) }
+                .collect { got.complete(it) }
+        }
+        subscribed.await()
 
         // OKX candle rows are ARRAYS: [ts,o,h,l,c,vol,volCcy,volCcyQuote,confirm]
         client.handleTextFrame(
