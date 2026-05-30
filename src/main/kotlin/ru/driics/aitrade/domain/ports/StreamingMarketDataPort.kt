@@ -30,6 +30,14 @@ data class PositionEvent(
 
 interface StreamingMarketDataPort {
     fun getRealtimePrice(instId: String): BigDecimal?
+
+    /**
+     * Like [getRealtimePrice], but returns the cached price ONLY when it is trustworthy: the
+     * underlying stream is currently connected AND the price arrived within [maxAgeMs]. Returns null
+     * otherwise so a caller can fall back to a REST read and never act on a silently-stale price.
+     */
+    fun getFreshPrice(instId: String, maxAgeMs: Long): BigDecimal?
+
     fun observePriceUpdates(instId: String): Flow<PriceUpdate>
     fun observeOrderUpdates(): Flow<OrderEvent>
     fun observePositionUpdates(): Flow<PositionEvent>

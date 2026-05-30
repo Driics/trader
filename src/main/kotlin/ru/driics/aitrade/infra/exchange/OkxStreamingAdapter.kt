@@ -37,7 +37,9 @@ class OkxStreamingAdapter(
         SupervisorJob() + Dispatchers.Default + exceptionHandler
     )
 
-    private val lastPriceCache = ConcurrentHashMap<String, BigDecimal>()
+    // Latest ticker price per instId WITH its monotonic receive time, so the freshness guard can
+    // reject a price that went stale because the socket silently went quiet (half-open).
+    private val lastPriceCache = ConcurrentHashMap<String, CachedPrice>()
 
     // Shared flow: map once, filter per subscriber
     private val allPriceUpdates: SharedFlow<PriceUpdate> by lazy {
@@ -80,7 +82,25 @@ class OkxStreamingAdapter(
     // =========================================================================
 
     override fun getRealtimePrice(instId: String): BigDecimal? =
-        lastPriceCache[instId]
+        lastPriceCache[instId]?.price
+
+    /**
+     * Returns the cached real-time price for [instId] ONLY if it is trustworthy: the public socket
+     * is currently Connected AND the price arrived within [maxAgeMs]. Returns null otherwise, so a
+     * caller can fall back to a REST read and never act on a silently-stale price (e.g. after the
+     * socket went half-open). The cache is keyed by OKX instId (e.g. "BTC-USDT-SWAP"); a caller MUST
+     * query with the same namespace or this returns null every time and silently falls back forever.
+     */
+    override fun getFreshPrice(instId: String, maxAgeMs: Long): BigDecimal? {
+        val cached = lastPriceCache[instId]
+        return resolveFreshPrice(
+            cachedPrice = cached?.price,
+            receivedAtNanos = cached?.receivedAtNanos ?: 0L,
+            connected = publicWs.isConnected,
+            nowNanos = System.nanoTime(),
+            maxAgeMs = maxAgeMs,
+        )
+    }
 
     override fun observePriceUpdates(instId: String): Flow<PriceUpdate> =
         allPriceUpdates.filter { it.instId == instId }
@@ -123,7 +143,7 @@ class OkxStreamingAdapter(
                     tick.last.toBigDecimalOrNull()?.let { tick.instId to it }
                 }
                 .collect { (instId, price) ->
-                    lastPriceCache[instId] = price
+                    lastPriceCache[instId] = CachedPrice(price, System.nanoTime())
                 }
         }
     }
@@ -188,6 +208,8 @@ class OkxStreamingAdapter(
     // Constants
     // =========================================================================
 
+    private data class CachedPrice(val price: BigDecimal, val receivedAtNanos: Long)
+
     private companion object {
         const val INSTRUMENT_SUFFIX = "-USDT-SWAP"
     }
@@ -197,4 +219,25 @@ class OkxStreamingAdapter(
         const val H4 = "4H"
         val ALL = listOf(M1, H4)
     }
+}
+
+/**
+ * Pure freshness decision for a cached real-time price — extracted so the safety guard can be
+ * unit-tested at its boundaries without a live socket. Returns [cachedPrice] only when [connected]
+ * is true AND the price is no older than [maxAgeMs] (inclusive); null in every other case.
+ *
+ * The age uses a MONOTONIC clock difference (System.nanoTime receive-time), never OKX's wall-clock
+ * ticker.ts, so it answers "did our socket go quiet" and is immune to clock skew between us and OKX.
+ */
+internal fun resolveFreshPrice(
+    cachedPrice: BigDecimal?,
+    receivedAtNanos: Long,
+    connected: Boolean,
+    nowNanos: Long,
+    maxAgeMs: Long,
+): BigDecimal? {
+    if (!connected) return null
+    if (cachedPrice == null) return null
+    val ageMs = (nowNanos - receivedAtNanos) / 1_000_000
+    return if (ageMs <= maxAgeMs) cachedPrice else null
 }

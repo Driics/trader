@@ -21,6 +21,7 @@ class HybridMarketDataAdapter(
 
     // Provide streaming APIs
     override fun getRealtimePrice(instId: String): BigDecimal? = streaming.getRealtimePrice(instId)
+    override fun getFreshPrice(instId: String, maxAgeMs: Long): BigDecimal? = streaming.getFreshPrice(instId, maxAgeMs)
     override fun observePriceUpdates(instId: String): Flow<PriceUpdate> = streaming.observePriceUpdates(instId)
     override fun observeOrderUpdates(): Flow<OrderEvent> = streaming.observeOrderUpdates()
     override fun observePositionUpdates(): Flow<PositionEvent> = streaming.observePositionUpdates()
