@@ -52,7 +52,13 @@ data class TradingProperties(
     var aiCooldownMs: Duration? = Duration.ofMinutes(5), // Cooldown between trades per symbol
 
     // Execution Mode
-    var demoMode: Boolean = true // If true, orders are simulated (dry-run)
+    var demoMode: Boolean = true, // If true, orders are simulated (dry-run)
+
+    // Phase 3 step 3 (default OFF): when true, entry sizing in buildPlan prefers the fresh real-time
+    // WS price over the REST price, falling back to REST whenever the socket is stale/disconnected or
+    // the WS price diverges too far from REST. Flip on only after the parity observer shows a small,
+    // stable WS-vs-REST delta over a real run.
+    var useStreamingEntryPrice: Boolean = false
 ) {
     fun getCurrenciesList(): List<String> =
         currencies.map { it.trim().uppercase(Locale.ROOT) }

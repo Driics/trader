@@ -46,6 +46,11 @@ class ExecuteAiDecisionsUseCase(
         // Phase 3 step 2: a WS price older than this (or from a disconnected socket) is not counted
         // as fresh for the parity comparison. ~5s comfortably exceeds OKX's sub-second ticker cadence.
         const val PRICE_PARITY_MAX_AGE_MS = 5_000L
+
+        // Phase 3 step 3 safety belt: even a FRESH WS price that sits more than this far from the REST
+        // price is treated as untrustworthy (bad tick) and rejected in favour of REST. getFreshPrice
+        // already covers stale/disconnected; this guards the fresh-but-wrong case. Conservative (0.5%).
+        val MAX_TRUSTED_ENTRY_DELTA_BPS: BigDecimal = BigDecimal("50")
     }
 
     private val minConfidence = tradingProperties.minConfidence
@@ -141,13 +146,17 @@ class ExecuteAiDecisionsUseCase(
         // 2. Load Instrument & Price
         val instrumentId = InstrumentId.fromSymbol(symbol)
         val inst = trading.loadInstrument(instrumentId).getOrThrow()
-        val lastPrice = trading.getLastPrice(instrumentId).getOrNull()
+        val restPrice = trading.getLastPrice(instrumentId).getOrNull()
             ?: return PlanResult.Skip(symbol, "No price available")
 
-        // Phase 3 step 2 (parity observer): compare the fresh WS price against the REST price we just
-        // read, but KEEP USING the REST value below. Inert evidence-gathering — it produces the
-        // WS-vs-REST delta that gates the step-3 value-swap. No flag, no behaviour change.
-        logPriceParity(instrumentId, lastPrice)
+        // Phase 3 step 2 (parity observer): always log the fresh WS price next to the REST price for
+        // evidence — kept on even after step 3 is enabled, so we keep watching the delta.
+        logPriceParity(instrumentId, restPrice)
+
+        // Phase 3 step 3 (value-swap, default OFF): when trading.useStreamingEntryPrice is on, size on
+        // the fresh WS price instead of REST — but only when connected, fresh, AND within the sanity
+        // delta of REST. Any of those failing -> REST fallback, so this is never worse than today.
+        val lastPrice = resolveEntryPrice(instrumentId, restPrice)
 
         // 3. Idempotency Check
         val signalKey = idempotencyService.signalKey(symbol, args, lastPrice)
@@ -431,6 +440,25 @@ class ExecuteAiDecisionsUseCase(
     }
 
     /**
+     * Phase 3 step 3: the entry price actually used for sizing/guardrails. REST unless the streaming
+     * flag is on AND [StreamingMarketDataPort.getFreshPrice] yields a connected+fresh price within the
+     * sanity delta of REST. Logs a warning (but still falls back) when a fresh WS price is rejected
+     * for diverging too far — that signals a misbehaving feed while the flag is live.
+     */
+    private fun resolveEntryPrice(instrumentId: InstrumentId, restPrice: BigDecimal): BigDecimal {
+        if (!tradingProperties.useStreamingEntryPrice) return restPrice
+        val wsFresh = streaming.getFreshPrice(instrumentId.value, PRICE_PARITY_MAX_AGE_MS)
+        val chosen = selectEntryPrice(wsFresh, restPrice, MAX_TRUSTED_ENTRY_DELTA_BPS)
+        if (wsFresh != null && chosen !== wsFresh) {
+            log.warn {
+                "WS entry price ${instrumentId.value} rejected: deltaBps=${priceDeltaBps(wsFresh, restPrice)} " +
+                    "> $MAX_TRUSTED_ENTRY_DELTA_BPS; using REST $restPrice"
+            }
+        }
+        return chosen
+    }
+
+    /**
      * Phase 3 step 2: log the fresh WS price next to the REST price actually used for this plan, so
      * we can see the WS-vs-REST delta over a real run before trusting the WS price for entry sizing
      * (step 3). Pure observation — never changes pricing. ws=null means the socket was disconnected
@@ -459,4 +487,19 @@ internal fun priceDeltaBps(wsPrice: BigDecimal, restPrice: BigDecimal): BigDecim
         .divide(restPrice, 8, RoundingMode.HALF_UP)
         .multiply(BigDecimal(10_000))
         .setScale(2, RoundingMode.HALF_UP)
+}
+
+/**
+ * Phase 3 step 3 entry-price choice: the fresh WS price when present AND within [maxDeltaBps] of
+ * REST, else REST. Pure + pinned because it picks the number that sizes a real order. Returns one
+ * of the two argument instances, so the caller can use reference identity to tell which was chosen.
+ */
+internal fun selectEntryPrice(
+    wsFresh: BigDecimal?,
+    restPrice: BigDecimal,
+    maxDeltaBps: BigDecimal,
+): BigDecimal {
+    if (wsFresh == null) return restPrice
+    if (priceDeltaBps(wsFresh, restPrice) > maxDeltaBps) return restPrice
+    return wsFresh
 }
