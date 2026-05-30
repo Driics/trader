@@ -20,8 +20,8 @@ import ru.driics.aitrade.common.logging.CorrelationId
 import ru.driics.aitrade.common.logging.logger
 import ru.driics.aitrade.common.measureSuspend
 import ru.driics.aitrade.application.risk.KillSwitchState
-import ru.driics.aitrade.application.risk.RiskContext
 import ru.driics.aitrade.config.RiskGateProperties
+import ru.driics.aitrade.domain.risk.RiskContext
 import ru.driics.aitrade.domain.model.*
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort

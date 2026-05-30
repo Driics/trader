@@ -2,6 +2,7 @@ package ru.driics.aitrade.application.risk
 
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
+import ru.driics.aitrade.domain.risk.KillSwitchSnapshot
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset

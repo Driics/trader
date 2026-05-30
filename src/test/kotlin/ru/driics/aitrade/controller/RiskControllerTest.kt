@@ -11,8 +11,8 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
-import ru.driics.aitrade.application.risk.KillSwitchSnapshot
 import ru.driics.aitrade.application.risk.KillSwitchState
+import ru.driics.aitrade.domain.risk.KillSwitchSnapshot
 import java.time.Instant
 
 class RiskControllerTest {

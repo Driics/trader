@@ -1,5 +1,7 @@
 package ru.driics.aitrade.application.risk
 
+import ru.driics.aitrade.domain.risk.KillSwitchSnapshot
+
 /**
  * Durable persistence for the kill-switch snapshot (S2).
  *

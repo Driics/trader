@@ -5,7 +5,7 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Lock-free bounded counter that enforces the per-cycle concurrent-position cap (S3).
  *
- * The problem it solves: [ru.driics.aitrade.application.risk.RiskContext.openPositionsCount] is
+ * The problem it solves: [ru.driics.aitrade.domain.risk.RiskContext.openPositionsCount] is
  * frozen at the start of a cycle, but order plans execute concurrently (`flatMapMerge`). A naive
  * `count >= cap` check lets N racing plans all read the same sub-cap count and all pass — placing
  * more positions than the cap allows. This counter reserves a slot atomically via CAS, so at most

@@ -1,4 +1,4 @@
-package ru.driics.aitrade.application.risk
+package ru.driics.aitrade.domain.risk
 
 import java.time.Instant
 

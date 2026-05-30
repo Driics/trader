@@ -6,6 +6,9 @@ import io.mockk.verify
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import ru.driics.aitrade.config.RiskGateProperties
+import ru.driics.aitrade.domain.risk.KillSwitchSnapshot
+import ru.driics.aitrade.domain.risk.RiskContext
+import ru.driics.aitrade.domain.risk.RiskDecision
 import java.math.BigDecimal
 import java.time.Instant
 

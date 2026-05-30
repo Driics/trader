@@ -13,8 +13,8 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import ru.driics.aitrade.application.ai.AiSchemaValidator
 import ru.driics.aitrade.application.ai.ConfidenceCalibrator
-import ru.driics.aitrade.application.risk.KillSwitchSnapshot
 import ru.driics.aitrade.application.risk.KillSwitchState
+import ru.driics.aitrade.domain.risk.KillSwitchSnapshot
 import ru.driics.aitrade.application.usecase.AnalyzePromptUseCase
 import ru.driics.aitrade.application.usecase.BuildPromptUseCase
 import ru.driics.aitrade.application.usecase.ExecuteAiDecisionsUseCase

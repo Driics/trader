@@ -1,11 +1,11 @@
-package ru.driics.aitrade.application.risk
+package ru.driics.aitrade.domain.risk
 
 import java.math.BigDecimal
 
 /**
- * Snapshot of portfolio state evaluated once per orchestrator cycle and threaded
- * into ExecuteAiDecisionsUseCase. PnL of ZERO is used when the OKX read fails
- * (fail-open behaviour — see X2 design spec).
+ * Snapshot of portfolio state evaluated once per orchestrator cycle and threaded into
+ * ExecuteAiDecisionsUseCase. When the realized-PnL read fails the orchestrator fails CLOSED and
+ * skips the cycle (S1), so this context is only built from a successful read.
  */
 data class RiskContext(
     val openPositionsCount: Int,

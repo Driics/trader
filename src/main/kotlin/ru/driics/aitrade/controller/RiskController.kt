@@ -6,8 +6,8 @@ import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
-import ru.driics.aitrade.application.risk.KillSwitchSnapshot
 import ru.driics.aitrade.application.risk.KillSwitchState
+import ru.driics.aitrade.domain.risk.KillSwitchSnapshot
 
 @RestController
 @RequestMapping("/api/trading/kill-switch")

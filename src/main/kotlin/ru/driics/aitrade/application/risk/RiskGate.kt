@@ -1,6 +1,9 @@
 package ru.driics.aitrade.application.risk
 
 import ru.driics.aitrade.config.RiskGateProperties
+import ru.driics.aitrade.domain.risk.KillSwitchSnapshot
+import ru.driics.aitrade.domain.risk.RiskContext
+import ru.driics.aitrade.domain.risk.RiskDecision
 
 /**
  * Portfolio-wide risk evaluation. Stateless except for the side effect of

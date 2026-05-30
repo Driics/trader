@@ -6,9 +6,9 @@ import kotlinx.coroutines.flow.*
 import ru.driics.aitrade.application.ai.ActionGuard
 import ru.driics.aitrade.application.ai.ConfidenceCalibrator
 import ru.driics.aitrade.application.ai.IdempotencyService
-import ru.driics.aitrade.application.risk.RiskContext
-import ru.driics.aitrade.application.risk.RiskDecision
 import ru.driics.aitrade.application.risk.RiskGate
+import ru.driics.aitrade.domain.risk.RiskContext
+import ru.driics.aitrade.domain.risk.RiskDecision
 import ru.driics.aitrade.common.logging.BusinessEventLogger
 import ru.driics.aitrade.common.logging.logger
 import ru.driics.aitrade.config.RiskGateProperties

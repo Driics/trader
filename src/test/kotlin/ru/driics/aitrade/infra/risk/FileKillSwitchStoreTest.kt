@@ -5,7 +5,7 @@ import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
-import ru.driics.aitrade.application.risk.KillSwitchSnapshot
+import ru.driics.aitrade.domain.risk.KillSwitchSnapshot
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
