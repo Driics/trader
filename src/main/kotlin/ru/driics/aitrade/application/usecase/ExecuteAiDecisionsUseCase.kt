@@ -275,7 +275,8 @@ class ExecuteAiDecisionsUseCase(
                     plan,
                     sizing,
                     clOrdId = "DEMO-$clOrdId",
-                    ordId = "DEMO-ORD-${UUID.randomUUID()}"
+                    ordId = "DEMO-ORD-${UUID.randomUUID()}",
+                    demo = true
                 )
                 placed = true
                 return result
@@ -311,11 +312,16 @@ class ExecuteAiDecisionsUseCase(
         plan: OrderPlan,
         sizing: OrderSizingPolicy.SizingResult,
         clOrdId: String,
-        ordId: String?
+        ordId: String?,
+        demo: Boolean = false
     ): AiTradeExecutionResult {
-        // Effects
-        confidenceCalibrator.recordTrade(plan.symbol)
-        plan.signalKey?.let { idempotencyService.recordSignal(it) }
+        // S6: demo (paper) fills must not mutate production state. Skip cooldown/calibration and
+        // idempotency recording so a simulated order doesn't suppress a later real signal or skew
+        // confidence calibration. Only real fills update these.
+        if (!demo) {
+            confidenceCalibrator.recordTrade(plan.symbol)
+            plan.signalKey?.let { idempotencyService.recordSignal(it) }
+        }
 
         BusinessEventLogger.orderPlaced(
             symbol = plan.symbol,
@@ -327,7 +333,8 @@ class ExecuteAiDecisionsUseCase(
             tp = plan.tpPx,
             sl = plan.slPx,
             leverage = sizing.leverage,
-            costUsd = sizing.totalUsd
+            costUsd = sizing.totalUsd,
+            demo = demo
         )
 
         return AiTradeExecutionResult(

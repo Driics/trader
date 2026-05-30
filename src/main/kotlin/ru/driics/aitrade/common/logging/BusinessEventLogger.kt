@@ -24,10 +24,13 @@ object BusinessEventLogger {
         sl: BigDecimal? = null,
         leverage: Int? = null,
         costUsd: BigDecimal? = null,
+        demo: Boolean = false,
         correlationId: String? = CorrelationId.get()
     ) {
         log.info(
-            event = "order_placed",
+            // S6: tag simulated (demo) fills distinctly so paper trading never pollutes
+            // production order metrics/dashboards that filter on this event.
+            event = if (demo) "order_placed_demo" else "order_placed",
             "symbol" to symbol,
             "orderId" to orderId,
             "clOrdId" to clOrdId,
@@ -38,6 +41,7 @@ object BusinessEventLogger {
             "stopLoss" to sl?.toPlainString(),
             "leverage" to leverage,
             "costUsd" to costUsd?.toPlainString(),
+            "demo" to demo,
             "correlationId" to correlationId
         )
     }

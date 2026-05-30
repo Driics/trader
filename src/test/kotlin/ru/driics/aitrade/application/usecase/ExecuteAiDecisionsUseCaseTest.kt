@@ -1,22 +1,31 @@
 package ru.driics.aitrade.application.usecase
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
+import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import ru.driics.aitrade.application.ai.ConfidenceCalibrator
 import ru.driics.aitrade.application.risk.KillSwitchSnapshot
 import ru.driics.aitrade.application.risk.RiskContext
+import ru.driics.aitrade.application.risk.RiskDecision
 import ru.driics.aitrade.application.risk.RiskGate
 import ru.driics.aitrade.config.RiskGateProperties
 import ru.driics.aitrade.config.TradingProperties
+import ru.driics.aitrade.domain.model.AIAction
 import ru.driics.aitrade.domain.model.AccountInfo
 import ru.driics.aitrade.domain.model.AiSignal
 import ru.driics.aitrade.domain.model.AiTradeEnvelope
 import ru.driics.aitrade.domain.model.AiTradeSignalArgs
 import ru.driics.aitrade.domain.model.MarketState
+import ru.driics.aitrade.domain.model.OkxInstrumentInfo
+import ru.driics.aitrade.domain.ports.PlaceOrderOutcome
 import ru.driics.aitrade.domain.ports.TradingPort
+import ru.driics.aitrade.domain.types.TradeResult
 import java.math.BigDecimal
 import java.time.Clock
 import java.time.Instant
@@ -38,9 +47,9 @@ class ExecuteAiDecisionsUseCaseTest {
 
     private val props = TradingProperties(currencies = listOf("BTC"))
 
-    private fun useCase() = ExecuteAiDecisionsUseCase(
+    private fun useCase(tradingProperties: TradingProperties = props) = ExecuteAiDecisionsUseCase(
         trading = trading,
-        tradingProperties = props,
+        tradingProperties = tradingProperties,
         clock = clock,
         confidenceCalibrator = confidenceCalibrator,
         meterRegistry = meterRegistry,
@@ -110,5 +119,65 @@ class ExecuteAiDecisionsUseCaseTest {
         val decisions = mapOf("BTC" to envelope("BTC", AiSignal.BUY, confidence = BigDecimal("0.10")))
         val results = useCase().execute(decisions, riskContext, snapshot())
         assertTrue(results.isEmpty())
+    }
+
+    // =========================================================================
+    // S6 — demo-mode side-effect isolation (placement path)
+    // =========================================================================
+
+    private val instrument = OkxInstrumentInfo(
+        instId = "BTC-USDT-SWAP",
+        instType = "SWAP",
+        ctVal = "0.01",
+        ctValCcy = "BTC",
+        lotSz = "1",
+        minSz = "1",
+        tickSz = "0.1",
+    )
+
+    /** A BUY that clears ActionGuard: SL below entry (unfavorable), TP above (favorable). */
+    private fun readyBuy() = AiTradeEnvelope(
+        AiTradeSignalArgs(
+            coin = "BTC",
+            signal = AiSignal.BUY,
+            confidence = BigDecimal("0.9"),
+            riskUsd = BigDecimal("100"),   // 100 / |50000-40000| = 0.01 coin -> 1 contract
+            stopLoss = BigDecimal("40000"),
+            profitTarget = BigDecimal("70000"),
+            leverage = 5,
+        ),
+    )
+
+    private fun stubReadyPlacementPath() {
+        every { riskGate.evaluate(any()) } returns RiskDecision.Allow
+        coEvery { trading.loadInstrument(any()) } returns TradeResult.Success(instrument)
+        coEvery { trading.getLastPrice(any()) } returns TradeResult.Success(BigDecimal("50000"))
+        coEvery { trading.setLeverage(any(), any(), any()) } returns TradeResult.Success(true)
+    }
+
+    @Test
+    fun `demo placement does NOT record the trade or mutate calibration (S6)`() = runBlocking {
+        stubReadyPlacementPath() // props default -> demoMode = true
+
+        val results = useCase().execute(mapOf("BTC" to readyBuy()), riskContext, snapshot(BigDecimal("100000")))
+
+        assertEquals(1, results.size)
+        assertEquals(AIAction.PLACED, results.single().action, "demo order should be simulated as placed")
+        verify(exactly = 0) { confidenceCalibrator.recordTrade(any()) }
+    }
+
+    @Test
+    fun `real placement DOES record the trade (contrast with demo)`() = runBlocking {
+        stubReadyPlacementPath()
+        coEvery {
+            trading.placeMarketOrderWithTpSl(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns TradeResult.Success(PlaceOrderOutcome(ok = true, ordId = "OID-1", message = "Placed"))
+
+        val realProps = TradingProperties(currencies = listOf("BTC"), demoMode = false)
+        val results = useCase(realProps).execute(mapOf("BTC" to readyBuy()), riskContext, snapshot(BigDecimal("100000")))
+
+        assertEquals(1, results.size)
+        assertEquals(AIAction.PLACED, results.single().action)
+        verify(exactly = 1) { confidenceCalibrator.recordTrade("BTC") }
     }
 }
