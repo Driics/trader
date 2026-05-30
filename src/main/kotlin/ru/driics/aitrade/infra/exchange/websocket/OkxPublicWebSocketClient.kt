@@ -192,15 +192,18 @@ class OkxPublicWebSocketClient(
 
                 channel.startsWith(CANDLE_PREFIX) -> {
                     // Guard once on the batch's instId (it comes from the envelope arg, not each row).
-                    // The previous `?.filter { instId.isNotEmpty() }` applied a row-independent predicate
-                    // per element — a guard masquerading as a filter.
                     if (instId.isEmpty()) return@runCatching
                     val period = channel.removePrefix(CANDLE_PREFIX)
-                    objectMapper.treeToValue(node, OkxWsTypeRefs.candle)
-                        .data
-                        ?.forEach {
-                            _candleFlowMutable.tryEmit(CandleEvent(instId, period, it))
+                    // OKX candle rows are ARRAYS ([ts,o,h,l,c,...]), not objects — bind each row
+                    // directly instead of treeToValue into an object envelope (which never matched).
+                    val rows = node.path("data")
+                    if (rows.isArray) {
+                        for (row in rows) {
+                            OkxWsCandleUpdate.fromArray(row.map { it.asText() })?.let {
+                                _candleFlowMutable.tryEmit(CandleEvent(instId, period, it))
+                            }
                         }
+                    }
                 }
 
                 else -> log.trace { "Unhandled channel: $channel" }

@@ -106,4 +106,24 @@ class OkxWebSocketClientTest {
         val acct = withTimeout(2_000) { client.accountFlow.first() }
         assertEquals(0, BigDecimal("1000.5").compareTo(acct.totalEqOrZero()))
     }
+
+    @Test
+    fun `candle array message routes to candleFlow`() = runBlocking {
+        val client = publicClient()
+        val got = CompletableDeferred<OkxPublicWebSocketClient.CandleEvent>()
+        val job = launch { client.candleFlow.collect { got.complete(it) } }
+        client.candleFlow.subscriptionCount.first { it > 0 }
+
+        // OKX candle rows are ARRAYS: [ts,o,h,l,c,vol,volCcy,volCcyQuote,confirm]
+        client.handleTextFrame(
+            """{"arg":{"channel":"candle1m","instId":"BTC-USDT-SWAP"},"data":[["1700000000000","50000","50100","49900","50050","12.3","615000","615000","1"]]}""",
+        )
+
+        val event = withTimeout(2_000) { got.await() }
+        assertEquals("BTC-USDT-SWAP", event.instId)
+        assertEquals("1m", event.period)
+        assertEquals("50050", event.candle.c)
+        assertTrue(event.candle.isConfirmed())
+        job.cancel()
+    }
 }
