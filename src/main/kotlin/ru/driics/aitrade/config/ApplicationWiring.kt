@@ -10,6 +10,7 @@ import ru.driics.aitrade.application.ai.AiBudgetLimiter
 import ru.driics.aitrade.application.ai.AiSchemaValidator
 import ru.driics.aitrade.application.ai.ConfidenceCalibrator
 import ru.driics.aitrade.application.ai.PromptTemplateService
+import ru.driics.aitrade.application.ai.TemplatedPromptRenderer
 import ru.driics.aitrade.application.orchestrator.UpdateCycleOrchestrator
 import ru.driics.aitrade.application.risk.KillSwitchState
 import ru.driics.aitrade.application.risk.KillSwitchStore
@@ -49,16 +50,25 @@ class ApplicationWiring(
     )
 
     @Bean
+    fun templatedPromptRenderer(
+        templateService: PromptTemplateService
+    ) = TemplatedPromptRenderer(
+        templateService = templateService,
+        tradingProperties = tradingProperties
+    )
+
+    @Bean
     fun buildPromptUseCase(
         market: MarketDataPort,
         out: PromptOutputPort,
         templateService: PromptTemplateService,
+        promptRenderer: TemplatedPromptRenderer,
         clock: Clock
     ) = BuildPromptUseCase(
         market = market,
         outputPort = out,
         templateService = templateService,
-        tradingProperties = tradingProperties,
+        promptRenderer = promptRenderer,
         clock = clock
     )
 

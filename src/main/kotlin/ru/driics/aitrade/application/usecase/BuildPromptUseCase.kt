@@ -2,12 +2,11 @@ package ru.driics.aitrade.application.usecase
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import ru.driics.aitrade.application.ai.PromptTemplateService
-import ru.driics.aitrade.config.TradingProperties
+import ru.driics.aitrade.application.ai.TemplatedPromptRenderer
 import ru.driics.aitrade.domain.model.MarketState
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PromptOutputPort
 import ru.driics.aitrade.domain.services.PromptBuilder
-import ru.driics.aitrade.domain.services.PromptFormatter
 import ru.driics.aitrade.domain.types.asSymbol
 import java.time.Clock
 import java.util.concurrent.TimeUnit
@@ -16,7 +15,7 @@ class BuildPromptUseCase(
     private val market: MarketDataPort,
     private val outputPort: PromptOutputPort,
     private val templateService: PromptTemplateService,
-    private val tradingProperties: TradingProperties,
+    private val promptRenderer: TemplatedPromptRenderer,
     private val clock: Clock
 ) {
     companion object {
@@ -60,23 +59,7 @@ class BuildPromptUseCase(
         val minutesSinceStart = TimeUnit.MILLISECONDS.toMinutes(
             clock.instant().toEpochMilli() - sessionStartMs
         )
-
-        val marketDataSection = PromptBuilder.buildMarketDataSection(marketState)
-        val accountInfoSection = PromptBuilder.buildAccountInfoSection(marketState)
-
-        val availableCashUsd = PromptFormatter.formatMoneyUsd(marketState.account.availableCash)
-        val minConfidence = "${tradingProperties.minConfidence.setScale(2, java.math.RoundingMode.HALF_UP)}"
-
-        return templateService.renderUserPrompt(
-            marketData = marketDataSection,
-            accountInfo = accountInfoSection,
-            minutesSinceStart = minutesSinceStart,
-            invocationCount = invocation,
-            maxLeverage = tradingProperties.maxLeverage,
-            minLeverage = tradingProperties.minLeverage,
-            minConfidence = minConfidence,
-            availableCashUsd = availableCashUsd
-        )
+        return promptRenderer.render(marketState, minutesSinceStart, invocation)
     }
 }
 

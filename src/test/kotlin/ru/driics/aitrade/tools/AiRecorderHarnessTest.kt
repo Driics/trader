@@ -7,14 +7,13 @@ import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import ru.driics.aitrade.application.ai.AiSchemaValidator
+import ru.driics.aitrade.application.ai.TemplatedPromptRenderer
 import ru.driics.aitrade.domain.backtest.ai.AiDecisionLog
 import ru.driics.aitrade.domain.backtest.ai.AiDecisionRecorder
 import ru.driics.aitrade.domain.backtest.io.BacktestRunner
 import ru.driics.aitrade.domain.backtest.io.JsonlCandleParser
 import ru.driics.aitrade.domain.ports.AiAnalysisPort
-import ru.driics.aitrade.domain.services.PromptBuilder
 import java.io.File
-import java.time.Clock
 
 /**
  * Records LIVE AI decisions over a candle file into a replayable decision log (see `RecordedAiStrategy`).
@@ -32,9 +31,10 @@ import java.time.Clock
  *   $env:AI_RECORD_FILE="data/btc.jsonl"
  *   .\gradlew.bat --no-build-cache --rerun-tasks test --tests '*AiRecorderHarnessTest*'
  *
- * NOTE: the prompt is built with the pure [PromptBuilder] (the same data sections the live fallback uses).
- * If the live AI requires the *templated* user-prompt, swap in PromptTemplateService here — mirror
- * BuildPromptUseCase.buildTemplatePrompt. Expect to shake out AI config on the first real run.
+ * The prompt is built via the shared [TemplatedPromptRenderer] — the SAME templated user prompt the live
+ * loop uses (BuildPromptUseCase) — so recorded responses are schema-valid. Still: the first real run is
+ * the only way to confirm the AI actually emits parseable output; do a small AI_RECORD_MAX run and check
+ * the decision log is non-empty before trusting a full recording.
  */
 @SpringBootTest
 class AiRecorderHarnessTest {
@@ -44,6 +44,9 @@ class AiRecorderHarnessTest {
 
     @Autowired
     lateinit var schemaValidator: AiSchemaValidator
+
+    @Autowired
+    lateinit var promptRenderer: TemplatedPromptRenderer
 
     @Test
     fun `record AI decisions over a candle file when AI_RECORD_FILE is set`() = runBlocking {
@@ -61,13 +64,11 @@ class AiRecorderHarnessTest {
 
         val bars = JsonlCandleParser.parse(candleFile.readText())
         val config = BacktestRunner.defaultConfig(symbol)
-        val clock = Clock.systemUTC()
-        val sessionStart = bars.firstOrNull()?.timestampMs ?: 0L
 
         val recorder = AiDecisionRecorder(
             symbol = symbol,
             config = config,
-            buildPrompt = { state -> PromptBuilder.build(state, sessionStart, state.invocationCount, clock) },
+            buildPrompt = { state -> promptRenderer.render(state, state.minutesSinceStart, state.invocationCount) },
             analyze = { prompt -> aiPort.analyze(prompt) },
             parseDecisions = { json ->
                 (schemaValidator.validateAndParse(json) as? AiSchemaValidator.ValidationResult.Valid)?.decisions
