@@ -35,10 +35,12 @@ candle data, reusing the already-tested `IndicatorCalculator` and `OrderSizingPo
    ```
 3. **Pessimistic SL-first.** If both stop and target are touchable in one bar, the STOP fills (OHLC
    can't reveal intrabar order, so assume the worse outcome).
-4. **Leverage requires a stop.** A leveraged position with no stop could "recover" from a drawdown that
-   would have been force-closed in reality → fabricated equity. v1 rule: every entry must carry a stop;
-   no-stop (leveraged) entries are **rejected with a logged count**. Funding cost is **omitted but
-   logged** as a known omission (so the curve is never read as net-of-funding).
+4. **Every entry requires a stop.** (Supersedes the earlier "leverage requires a stop" wording.) Risk
+   sizing divides by `|fill − stop|`, so a missing stop is *undefined*, not merely leverage-unsafe; and
+   a stopless leveraged position could "recover" from a drawdown that would have been force-closed in
+   reality → fabricated equity. v1 rule: **no stop → reject the entry + count it** (single rejection
+   path). Funding cost is **omitted but surfaced** as a known omission on the result (`omissions`), so
+   the curve is never read as net-of-funding.
 5. **Sizing reuses `OrderSizingPolicy`.** Per-symbol instrument specs (`ctVal/ctValCcy/lotSz/minSz`)
    live in `BacktestConfig`. Forking a "simpler" sizing model would validate a system that sizes
    differently than production — defeating the whole point.
@@ -57,8 +59,24 @@ The sim synthesizes `AccountInfo` + `positions` each bar. These `Position`/`Acco
   (pessimistic SL-first); `realizedPnlUsd`. Tests.
 - **Batch 2 — metrics** ✅: `PerformanceMetrics.from(...)`, `maxDrawdownPct`. Tests.
 - **Batch 3 — baseline strategy** ✅: `RsiReversionStrategy` (deterministic). Tests.
-- **Batch 4 — engine** (next): `BacktestEngine` loop (ordering above), `MarketStateBuilder` from a bar
-  window (reuse `IndicatorCalculator`), the no-look-ahead probe test, `OrderSizingPolicy` integration.
+- **Batch 4 — engine** ✅: `BacktestConfig`/`InstrumentSpec`; `MarketStateBuilder` (pure, bar window →
+  `MarketState` via `IndicatorCalculator`); contracts↔coin sizing helpers + `OrderSizingPolicy`
+  integration; `BacktestEngine` loop (ordering above) returning `BacktestResult`. Resolutions:
+  - **Trailing positions force-close** at the final bar (`ExitReason.END_OF_DATA`) so the equity curve's
+    last point reconciles exactly with `Σ trade.pnlUsd` (else open trades silently skew return/win-rate).
+  - **One position per symbol**: a fill while a position is open is rejected+counted (no pyramiding).
+    `availableUsd = cash`; multi-symbol margin contention is a documented v1 limitation (single-symbol
+    runs are exact, since only one position can be open at a time).
+  - **Gap-through-bracket guard**: SL/TP are absolute levels off `close[i]`; fill is `open[i+1]`. If the
+    gap puts the fill outside its bracket (LONG: require `stop < fill < target`), the fill is
+    rejected+counted — never a fabricated stop-above-entry profit. Slightly optimistic (a real
+    gap-through entry fills then stops for a fee-only loss; we record nothing), bounded by fees.
+  - **Fees folded at close** (matches `SimPosition`): equity mark = `cash + Σ unrealized(gross)`; the
+    open-position entry fee is a bounded overstatement reconciled at close.
+  - **Risk sizing uses the fill price** (`open[i+1]`), re-normalizing risk to ~`riskUsd` after a gap.
+    `decision.quantity`, when set, is the coin-qty intent (skips the risk calc) but still passes through
+    `OrderSizingPolicy` (affordability + lot rounding) and the gap guard.
+  - **Warmup**: `decide()` is gated behind `warmupBars` so the RSI=0 cold-start can't place trades.
 - **Batch 5 — I/O**: JSONL `CandleSource` + `@Profile("backtest")` runner + report; (separate, network,
   user-run) OKX history fetch runner.
 - **Deferred**: AI-flow-as-strategy adapter; funding model; Sharpe.
