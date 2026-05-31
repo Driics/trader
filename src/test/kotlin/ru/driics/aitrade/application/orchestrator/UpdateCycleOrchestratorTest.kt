@@ -5,6 +5,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import io.opentelemetry.api.trace.Tracer
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -27,7 +28,9 @@ import ru.driics.aitrade.domain.model.AiTradeDecisionMap
 import ru.driics.aitrade.domain.model.AiTradeEnvelope
 import ru.driics.aitrade.domain.model.AiTradeSignalArgs
 import ru.driics.aitrade.domain.model.MarketState
+import ru.driics.aitrade.domain.journal.JournaledPnlSnapshot
 import ru.driics.aitrade.domain.ports.MarketDataPort
+import ru.driics.aitrade.domain.ports.TradeJournalPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.TradingMetricsService
 import ru.driics.aitrade.domain.types.TradeResult
@@ -53,6 +56,7 @@ class UpdateCycleOrchestratorTest {
     private val schemaValidator = mockk<AiSchemaValidator>()
     private val confidenceCalibrator = mockk<ConfidenceCalibrator>()
     private val tracer = mockk<Tracer>(relaxed = true)
+    private val tradeJournal = mockk<TradeJournalPort>(relaxed = true)
     private val clock = Clock.fixed(Instant.parse("2026-05-29T12:00:00Z"), ZoneOffset.UTC)
 
     private val build = mockk<BuildPromptUseCase>()
@@ -101,6 +105,7 @@ class UpdateCycleOrchestratorTest {
                 confidenceCalibrator = confidenceCalibrator,
                 tracer = tracer,
                 clock = clock,
+                tradeJournal = tradeJournal,
             ),
         )
 
@@ -187,5 +192,25 @@ class UpdateCycleOrchestratorTest {
         assertTrue(second.success)
         assertTrue(second.message.contains("Skipped"), "identical prompt should be skipped after a successful cycle")
         coVerify(exactly = 1) { analyze.execute(any()) } // second run skipped before analysis
+    }
+
+    // =========================================================================
+    // Trade journal — PnL snapshot hook
+    // =========================================================================
+
+    @Test
+    fun `auto-execute cycle records a PnL snapshot for the cycle`() = runBlocking {
+        stubPipelineUpToExecute()
+        coEvery { trading.getTodaysRealizedPnlUsd(any()) } returns TradeResult.Success(BigDecimal.ZERO)
+        coEvery { execute.execute(any(), any(), any()) } returns emptyList()
+
+        val result = orchestrator(autoExecute = true, riskEnabled = true).runOnce()
+
+        assertTrue(result.success)
+        verify(exactly = 1) {
+            tradeJournal.recordPnlSnapshot(
+                match<JournaledPnlSnapshot> { it.cycle == marketState.invocationCount && it.openPositionsCount == 0 }
+            )
+        }
     }
 }

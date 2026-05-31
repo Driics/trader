@@ -17,6 +17,7 @@ import ru.driics.aitrade.domain.risk.RiskContext
 import ru.driics.aitrade.domain.risk.RiskDecision
 import ru.driics.aitrade.config.RiskGateProperties
 import ru.driics.aitrade.config.TradingProperties
+import ru.driics.aitrade.domain.journal.JournaledOrder
 import ru.driics.aitrade.domain.model.AIAction
 import ru.driics.aitrade.domain.model.AccountInfo
 import ru.driics.aitrade.domain.model.AiSignal
@@ -24,8 +25,10 @@ import ru.driics.aitrade.domain.model.AiTradeEnvelope
 import ru.driics.aitrade.domain.model.AiTradeSignalArgs
 import ru.driics.aitrade.domain.model.MarketState
 import ru.driics.aitrade.domain.model.OkxInstrumentInfo
+import ru.driics.aitrade.domain.model.TradingMode
 import ru.driics.aitrade.domain.ports.PlaceOrderOutcome
 import ru.driics.aitrade.domain.ports.StreamingMarketDataPort
+import ru.driics.aitrade.domain.ports.TradeJournalPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.types.InstrumentResolver
 import ru.driics.aitrade.domain.types.TradeResult
@@ -47,6 +50,7 @@ class ExecuteAiDecisionsUseCaseTest {
     private val confidenceCalibrator = mockk<ConfidenceCalibrator>(relaxed = true)
     private val riskGate = mockk<RiskGate>(relaxed = true)
     private val streaming = mockk<StreamingMarketDataPort>(relaxed = true)
+    private val tradeJournal = mockk<TradeJournalPort>(relaxed = true)
     private val meterRegistry = SimpleMeterRegistry()
 
     private val props = TradingProperties(currencies = listOf("BTC"))
@@ -61,6 +65,8 @@ class ExecuteAiDecisionsUseCaseTest {
         riskGateProperties = RiskGateProperties(),
         streaming = streaming,
         instrumentResolver = InstrumentResolver(tradingProperties.quoteCurrency, tradingProperties.instrumentType),
+        tradeJournal = tradeJournal,
+        tradingMode = TradingMode.SIMULATION,
     )
 
     private fun snapshot(
@@ -185,6 +191,38 @@ class ExecuteAiDecisionsUseCaseTest {
         assertEquals(1, results.size)
         assertEquals(AIAction.PLACED, results.single().action)
         verify(exactly = 1) { confidenceCalibrator.recordTrade("BTC") }
+    }
+
+    // =========================================================================
+    // Trade journal — order recording hooks
+    // =========================================================================
+
+    @Test
+    fun `demo placement records a PLACED order in the trade journal exactly once`() = runBlocking {
+        stubReadyPlacementPath() // props default -> demoMode = true
+
+        val results = useCase().execute(mapOf("BTC" to readyBuy()), riskContext, snapshot(BigDecimal("100000")))
+
+        assertEquals(1, results.size)
+        assertEquals(AIAction.PLACED, results.single().action)
+        verify(exactly = 1) { tradeJournal.recordOrder(match<JournaledOrder> { it.status == "PLACED" }) }
+    }
+
+    @Test
+    fun `exchange rejection of a real order records a REJECTED order in the trade journal`() = runBlocking {
+        stubReadyPlacementPath()
+        coEvery {
+            trading.placeMarketOrderWithTpSl(any(), any(), any(), any(), any(), any(), any(), any(), any())
+        } returns TradeResult.Success(PlaceOrderOutcome(ok = false, ordId = null, message = "insufficient balance"))
+
+        val realProps = TradingProperties(currencies = listOf("BTC"), demoMode = false)
+        val results = useCase(realProps).execute(mapOf("BTC" to readyBuy()), riskContext, snapshot(BigDecimal("100000")))
+
+        assertEquals(1, results.size)
+        assertEquals(AIAction.SKIPPED, results.single().action)
+        verify(exactly = 1) {
+            tradeJournal.recordOrder(match<JournaledOrder> { it.status == "REJECTED" && it.reason == "insufficient balance" })
+        }
     }
 
     // =========================================================================

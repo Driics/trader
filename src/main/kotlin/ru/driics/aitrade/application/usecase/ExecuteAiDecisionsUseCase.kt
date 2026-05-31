@@ -13,8 +13,10 @@ import ru.driics.aitrade.common.logging.BusinessEventLogger
 import ru.driics.aitrade.common.logging.logger
 import ru.driics.aitrade.config.RiskGateProperties
 import ru.driics.aitrade.config.TradingProperties
+import ru.driics.aitrade.domain.journal.JournaledOrder
 import ru.driics.aitrade.domain.model.*
 import ru.driics.aitrade.domain.ports.StreamingMarketDataPort
+import ru.driics.aitrade.domain.ports.TradeJournalPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.IdGenerator
 import ru.driics.aitrade.domain.services.OrderSizingPolicy
@@ -40,6 +42,8 @@ class ExecuteAiDecisionsUseCase(
     private val riskGateProperties: RiskGateProperties,
     private val streaming: StreamingMarketDataPort,
     private val instrumentResolver: InstrumentResolver,
+    private val tradeJournal: TradeJournalPort,
+    private val tradingMode: TradingMode,
 ) {
     private companion object {
         val log = logger<ExecuteAiDecisionsUseCase>()
@@ -370,6 +374,29 @@ class ExecuteAiDecisionsUseCase(
             demo = demo
         )
 
+        tradeJournal.recordOrder(
+            JournaledOrder(
+                timestampMs = clock.instant().toEpochMilli(),
+                mode = tradingMode,
+                symbol = plan.symbol,
+                instId = plan.instrumentId.value,
+                side = plan.side,
+                leverage = sizing.leverage,
+                requestedContracts = sizing.requestedContracts,
+                placedContracts = sizing.roundedContracts,
+                entryPx = plan.entryPx,
+                tpPx = plan.tpPx,
+                slPx = plan.slPx,
+                riskUsd = null,
+                costUsd = sizing.totalUsd,
+                clOrdId = clOrdId,
+                ordId = ordId,
+                status = "PLACED",
+                reason = null,
+                demo = demo,
+            )
+        )
+
         return AiTradeExecutionResult(
             symbol = plan.symbol,
             action = AIAction.PLACED,
@@ -384,6 +411,30 @@ class ExecuteAiDecisionsUseCase(
 
     private fun handleFailedOrder(plan: OrderPlan, clOrdId: String, message: String?): AiTradeExecutionResult {
         BusinessEventLogger.orderRejected(plan.symbol, clOrdId, message ?: "Unknown", null)
+
+        tradeJournal.recordOrder(
+            JournaledOrder(
+                timestampMs = clock.instant().toEpochMilli(),
+                mode = tradingMode,
+                symbol = plan.symbol,
+                instId = plan.instrumentId.value,
+                side = plan.side,
+                leverage = plan.leverage,
+                requestedContracts = null,
+                placedContracts = null,
+                entryPx = plan.entryPx,
+                tpPx = plan.tpPx,
+                slPx = plan.slPx,
+                riskUsd = null,
+                costUsd = null,
+                clOrdId = clOrdId,
+                ordId = null,
+                status = "REJECTED",
+                reason = message,
+                demo = false,
+            )
+        )
+
         return createSkippedResult(plan, "Rejected: $message", clOrdId)
     }
 

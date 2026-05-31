@@ -20,10 +20,12 @@ import ru.driics.aitrade.application.usecase.AnalyzePromptUseCase
 import ru.driics.aitrade.application.usecase.BuildPromptUseCase
 import ru.driics.aitrade.application.usecase.ExecuteAiDecisionsUseCase
 import io.opentelemetry.api.trace.Tracer
+import ru.driics.aitrade.domain.model.TradingMode
 import ru.driics.aitrade.domain.ports.AiAnalysisPort
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PromptOutputPort
 import ru.driics.aitrade.domain.ports.StreamingMarketDataPort
+import ru.driics.aitrade.domain.ports.TradeJournalPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.ApiKeyRotationPolicy
 import ru.driics.aitrade.domain.services.TradingMetricsService
@@ -145,6 +147,8 @@ class ApplicationWiring(
         riskGateProperties: RiskGateProperties,
         streaming: StreamingMarketDataPort,
         instrumentResolver: InstrumentResolver,
+        tradeJournal: TradeJournalPort,
+        okxProperties: OkxProperties,
     ) = ExecuteAiDecisionsUseCase(
         trading = trading,
         tradingProperties = tradingProperties,
@@ -155,6 +159,8 @@ class ApplicationWiring(
         riskGateProperties = riskGateProperties,
         streaming = streaming,
         instrumentResolver = instrumentResolver,
+        tradeJournal = tradeJournal,
+        tradingMode = TradingMode.resolve(tradingProperties.demoMode, okxProperties.paper),
     )
 
     @Bean
@@ -177,7 +183,8 @@ class ApplicationWiring(
         schemaValidator: AiSchemaValidator,
         confidenceCalibrator: ConfidenceCalibrator,
         tracer: Tracer,
-        clock: Clock
+        clock: Clock,
+        tradeJournal: TradeJournalPort,
     ) = UpdateCycleOrchestrator(
         config = UpdateCycleOrchestrator.OrchestratorConfig(
             symbols = tradingProperties.getCurrenciesList(),
@@ -199,6 +206,7 @@ class ApplicationWiring(
             confidenceCalibrator = confidenceCalibrator,
             tracer = tracer,
             clock = clock,
+            tradeJournal = tradeJournal,
             decisionLogSink = tradingProperties.decisionLogFile?.let { JsonlDecisionLogSink(Path.of(it)) }
         )
     )

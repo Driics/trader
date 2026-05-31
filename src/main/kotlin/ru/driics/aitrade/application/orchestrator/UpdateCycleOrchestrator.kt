@@ -22,9 +22,11 @@ import ru.driics.aitrade.common.measureSuspend
 import ru.driics.aitrade.application.risk.KillSwitchState
 import ru.driics.aitrade.config.RiskGateProperties
 import ru.driics.aitrade.domain.risk.RiskContext
+import ru.driics.aitrade.domain.journal.JournaledPnlSnapshot
 import ru.driics.aitrade.domain.model.*
 import ru.driics.aitrade.domain.ports.DecisionLogSink
 import ru.driics.aitrade.domain.ports.MarketDataPort
+import ru.driics.aitrade.domain.ports.TradeJournalPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.TradingMetricsService
 import ru.driics.aitrade.domain.types.TradeResult
@@ -61,6 +63,7 @@ class UpdateCycleOrchestrator(
         val confidenceCalibrator: ConfidenceCalibrator,
         val tracer: Tracer,
         val clock: Clock,
+        val tradeJournal: TradeJournalPort,
         val decisionLogSink: DecisionLogSink? = null
     )
 
@@ -312,6 +315,18 @@ class UpdateCycleOrchestrator(
                 openPositionsCount = openPositionsCount,
                 todaysRealizedPnlUsd = pnl,
                 killSwitch = killSnap,
+            )
+
+            infrastructure.tradeJournal.recordPnlSnapshot(
+                JournaledPnlSnapshot(
+                    timestampMs = infrastructure.clock.instant().toEpochMilli(),
+                    cycle = marketState.invocationCount,
+                    accountValue = marketState.account.accountValue,
+                    availableCash = marketState.account.availableCash,
+                    totalReturn = marketState.account.totalReturn,
+                    realizedPnlToday = pnl,
+                    openPositionsCount = openPositionsCount,
+                )
             )
 
             val results = useCases.execute.execute(decisions, riskContext, marketState)
