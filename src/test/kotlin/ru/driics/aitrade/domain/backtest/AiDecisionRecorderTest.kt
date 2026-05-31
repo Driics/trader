@@ -74,6 +74,19 @@ class AiDecisionRecorderTest {
     }
 
     @Test
+    fun `maxInvocations caps the number of LLM calls`() = runBlocking {
+        var calls = 0
+        val rec = AiDecisionRecorder(
+            symbol = "X", config = config(),
+            buildPrompt = { "p" }, analyze = { calls++; okResponse() }, parseDecisions = { buyMap },
+            cadenceBars = 1, maxInvocations = 3,
+        )
+        val out = rec.record(series(10))
+        assertEquals(3, out.size)
+        assertEquals(3, calls)
+    }
+
+    @Test
     fun `failed responses are skipped and reported`() = runBlocking {
         val skipped = mutableListOf<Int>()
         var n = 0

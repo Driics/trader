@@ -29,12 +29,14 @@ class AiDecisionRecorder(
     private val analyze: suspend (String) -> AiAnalysisResponse,
     private val parseDecisions: (String) -> AiTradeDecisionMap?,
     private val cadenceBars: Int = 1,
+    private val maxInvocations: Int? = null,
 ) {
     suspend fun record(
         bars: List<Bar>,
         onSkip: (barIndex: Int, reason: String) -> Unit = { _, _ -> },
     ): List<RecordedDecision> {
         require(cadenceBars >= 1) { "cadenceBars must be >= 1" }
+        var invocations = 0
         val account = AccountInfo(
             totalReturn = BigDecimal.ZERO,
             availableCash = config.startingEquityUsd,
@@ -45,6 +47,8 @@ class AiDecisionRecorder(
         for (i in bars.indices) {
             if (i < config.warmupBars) continue
             if ((i - config.warmupBars) % cadenceBars != 0) continue
+            if (maxInvocations != null && invocations >= maxInvocations) break
+            invocations++
 
             val from = maxOf(0, i + 1 - config.indicatorLookback)
             val state = MarketStateBuilder.build(
