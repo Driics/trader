@@ -149,11 +149,14 @@ class BacktestEngine(
             val equity = cash + unrealized
             equityCurve += equity
 
-            // 4. Decide on bars[0..i] (the single look-ahead chokepoint) and queue for open[i+1].
+            // 4. Decide on a bounded trailing window ending at bar i (the single look-ahead chokepoint:
+            //    only past+current bars, never future) and queue for open[i+1]. The window is capped at
+            //    indicatorLookback so the run stays O(n), not O(n^2).
             if (i >= config.warmupBars) {
+                val from = maxOf(0, i + 1 - config.indicatorLookback)
                 val state = MarketStateBuilder.build(
                     symbol = symbol,
-                    bars = bars.subList(0, i + 1),
+                    bars = bars.subList(from, i + 1),
                     stepIndex = i,
                     account = AccountInfo(
                         totalReturn = totalReturn(config.startingEquityUsd, equity),

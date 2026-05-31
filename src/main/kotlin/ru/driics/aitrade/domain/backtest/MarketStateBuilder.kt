@@ -7,15 +7,16 @@ import ru.driics.aitrade.domain.model.Position
 import ru.driics.aitrade.domain.services.IndicatorCalculator
 
 /**
- * Turns a bar prefix `bars[0..i]` (for a single [symbol]) into the same [MarketState] the live decision
- * loop hands a [ru.driics.aitrade.domain.strategy.Strategy]. Pure and standalone so it is testable apart
- * from the engine.
+ * Turns a trailing bar window ending at the decision bar (for a single [symbol]) into the same
+ * [MarketState] the live decision loop hands a [ru.driics.aitrade.domain.strategy.Strategy]. Pure and
+ * standalone so it is testable apart from the engine.
  *
- * NO LOOK-AHEAD (invariant 1) lives here: the caller passes only the prefix up to and including the
- * decision bar, and everything below is derived solely from it. The scalar indicators use the FULL
- * prefix (EMA/RSI/MACD smoothing is path-dependent); the intraday lists are truncated to the last
- * [intradayWindow] entries to mirror the live rolling window (presentation only — does not change the
- * scalar math).
+ * NO LOOK-AHEAD (invariant 1) lives here: the caller passes only bars up to and including the decision
+ * bar, and everything below is derived solely from them. The engine bounds the window to
+ * `indicatorLookback` trailing bars (keeps the run O(n) and matches the live rolling window), so the
+ * scalar indicators use that window, not the unbounded history; the intraday lists are further truncated
+ * to the last [intradayWindow] entries. `minutesSinceStart` is therefore relative to the window start,
+ * not the global series start — no strategy depends on it in v1.
  */
 object MarketStateBuilder {
 

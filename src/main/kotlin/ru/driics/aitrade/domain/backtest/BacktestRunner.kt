@@ -23,7 +23,8 @@ object BacktestRunner {
         marginBufferPct = BigDecimal("0.05"),
         riskPerTradePct = BigDecimal("0.01"),    // risk 1% of equity per trade
         warmupBars = 30,                          // enough history for RSI/MACD/EMA to be meaningful
-        intradayWindow = 300,
+        intradayWindow = 200,
+        indicatorLookback = 300,                  // bounds per-bar indicator cost -> O(n) over the series
         instruments = mapOf(
             symbol to InstrumentSpec(
                 ctVal = BigDecimal("0.01"),

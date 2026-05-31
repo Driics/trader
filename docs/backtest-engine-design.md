@@ -20,9 +20,13 @@ candle data, reusing the already-tested `IndicatorCalculator` and `OrderSizingPo
   `bars[0..i]` (reusing `IndicatorCalculator`), runs the strategy, simulates fills/exits, marks equity.
 
 ## The five invariants that keep the number honest
-1. **No look-ahead.** At step `i` the strategy sees only `bars[0..i]`. The `subList(0, i+1)` slice is the
-   SINGLE chokepoint, pinned by a probe-strategy test that records the max timestamp ever observed and
-   asserts it never exceeds the decision bar. (Test, not comment.)
+1. **No look-ahead.** At step `i` the strategy sees only past+current bars — a trailing window
+   `subList(maxOf(0, i+1-indicatorLookback), i+1)`. That slice is the SINGLE chokepoint, pinned by a
+   probe-strategy test that records the max timestamp/value ever observed and asserts it never exceeds the
+   decision bar. The window is *bounded* (not the whole prefix): recomputing indicators over an unbounded
+   prefix every bar is O(n²) and pathological at realistic candle counts (a 4300-bar run spun for 20+ min);
+   bounding it is O(n) AND matches the live system's bounded rolling window. A second probe test pins that
+   the window never exceeds `indicatorLookback`. (Tests, not comments.)
 2. **Fill at `open[i+1]`, never `close[i]`.** Acting at the close you just used to decide assumes
    zero latency — the classic backtest lie. Decisions queue a pending order filled at next bar open.
    Loop ordering (the #1 engine bug):

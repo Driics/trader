@@ -61,6 +61,24 @@ class BacktestNoLookAheadTest {
     }
 
     @Test
+    fun `indicator lookback bounds the trailing window without reintroducing look-ahead`() {
+        val bars = (0 until 12).map { i ->
+            val c = BigDecimal((i + 1) * 10)
+            Bar(i.toLong() * 60_000, c, c, c, c)
+        }
+        val probe = ProbeStrategy()
+        BacktestEngine(probe, usdConfig().copy(indicatorLookback = 4)).run("X", bars)
+
+        assertEquals(bars.size, probe.seen.size)
+        probe.seen.forEachIndexed { i, s ->
+            val expected = BigDecimal((i + 1) * 10)
+            assertEquals(0, expected.compareTo(s.price), "step $i still sees its own close (no look-ahead)")
+            assertTrue(s.size <= 4, "step $i window bounded to lookback (was ${s.size})")
+        }
+        assertEquals(4, probe.seen.last().size) // late steps actually hit the cap
+    }
+
+    @Test
     fun `an order decided at step i fills at the next bar's open, not the decision close`() {
         // Decision fires at i=2 on close[2]=120; the next bar GAPS to open[3]=131.
         val bars = listOf(

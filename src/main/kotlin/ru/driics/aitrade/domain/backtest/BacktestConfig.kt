@@ -29,9 +29,14 @@ data class InstrumentSpec(
  * @property warmupBars number of leading bars during which the engine builds state but does NOT call the
  *   strategy — indicators (RSI/MACD/EMA) need history, and a cold-start RSI of 0 would false-trigger.
  * @property intradayWindow cap on the length of the intraday lists exposed in [ru.driics.aitrade.domain.model.MarketState]
- *   (mirrors the live rolling window; does not affect scalar indicator math, which uses the full prefix).
+ *   (mirrors the live rolling window).
  * @property instruments per-symbol contract specs; a symbol absent here cannot be traded.
  * @property minLev / [maxLev] leverage clamp handed to the sizing policy.
+ * @property indicatorLookback how many trailing bars the engine feeds the indicator math each step.
+ *   Bounding this keeps the run O(n) instead of O(n²) (indicators are otherwise recomputed over the whole
+ *   prefix every bar) AND matches the live system's bounded rolling window. Must comfortably exceed the
+ *   longest indicator's warmup (EMA20 / MACD-26) and [intradayWindow]; the default 400 does both. Wilder
+ *   smoothing is path-dependent but converges well within this many bars.
  */
 data class BacktestConfig(
     val startingEquityUsd: BigDecimal,
@@ -43,4 +48,5 @@ data class BacktestConfig(
     val instruments: Map<String, InstrumentSpec>,
     val minLev: Int = 5,
     val maxLev: Int = 40,
+    val indicatorLookback: Int = 400,
 )
