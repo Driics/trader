@@ -14,6 +14,7 @@ import ru.driics.aitrade.domain.ports.PlaceOrderOutcome
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.types.InstrumentId
 import ru.driics.aitrade.domain.types.InstrumentResolver
+import ru.driics.aitrade.domain.types.OrderSide
 import ru.driics.aitrade.domain.types.Symbol
 import ru.driics.aitrade.domain.types.TradeResult
 import ru.driics.aitrade.domain.util.quantize
@@ -117,7 +118,7 @@ class OkxExchangeAdapter(
 
     override suspend fun placeMarketOrderWithTpSl(
         instrumentId: InstrumentId,
-        side: String,
+        side: OrderSide,
         contracts: BigDecimal,
         tp: BigDecimal?,
         sl: BigDecimal?,
@@ -128,7 +129,7 @@ class OkxExchangeAdapter(
     ): TradeResult<PlaceOrderOutcome> = when (
         val outcome = rest.placeMarketOrderWithAttach(
             instId = instrumentId.value,
-            side = side,
+            side = side.value,
             tdMode = marginMode.asOkxApiValue,
             szContracts = contracts.quantizeToString(),
             tpPx = tp?.quantizeToString(tickSz),

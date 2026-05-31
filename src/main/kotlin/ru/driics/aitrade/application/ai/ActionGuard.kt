@@ -85,7 +85,7 @@ class ActionGuard(
             ?.let { return ValidationResult.Rejected("Risk USD must be positive, got: $it") }
 
         return ValidationResult.Valid(
-            normalizedSignal = normalizedSignal.value,
+            normalizedSignal = normalizedSignal,
             leverage = requestedLeverage.coerceIn(1, maxLeverage),
             quantizedEntry = quantizedEntry,
             quantizedTp = quantizedTp,
@@ -140,7 +140,7 @@ class ActionGuard(
 
     sealed class ValidationResult {
         data class Valid(
-            val normalizedSignal: String,
+            val normalizedSignal: OrderSide,
             val leverage: Int,
             val quantizedEntry: BigDecimal,
             val quantizedTp: BigDecimal?,

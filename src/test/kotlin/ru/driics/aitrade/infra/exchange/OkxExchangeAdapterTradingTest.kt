@@ -13,6 +13,7 @@ import ru.driics.aitrade.domain.model.MarginMode
 import ru.driics.aitrade.domain.model.OkxPlaceOrderData
 import ru.driics.aitrade.domain.types.InstrumentId
 import ru.driics.aitrade.domain.types.InstrumentResolver
+import ru.driics.aitrade.domain.types.OrderSide
 import ru.driics.aitrade.domain.types.TradeResult
 import ru.driics.aitrade.infra.cache.CachedIndicatorCalculator
 import ru.driics.aitrade.infra.cache.SmartCacheStrategy
@@ -48,7 +49,7 @@ class OkxExchangeAdapterTradingTest {
     private fun placeOrder() = runBlocking {
         adapter().placeMarketOrderWithTpSl(
             instrumentId = inst,
-            side = "buy",
+            side = OrderSide.BUY,
             contracts = BigDecimal("1"),
             tp = BigDecimal("70000"),
             sl = BigDecimal("60000"),

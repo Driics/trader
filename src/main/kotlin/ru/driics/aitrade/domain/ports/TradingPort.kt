@@ -3,6 +3,7 @@ package ru.driics.aitrade.domain.ports
 import ru.driics.aitrade.domain.model.MarginMode
 import ru.driics.aitrade.domain.model.OkxInstrumentInfo
 import ru.driics.aitrade.domain.types.InstrumentId
+import ru.driics.aitrade.domain.types.OrderSide
 import ru.driics.aitrade.domain.types.TradeResult
 import java.math.BigDecimal
 
@@ -22,7 +23,7 @@ interface TradingPort {
 
     suspend fun placeMarketOrderWithTpSl(
         instrumentId: InstrumentId,
-        side: String,
+        side: OrderSide,
         contracts: BigDecimal,
         tp: BigDecimal?,
         sl: BigDecimal?,

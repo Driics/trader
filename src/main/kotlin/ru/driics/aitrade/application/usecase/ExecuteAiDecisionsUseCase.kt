@@ -20,6 +20,7 @@ import ru.driics.aitrade.domain.services.IdGenerator
 import ru.driics.aitrade.domain.services.OrderSizingPolicy
 import ru.driics.aitrade.domain.types.InstrumentId
 import ru.driics.aitrade.domain.types.InstrumentResolver
+import ru.driics.aitrade.domain.types.OrderSide
 import ru.driics.aitrade.domain.types.getOrNull
 import ru.driics.aitrade.domain.types.getOrThrow
 import ru.driics.aitrade.domain.util.isPositive
@@ -287,7 +288,10 @@ class ExecuteAiDecisionsUseCase(
                 plan.symbol,
                 AiTradeSignalArgs(
                     coin = plan.symbol,
-                    signal = if (plan.side == "buy") AiSignal.BUY else AiSignal.SELL,
+                    signal = when (plan.side) {
+                        OrderSide.BUY -> AiSignal.BUY
+                        OrderSide.SELL -> AiSignal.SELL
+                    },
                     quantity = plan.coinQty,
                     profitTarget = plan.tpPx,
                     stopLoss = plan.slPx,
@@ -298,7 +302,7 @@ class ExecuteAiDecisionsUseCase(
             )
 
             if (tradingProperties.demoMode) {
-                log.info { "DEMO MODE: Simulating ${plan.side} order for ${plan.symbol} (Qty: ${sizing.roundedContracts})" }
+                log.info { "DEMO MODE: Simulating ${plan.side.value} order for ${plan.symbol} (Qty: ${sizing.roundedContracts})" }
                 // Simulate success
                 val result = handleSuccessfulOrder(
                     plan,
@@ -356,7 +360,7 @@ class ExecuteAiDecisionsUseCase(
             symbol = plan.symbol,
             orderId = ordId,
             clOrdId = clOrdId,
-            side = plan.side,
+            side = plan.side.value,
             contracts = sizing.roundedContracts,
             price = plan.entryPx,
             tp = plan.tpPx,
@@ -395,7 +399,7 @@ class ExecuteAiDecisionsUseCase(
     private data class OrderPlan(
         val symbol: String,
         val instrumentId: InstrumentId,
-        val side: String,
+        val side: OrderSide,
         val leverage: Int,
         val coinQty: BigDecimal,
         val entryPx: BigDecimal,
