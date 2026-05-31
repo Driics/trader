@@ -209,3 +209,16 @@ management:
       enabled: true
     ratelimiters:
       enabled: true
+
+# Trade journal (X1): durable, queryable orders / fills / PnL snapshots. OFF by default. When enabled,
+# point spring.datasource at a Postgres datasource (e.g. Supabase) via the env vars below — Liquibase
+# creates the schema on startup. Writes are fail-safe, so a DB outage never blocks a trading cycle.
+trade-journal:
+  enabled: ${TRADE_JOURNAL_ENABLED:false}
+
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:}
+    username: ${SPRING_DATASOURCE_USERNAME:}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    driver-class-name: ${SPRING_DATASOURCE_DRIVER:org.postgresql.Driver}
