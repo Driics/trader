@@ -1,5 +1,6 @@
 package ru.driics.aitrade.domain.ports
 
+import ru.driics.aitrade.domain.journal.JournaledClose
 import ru.driics.aitrade.domain.journal.JournaledFill
 import ru.driics.aitrade.domain.journal.JournaledOrder
 import ru.driics.aitrade.domain.journal.JournaledPnlSnapshot
@@ -15,4 +16,5 @@ interface TradeJournalPort {
     fun recordOrder(order: JournaledOrder)
     fun recordFill(fill: JournaledFill)
     fun recordPnlSnapshot(snapshot: JournaledPnlSnapshot)
+    fun recordClose(close: JournaledClose)
 }

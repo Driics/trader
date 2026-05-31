@@ -1,5 +1,6 @@
 package ru.driics.aitrade.infra.persistence
 
+import ru.driics.aitrade.domain.journal.JournaledClose
 import ru.driics.aitrade.domain.journal.JournaledFill
 import ru.driics.aitrade.domain.journal.JournaledOrder
 import ru.driics.aitrade.domain.journal.JournaledPnlSnapshot
@@ -13,4 +14,5 @@ class NoOpTradeJournal : TradeJournalPort {
     override fun recordOrder(order: JournaledOrder) {}
     override fun recordFill(fill: JournaledFill) {}
     override fun recordPnlSnapshot(snapshot: JournaledPnlSnapshot) {}
+    override fun recordClose(close: JournaledClose) = Unit
 }

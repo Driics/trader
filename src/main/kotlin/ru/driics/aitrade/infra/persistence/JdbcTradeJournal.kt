@@ -3,6 +3,7 @@ package ru.driics.aitrade.infra.persistence
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import ru.driics.aitrade.common.logging.logger
+import ru.driics.aitrade.domain.journal.JournaledClose
 import ru.driics.aitrade.domain.journal.JournaledFill
 import ru.driics.aitrade.domain.journal.JournaledOrder
 import ru.driics.aitrade.domain.journal.JournaledPnlSnapshot
@@ -112,6 +113,35 @@ class JdbcTradeJournal(
             )
         } catch (e: Exception) {
             log.warn(e) { "Failed to journal PnL snapshot cycle=${snapshot.cycle} (cycle continues)" }
+        }
+    }
+
+    override fun recordClose(close: JournaledClose) {
+        try {
+            val params = MapSqlParameterSource()
+                .addValue("recorded_at", toTimestamp(close.recordedAtMs))
+                .addValue("pos_id", close.posId)
+                .addValue("inst_id", close.instId)
+                .addValue("symbol", close.symbol)
+                .addValue("side", close.side)
+                .addValue("realized_pnl", close.realizedPnl)
+                .addValue("open_time", toTimestamp(close.openTimeMs))
+                .addValue("close_time", toTimestamp(close.closeTimeMs))
+                .addValue("mode", close.mode.name)
+                .addValue("demo", close.demo)
+            jdbc.update(
+                """
+                INSERT INTO trade_close
+                    (recorded_at, pos_id, inst_id, symbol, side, realized_pnl, open_time, close_time, mode, demo)
+                VALUES
+                    (:recorded_at, :pos_id, :inst_id, :symbol, :side, :realized_pnl, :open_time, :close_time, :mode, :demo)
+                """.trimIndent(),
+                params,
+            )
+        } catch (e: Exception) {
+            // Idempotent + fail-safe: a UNIQUE(pos_id) violation means "already journaled"; any other error
+            // must never break a cycle. Both are logged and swallowed.
+            log.warn(e) { "Skipped journaling close posId=${close.posId} (duplicate or DB error; cycle continues)" }
         }
     }
 

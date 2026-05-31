@@ -8,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
+import ru.driics.aitrade.domain.journal.JournaledClose
 import ru.driics.aitrade.domain.journal.JournaledFill
 import ru.driics.aitrade.domain.journal.JournaledOrder
 import ru.driics.aitrade.domain.journal.JournaledPnlSnapshot
@@ -225,6 +226,35 @@ class JdbcTradeJournalTest {
         journal.recordFill(fill)
         journal.recordPnlSnapshot(snapshot)
         assertTrue(true, "record* swallowed the DB error without rethrowing")
+    }
+
+    @Test
+    fun `recordClose persists a readable row`() {
+        val close = JournaledClose(
+            recordedAtMs = 1_700_000_010_000L, posId = "pos-1", instId = "BTC-USDT-SWAP",
+            symbol = "BTC", side = "long", realizedPnl = BigDecimal("12.34"),
+            openTimeMs = 1_700_000_000_000L, closeTimeMs = 1_700_000_009_000L,
+            mode = TradingMode.PAPER, demo = true,
+        )
+        journal.recordClose(close)
+        val row = jdbc.queryForMap("SELECT * FROM trade_close WHERE pos_id = :p", MapSqlParameterSource("p", "pos-1"))
+        assertEquals("BTC-USDT-SWAP", row["inst_id"])
+        assertEquals("long", row["side"])
+        assertEquals(0, BigDecimal("12.34").compareTo(row["realized_pnl"] as BigDecimal))
+        assertEquals(true, row["demo"])
+    }
+
+    @Test
+    fun `recordClose is idempotent on pos_id (duplicate is swallowed)`() {
+        val close = JournaledClose(
+            recordedAtMs = 1L, posId = "dup", instId = "ETH-USDT-SWAP", symbol = "ETH", side = "short",
+            realizedPnl = BigDecimal("-5"), openTimeMs = 1L, closeTimeMs = 2L, mode = TradingMode.PAPER, demo = false,
+        )
+        journal.recordClose(close)
+        journal.recordClose(close) // must not throw despite the UNIQUE(pos_id) violation
+        val count = jdbc.queryForObject(
+            "SELECT COUNT(*) FROM trade_close WHERE pos_id = :p", MapSqlParameterSource("p", "dup"), Int::class.java)
+        assertEquals(1, count)
     }
 
     private fun runChangelog(ds: DataSource) {

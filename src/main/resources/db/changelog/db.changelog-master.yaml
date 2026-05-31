@@ -129,3 +129,50 @@ databaseChangeLog:
               - column:
                   name: open_positions_count
                   type: INT
+  - changeSet:
+      id: v2-trade-close-table
+      author: aitrader
+      changes:
+        - createTable:
+            tableName: trade_close
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: recorded_at
+                  type: TIMESTAMP
+              - column:
+                  name: pos_id
+                  type: VARCHAR(64)
+                  constraints:
+                    unique: true
+                    uniqueConstraintName: uq_trade_close_pos_id
+              - column:
+                  name: inst_id
+                  type: VARCHAR(64)
+              - column:
+                  name: symbol
+                  type: VARCHAR(64)
+              - column:
+                  name: side
+                  type: VARCHAR(64)
+              - column:
+                  name: realized_pnl
+                  type: "NUMERIC(38, 18)"
+              - column:
+                  name: open_time
+                  type: TIMESTAMP
+              - column:
+                  name: close_time
+                  type: TIMESTAMP
+              - column:
+                  name: mode
+                  type: VARCHAR(64)
+              - column:
+                  name: demo
+                  type: BOOLEAN
