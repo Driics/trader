@@ -113,4 +113,17 @@ class OkxExchangeAdapterPnlTest {
 
         assertTrue(result is TradeResult.Failure)
     }
+
+    @Test
+    fun `mixed-currency and non-trade bills are all summed - current behavior, new diagnostics only log`() = runBlocking {
+        val usdtTradeLoss = bill("t1", midnightMs + 1_000, "-30.0").copy(currency = "USDT", type = "2")
+        val nonUsdContribution = bill("f1", midnightMs + 2_000, "-5.0").copy(currency = "BTC", type = "8")
+        coEvery { rest.fetchBills(after = null, limit = any()) } returns ok(listOf(usdtTradeLoss, nonUsdContribution))
+
+        val result = adapter().getTodaysRealizedPnlUsd(now) as TradeResult.Success
+
+        // The cap still sums every bill's pnl regardless of ccy/type; the composition diagnostics only
+        // LOG it (a non-USD WARN here), they do not change the total. -30.0 + -5.0 = -35.0.
+        assertEquals(0, BigDecimal("-35.0").compareTo(result.value))
+    }
 }

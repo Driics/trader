@@ -112,6 +112,27 @@ from the OKX oracle by more than that — for as long as the capture stays in `.
 
 ---
 
+## Runtime auto-surfacing (complements the manual loop)
+
+You don't have to remember to run a capture for the answer to start emerging. `getTodaysRealizedPnlUsd`
+now logs the **composition** of each day's realized-PnL sum (pure observability — it never changes the
+summed value or the cap's decision):
+
+- `DEBUG`: `Daily realized PnL=<sum> by bill type=<pnlByType> ccys=<ccys>` — shows which bill `type`s and
+  settlement currencies actually contributed, so funding/fee pollution becomes visible the first real
+  trading day.
+- `WARN`: emitted only when a contributing bill settled in a **non-USD** currency (a `ccy` outside
+  USDT/USD/USDC/USB) — the unambiguous "summing mixed units as USD" bug — and points back to this runbook.
+
+So the empirical answer can surface from a normal demo/live run's logs. The capture/reconcile loop above
+remains the **authoritative** cross-check (against the positions-history oracle) to run when a WARN fires
+or a delta appears. Note: as of today the configured account has placed no real orders (`demoMode`
+simulates fills locally), so there are no bills to reconcile yet — the read's *logic* (UTC window,
+pagination, loss-sign, fail-closed) is already locked by `OkxExchangeAdapterPnlTest`; only the live
+`pnl`-field semantics await real fills.
+
+---
+
 ## What this harness is and isn't
 
 - **Is:** an offline, deterministic reconciliation of the bills/PnL path against an independent oracle,

@@ -185,6 +185,11 @@ class OkxExchangeAdapter(
             var after: String? = null
             var sum = BigDecimal.ZERO
             var page = 0
+            // Diagnostics only (never affect `sum`): which settlement currencies and bill types actually
+            // contributed realized PnL today, so a real trading day auto-reveals whether funding/fees or
+            // non-USD settlement pollute the cap — the one assumption still unverified against live OKX.
+            val contributingCcys = mutableSetOf<String>()
+            val pnlByType = mutableMapOf<String, BigDecimal>()
             while (page < MAX_BILL_PAGES) {
                 page++
                 val response = rest.fetchBills(after = after, limit = BILL_PAGE_LIMIT)
@@ -204,13 +209,20 @@ class OkxExchangeAdapter(
 
                 for (bill in bills) {
                     val ts = bill.timestamp.toLongOrNull() ?: continue
-                    if (ts >= dayStartMs) sum += bill.realizedPnlContribution()
+                    if (ts < dayStartMs) continue
+                    val contribution = bill.realizedPnlContribution()
+                    sum += contribution
+                    if (contribution.signum() != 0) {
+                        contributingCcys += bill.currency.uppercase()
+                        pnlByType.merge(bill.type, contribution) { a, b -> a + b }
+                    }
                 }
 
                 val oldestTs = bills.last().timestamp.toLongOrNull() ?: Long.MIN_VALUE
                 if (oldestTs < dayStartMs || bills.size < BILL_PAGE_LIMIT) break
                 after = bills.last().billId
             }
+            logDailyPnlComposition(sum, contributingCcys, pnlByType)
             TradeResult.Success(sum)
         } catch (e: Exception) {
             TradeResult.Failure.NetworkError("Error reading today's realized PnL: ${e.message}", e)
@@ -229,6 +241,29 @@ class OkxExchangeAdapter(
      */
     private fun OkxBillData.realizedPnlContribution(): BigDecimal =
         pnl.toBigDecimalOrNull() ?: BigDecimal.ZERO
+
+    /**
+     * Surfaces the composition of today's realized-PnL sum so the (still-unverified) assumption that the
+     * bills `pnl` field is clean realized trading P&L gets checked automatically the first time real
+     * trades flow — without an operator running the capture/reconcile flow. Pure observability: it never
+     * changes the summed value.
+     */
+    private fun logDailyPnlComposition(
+        sum: BigDecimal,
+        contributingCcys: Set<String>,
+        pnlByType: Map<String, BigDecimal>,
+    ) {
+        if (pnlByType.isEmpty()) return // no realized PnL today — nothing to reconcile
+        log.debug { "Daily realized PnL=$sum by bill type=$pnlByType ccys=$contributingCcys" }
+        val nonUsd = contributingCcys - USD_QUOTE_CCYS
+        if (nonUsd.isNotEmpty()) {
+            log.warn {
+                "Daily-loss cap summed non-USD-settled bills as USD (ccys=$nonUsd, pnlByType=$pnlByType). " +
+                    "The cap may be miscounting losses — reconcile via the capture-okx profile (see " +
+                    "PnlReconciliation) before trusting it for these instruments."
+            }
+        }
+    }
 
     // =========================================================================
     // Currency Data Fetching
@@ -530,6 +565,10 @@ class OkxExchangeAdapter(
         // Realized-PnL pagination (B0). Bounded so a misbehaving cursor can't loop forever.
         const val MAX_BILL_PAGES = 20
         const val BILL_PAGE_LIMIT = 100
+
+        // Settlement currencies the daily-loss cap may treat as ~1 USD. A contributing bill in any
+        // OTHER currency means the cap is summing mixed units as if USD — surfaced as a WARN.
+        val USD_QUOTE_CCYS = setOf("USDT", "USD", "USDC", "USB")
     }
 
     private object Timeframe {
