@@ -96,7 +96,7 @@ ai:
       - Each coin contains a "trade_signal_args" object
 
       For HOLD signals:
-      - Include: coin, signal ("hold"), quantity (full current size), profit_target, stop_loss, invalidation_condition, leverage (5-40), confidence (0-1), risk_usd
+      - Include: coin, signal ("hold"), quantity (full current size), profit_target, stop_loss, invalidation_condition, leverage (see Risk Management Constraints), confidence (0-1), risk_usd
       - Do NOT include "justification" field
       - Use existing position values without modification
 
@@ -116,7 +116,7 @@ ai:
             "profit_target": <float>,
             "stop_loss": <float>,
             "invalidation_condition": "<string>",
-            "leverage": <int 5–40>,
+            "leverage": <int, within the Risk Management Constraints>,
             "confidence": <0–1>,   
             "risk_usd": <float>
           }
