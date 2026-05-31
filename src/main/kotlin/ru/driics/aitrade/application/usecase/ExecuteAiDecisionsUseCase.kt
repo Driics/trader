@@ -223,7 +223,8 @@ class ExecuteAiDecisionsUseCase(
                 tickSz = tick,
                 tpPx = valid.quantizedTp,
                 slPx = valid.quantizedSl,
-                signalKey = signalKey
+                signalKey = signalKey,
+                riskUsd = args.riskUsd,
             )
         )
     }
@@ -387,7 +388,7 @@ class ExecuteAiDecisionsUseCase(
                 entryPx = plan.entryPx,
                 tpPx = plan.tpPx,
                 slPx = plan.slPx,
-                riskUsd = null,
+                riskUsd = plan.riskUsd,
                 costUsd = sizing.totalUsd,
                 clOrdId = clOrdId,
                 ordId = ordId,
@@ -461,7 +462,8 @@ class ExecuteAiDecisionsUseCase(
         val tickSz: BigDecimal,
         val tpPx: BigDecimal?,
         val slPx: BigDecimal?,
-        val signalKey: String?
+        val signalKey: String?,
+        val riskUsd: BigDecimal?,
     )
 
     private fun createSkippedResult(plan: OrderPlan, msg: String, clOrdId: String? = null) = AiTradeExecutionResult(

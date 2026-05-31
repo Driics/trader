@@ -4,7 +4,10 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
+import io.mockk.just
 import io.mockk.mockk
+import io.mockk.slot
+import io.mockk.Runs
 import io.mockk.verify
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -329,5 +332,26 @@ class ExecuteAiDecisionsUseCaseTest {
         )
 
         coVerify(exactly = 1) { trading.setLeverage(any(), 60, any()) }
+    }
+
+    // =========================================================================
+    // Task 1 — risk_usd propagation to the trade journal
+    // =========================================================================
+
+    @Test
+    fun `journals the AI intended risk_usd on a placed order`() = runBlocking {
+        stubReadyPlacementPath() // demoMode = true by default (no real placeMarketOrder needed)
+
+        val captured = slot<JournaledOrder>()
+        every { tradeJournal.recordOrder(capture(captured)) } just Runs
+
+        // readyBuy() carries riskUsd = BigDecimal("100")
+        useCase().execute(mapOf("BTC" to readyBuy()), riskContext, snapshot(BigDecimal("100000")))
+
+        assertEquals(
+            0,
+            BigDecimal("100").compareTo(captured.captured.riskUsd),
+            "JournaledOrder.riskUsd must equal the AI's intended risk (100), got ${captured.captured.riskUsd}"
+        )
     }
 }
