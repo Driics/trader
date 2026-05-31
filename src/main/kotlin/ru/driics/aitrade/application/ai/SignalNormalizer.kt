@@ -34,9 +34,8 @@ class SignalNormalizer {
             val normalizedCoin = normalizeSymbol(signal.coin)
                 ?: return null
 
-            // 2. Normalize signal enum
-            val normalizedSignal = normalizeSignal(signal.signal)
-                ?: return null
+            // 2. Signal enum is already a non-null AiSignal — no normalization needed.
+            val normalizedSignal = signal.signal
 
             // 3. Normalize quantities and prices
             val normalizedQuantity = normalizeBigDecimal(signal.quantity, "quantity")
@@ -75,8 +74,6 @@ class SignalNormalizer {
             null
         }
     }
-
-    private fun normalizeSignal(signal: AiSignal?): AiSignal? = signal
 
     private fun normalizeBigDecimal(value: BigDecimal?, fieldName: String): BigDecimal? {
         if (value == null) return null

@@ -474,10 +474,12 @@ class UpdateCycleOrchestrator(
             fun failure(message: String): StageResult<Nothing> = Failure(message)
         }
 
-        inline fun <R> getOrElse(onFailure: (Failure) -> R): T = when (this) {
+        // onFailure must diverge (every caller does a non-local `return`), so its result type is Nothing.
+        // That keeps T in out-position only — preserving the covariance — and removes the old `as T` cast.
+        inline fun getOrElse(onFailure: (Failure) -> Nothing): T = when (this) {
             is Success -> value
             is Failure -> onFailure(this)
-        } as T
+        }
 
         fun toResult(promptSize: Int = 0): UpdateCycleResult = when (this) {
             is Success -> error("Cannot convert Success to error result")

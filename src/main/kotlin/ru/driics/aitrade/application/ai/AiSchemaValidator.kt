@@ -98,11 +98,6 @@ class AiSchemaValidator(
             return SignalValidationResult.Rejected("Coin mismatch: key=$symbol, coin=${args.coin}")
         }
 
-        // 3. Validate signal enum
-        if (args.signal !in AiSignal.values()) {
-            return SignalValidationResult.Rejected("Invalid signal: ${args.signal}")
-        }
-
         // 4. Validate confidence range [0, 1]
         if (args.confidence != null) {
             if (args.confidence < BigDecimal.ZERO || args.confidence > BigDecimal.ONE) {
