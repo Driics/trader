@@ -4,6 +4,7 @@ import ru.driics.aitrade.common.logging.logger
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.AiSignal
 import ru.driics.aitrade.domain.model.AiTradeSignalArgs
+import ru.driics.aitrade.domain.model.InstrumentDefaults
 import ru.driics.aitrade.domain.model.OkxInstrumentInfo
 import ru.driics.aitrade.domain.types.OrderSide
 import ru.driics.aitrade.domain.util.isPositive
@@ -25,8 +26,6 @@ class ActionGuard(
         private val log = logger<ActionGuard>()
         
         private const val MIN_TP_SL_TICKS = 5
-        private val DEFAULT_TICK_SIZE = BigDecimal("0.01")
-        private val DEFAULT_LOT_SIZE = BigDecimal.ONE
     }
 
     /**
@@ -57,8 +56,8 @@ class ActionGuard(
         }
 
         // 3. Extract and validate instrument parameters
-        val tickSz = extractInstrumentValue(instrumentInfo.tickSz, DEFAULT_TICK_SIZE)
-        val lotSz = extractInstrumentValue(instrumentInfo.lotSz, DEFAULT_LOT_SIZE)
+        val tickSz = extractInstrumentValue(instrumentInfo.tickSz, InstrumentDefaults.TICK_SIZE)
+        val lotSz = extractInstrumentValue(instrumentInfo.lotSz, InstrumentDefaults.LOT_SIZE)
         
         // 4. Quantize and validate prices
         val quantizedEntry = lastPrice.quantize(tickSz)

@@ -9,6 +9,9 @@ import java.math.BigDecimal
  * ExecuteAiDecisionsUseCase.buildPlan as defense in depth) — both must agree, hence one definition.
  */
 object ConfidencePolicy {
+    /** The confidence to gate on: an ABSENT score counts as ZERO. The one place that null-default lives. */
+    fun effective(confidence: BigDecimal?): BigDecimal = confidence ?: BigDecimal.ZERO
+
     fun meetsThreshold(confidence: BigDecimal?, minConfidence: BigDecimal): Boolean =
-        (confidence ?: BigDecimal.ZERO) >= minConfidence
+        effective(confidence) >= minConfidence
 }

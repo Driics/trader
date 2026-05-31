@@ -43,7 +43,7 @@ class ConfidenceCalibrator(
 
         // 1. Check minimum confidence threshold (shared rule: an absent confidence counts as zero).
         if (!ConfidencePolicy.meetsThreshold(signal.confidence, minConfidence)) {
-            val confidence = signal.confidence ?: BigDecimal.ZERO
+            val confidence = ConfidencePolicy.effective(signal.confidence)
             val reason = "Confidence $confidence below minimum $minConfidence"
             log.debug { "Signal rejected for $symbol: $reason" }
             return CalibrationResult.Rejected(reason)

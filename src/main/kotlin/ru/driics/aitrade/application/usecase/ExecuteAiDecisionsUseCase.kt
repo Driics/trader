@@ -147,7 +147,7 @@ class ExecuteAiDecisionsUseCase(
         // Defense in depth: ConfidenceCalibrator already gates confidence upstream, but the use case
         // enforces its own floor too (shared rule via ConfidencePolicy: an absent confidence counts as zero).
         if (!ConfidencePolicy.meetsThreshold(args.confidence, minConfidence)) {
-            val confidence = args.confidence ?: BigDecimal.ZERO
+            val confidence = ConfidencePolicy.effective(args.confidence)
             return PlanResult.Skip(symbol, "Confidence $confidence < $minConfidence")
         }
 
@@ -186,8 +186,8 @@ class ExecuteAiDecisionsUseCase(
         val valid = validation as ActionGuard.ValidationResult.Valid
 
         // Parse instrument specs safe
-        val tick = inst.tickSz.extractPositive() ?: BigDecimal("0.01")
-        val lot = inst.lotSz.extractPositive() ?: BigDecimal.ONE
+        val tick = inst.tickSz.extractPositive() ?: InstrumentDefaults.TICK_SIZE
+        val lot = inst.lotSz.extractPositive() ?: InstrumentDefaults.LOT_SIZE
         val min = inst.minSz.extractPositive() ?: lot
         val ctVal = inst.ctVal.extractPositive()
             ?: return PlanResult.Skip(symbol, "Invalid ctVal in instrument")
