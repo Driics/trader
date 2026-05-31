@@ -25,8 +25,10 @@ import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PromptOutputPort
 import ru.driics.aitrade.domain.ports.StreamingMarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort
+import ru.driics.aitrade.domain.services.ApiKeyRotationPolicy
 import ru.driics.aitrade.domain.services.TradingMetricsService
 import ru.driics.aitrade.domain.types.InstrumentResolver
+import ru.driics.aitrade.infra.ai.RotatingOpenRouterClient
 import ru.driics.aitrade.infra.recording.JsonlDecisionLogSink
 import java.nio.file.Path
 import java.time.Clock
@@ -37,6 +39,17 @@ class ApplicationWiring(
 ) {
     @Bean
     fun clock(): Clock = Clock.systemUTC()
+
+    @Bean
+    fun rotatingOpenRouterClient(openRouterProperties: OpenRouterProperties): RotatingOpenRouterClient {
+        val apiKeys = openRouterProperties.getApiKeysList()
+        require(apiKeys.isNotEmpty()) { "At least one OpenRouter API key must be configured" }
+        return RotatingOpenRouterClient(
+            rotationPolicy = ApiKeyRotationPolicy(apiKeys),
+            maxRetries = openRouterProperties.maxRetries,
+            retryDelayMs = openRouterProperties.retryDelayMs,
+        )
+    }
 
     @Bean
     fun killSwitchStore(riskGateProperties: RiskGateProperties): KillSwitchStore =

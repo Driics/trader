@@ -10,12 +10,10 @@ import io.micrometer.core.instrument.MeterRegistry
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import ru.driics.aitrade.common.measureSuspend
-import ru.driics.aitrade.config.OpenRouterProperties
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.AiAnalysisResponse
 import ru.driics.aitrade.domain.model.AiService
 import ru.driics.aitrade.domain.model.LastAiAnalysis
-import ru.driics.aitrade.domain.services.ApiKeyRotationPolicy
 import ru.driics.aitrade.infra.ai.RotatingOpenRouterClient
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
@@ -23,7 +21,7 @@ import kotlin.time.measureTimedValue
 
 @Service
 class KoogAiService(
-    openRouterProperties: OpenRouterProperties,
+    private val rotatingClient: RotatingOpenRouterClient,
     private val meterRegistry: MeterRegistry,
     private val tradingProperties: TradingProperties,
     @Value("\${ai.custom.system-prompt:You are an expert crypto trading analyst.}")
@@ -39,7 +37,6 @@ class KoogAiService(
         const val CONTEXT_LENGTH = 131_072L
     }
 
-    private val rotatingClient: RotatingOpenRouterClient
     private val lastAnalysis = AtomicReference<LastAiAnalysis?>(null)
 
     // Define model configuration once
@@ -50,20 +47,6 @@ class KoogAiService(
             contextLength = CONTEXT_LENGTH,
             capabilities = listOf(LLMCapability.Temperature, LLMCapability.Completion)
         )
-    }
-
-    init {
-        val apiKeys = openRouterProperties.getApiKeysList()
-        require(apiKeys.isNotEmpty()) { "At least one OpenRouter API key must be configured" }
-
-        val policy = ApiKeyRotationPolicy(apiKeys)
-        rotatingClient = RotatingOpenRouterClient(
-            rotationPolicy = policy,
-            maxRetries = openRouterProperties.maxRetries,
-            retryDelayMs = openRouterProperties.retryDelayMs
-        )
-
-        log.info { "Initialized KoogAiService with ${apiKeys.size} keys. Model: ${tradingProperties.aiModel}" }
     }
 
     override fun getProviderName(): String = PROVIDER_NAME
