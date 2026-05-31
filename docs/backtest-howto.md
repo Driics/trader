@@ -81,6 +81,22 @@ trend-following (Donchian breakout) is profitable (best `donchian 10` +23.6%, PF
 one window is the textbook overfit** — channel-period sensitivity here is high, so validate out-of-sample
 before trusting it.
 
+## Validate out-of-sample (walk-forward)
+
+A sweep winner is selected *and* judged on the same data — the textbook overfit. `WalkForwardHarnessTest`
+re-selects the grid winner on a train slice and measures it on **unseen** test data:
+
+```powershell
+$env:BACKTEST_FILE = "data/btc.jsonl"; $env:WF_FOLDS = "3"
+.\gradlew.bat --no-build-cache --rerun-tasks test --tests '*WalkForwardHarnessTest*'
+```
+
+Writes `<file>.walkforward.txt`: an in-sample/out-of-sample split (verdict: *held up* vs *collapsed*) plus
+anchored folds. **Read two things:** is the out-of-sample return positive, and is the winner *stable*
+across folds (a winner that jumps from fold to fold is an overfit signal, even if each fold is positive).
+SLOW — it runs the full grid on each train window (minutes on a 6-month file). It is a validation step,
+not a hot path.
+
 ## Backtesting the AI (record → replay)
 
 The live AI flow is async, paid, and non-deterministic, so it can't be called inside the deterministic
