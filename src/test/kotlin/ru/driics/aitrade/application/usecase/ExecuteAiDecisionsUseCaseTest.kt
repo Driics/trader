@@ -226,6 +226,61 @@ class ExecuteAiDecisionsUseCaseTest {
     }
 
     // =========================================================================
+    // Phase 3 step 3 — useStreamingEntryPrice end-to-end (flag drives the sizing input)
+    //
+    // The pure selector is pinned by EntryPriceSelectionTest; these prove the WIRING: with the flag
+    // on, a fresh in-band WS price actually reaches sizing through buildPlan (observable as the
+    // journaled entryPx, which is quantize(resolveEntryPrice(...)) ). The flag-on vs flag-off contrast
+    // on the SAME WS stub is self-validating — if entryPx didn't track the resolved price, the first
+    // test would fail rather than pass falsely. getFreshPrice is called twice per plan (parity log +
+    // resolve), so these never assert a call-count on it.
+    // =========================================================================
+
+    @Test
+    fun `Phase 3 - flag on, a fresh in-band WS price sizes the order instead of REST`() = runBlocking {
+        stubReadyPlacementPath() // REST getLastPrice = 50000
+        // 49990 is ~2 bps off REST -> within the 0.5% trust band -> the WS price wins. It sits just
+        // BELOW REST on purpose: readyBuy sizes off risk (riskUsd / |entry - SL|), so an entry ABOVE
+        // 50000 would round the contract count below 1 and skip placement; below keeps the 1-contract
+        // fixture intact, isolating the entry-source swap as the only variable.
+        every { streaming.getFreshPrice(any(), any()) } returns BigDecimal("49990")
+        val streamingProps = TradingProperties(currencies = listOf("BTC"), useStreamingEntryPrice = true)
+
+        useCase(streamingProps).execute(mapOf("BTC" to readyBuy()), riskContext, snapshot(BigDecimal("100000")))
+
+        verify(exactly = 1) {
+            tradeJournal.recordOrder(match<JournaledOrder> { it.entryPx?.compareTo(BigDecimal("49990")) == 0 })
+        }
+    }
+
+    @Test
+    fun `Phase 3 - flag on, a WS price beyond the trust band falls back to REST sizing`() = runBlocking {
+        stubReadyPlacementPath() // REST getLastPrice = 50000
+        // 51000 is ~200 bps off REST -> exceeds the 0.5% sanity belt -> REST is used (never worse).
+        every { streaming.getFreshPrice(any(), any()) } returns BigDecimal("51000")
+        val streamingProps = TradingProperties(currencies = listOf("BTC"), useStreamingEntryPrice = true)
+
+        useCase(streamingProps).execute(mapOf("BTC" to readyBuy()), riskContext, snapshot(BigDecimal("100000")))
+
+        verify(exactly = 1) {
+            tradeJournal.recordOrder(match<JournaledOrder> { it.entryPx?.compareTo(BigDecimal("50000")) == 0 })
+        }
+    }
+
+    @Test
+    fun `Phase 3 - flag off (default), a fresh WS price is ignored and REST sizes the order`() = runBlocking {
+        stubReadyPlacementPath() // REST getLastPrice = 50000
+        // A perfectly fresh, in-band WS price is present, but the default-off flag must gate it out.
+        every { streaming.getFreshPrice(any(), any()) } returns BigDecimal("49990")
+
+        useCase().execute(mapOf("BTC" to readyBuy()), riskContext, snapshot(BigDecimal("100000")))
+
+        verify(exactly = 1) {
+            tradeJournal.recordOrder(match<JournaledOrder> { it.entryPx?.compareTo(BigDecimal("50000")) == 0 })
+        }
+    }
+
+    // =========================================================================
     // Batch B — per-instrument leverage cap (M1) and config-driven sizing clamp (M3)
     // =========================================================================
 

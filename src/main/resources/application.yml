@@ -38,6 +38,12 @@ trading:
   # LIVE safety: with demo-mode=false AND okx.paper=false (REAL funds), startup is REFUSED unless this is true.
   confirm-live: ${TRADING_CONFIRM_LIVE:false}
 
+  # Phase 3: prefer the fresh real-time WS price over REST for entry sizing (falls back to REST whenever
+  # the socket is stale/disconnected or the WS price diverges >0.5% from REST, so it is never worse than
+  # today). Default OFF — enable per-environment only after the public-WS parity probe shows a small,
+  # stable WS-vs-REST delta over a real run. See docs/phase3-streaming-runbook.md.
+  use-streaming-entry-price: ${TRADING_USE_STREAMING_ENTRY_PRICE:false}
+
   # Portfolio-wide risk gates (X2)
   risk:
     enabled: ${TRADING_RISK_ENABLED:true}
