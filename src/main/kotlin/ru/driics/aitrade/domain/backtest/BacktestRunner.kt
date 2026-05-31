@@ -1,5 +1,6 @@
 package ru.driics.aitrade.domain.backtest
 
+import ru.driics.aitrade.domain.strategy.RecordedAiStrategy
 import ru.driics.aitrade.domain.strategy.RsiReversionStrategy
 import ru.driics.aitrade.domain.strategy.Strategy
 import java.math.BigDecimal
@@ -46,4 +47,31 @@ object BacktestRunner {
         val bars = JsonlCandleParser.parse(jsonl)
         return BacktestEngine(strategy, config).run(symbol, bars)
     }
+
+    /**
+     * Backtests a previously-recorded AI decision log against candles — pure (`String, String -> outcome`)
+     * so it is testable without an LLM. [minConfidence] gates at replay (sweepable). The returned
+     * [AiReplayOutcome.matchStats] guards the silent timestamp-mismatch trap (recorded-but-unmatched
+     * decisions → all-HOLD → a misleading flat curve).
+     */
+    fun replayAi(
+        candleJsonl: String,
+        decisionJsonl: String,
+        symbol: String,
+        minConfidence: BigDecimal = BigDecimal.ZERO,
+        config: BacktestConfig = defaultConfig(symbol),
+    ): AiReplayOutcome {
+        val bars = JsonlCandleParser.parse(candleJsonl)
+        val decisions = AiDecisionLog.parse(decisionJsonl)
+        val strategy = RecordedAiStrategy(decisions, minConfidence)
+        val result = BacktestEngine(strategy, config).run(symbol, bars)
+        val match = AiDecisionLog.matchStats(strategy.recordedTimestamps, bars.map { it.timestampMs })
+        return AiReplayOutcome(result, match)
+    }
 }
+
+/** A recorded-AI backtest plus the decision↔candle match-rate that proves the two files lined up. */
+data class AiReplayOutcome(
+    val result: BacktestResult,
+    val matchStats: MatchStats,
+)

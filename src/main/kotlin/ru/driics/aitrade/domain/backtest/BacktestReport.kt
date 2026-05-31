@@ -11,7 +11,12 @@ import java.math.RoundingMode
  */
 object BacktestReport {
 
-    fun render(startingEquityUsd: BigDecimal, barCount: Int, result: BacktestResult): String {
+    fun render(
+        startingEquityUsd: BigDecimal,
+        barCount: Int,
+        result: BacktestResult,
+        extraNotes: List<String> = emptyList(),
+    ): String {
         val m = result.metrics
         val finalEquity = result.equityCurve.lastOrNull() ?: startingEquityUsd
         val sb = StringBuilder()
@@ -38,6 +43,10 @@ object BacktestReport {
         sb.appendLine("already open   : ${result.rejections.alreadyOpenForSymbol}")
         sb.appendLine("-- NOT modelled (curve is gross of these) --")
         result.omissions.forEach { sb.appendLine("  - $it") }
+        if (extraNotes.isNotEmpty()) {
+            sb.appendLine("-- notes --")
+            extraNotes.forEach { sb.appendLine("  - $it") }
+        }
         return sb.toString()
     }
 
