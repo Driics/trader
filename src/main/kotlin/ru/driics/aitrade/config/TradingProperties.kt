@@ -67,6 +67,11 @@ data class TradingProperties(
     // Execution Mode
     var demoMode: Boolean = true, // If true, orders are simulated (dry-run)
 
+    // Hard safety gate: LIVE mode (demoMode=false AND okx.paper=false → real funds) refuses to start
+    // unless this is explicitly true. Stops a single flipped flag from trading real funds. No effect in
+    // SIMULATION or PAPER mode.
+    var confirmLive: Boolean = false,
+
     // Phase 3 step 3 (default OFF): when true, entry sizing in buildPlan prefers the fresh real-time
     // WS price over the REST price, falling back to REST whenever the socket is stale/disconnected or
     // the WS price diverges too far from REST. Flip on only after the parity observer shows a small,

@@ -30,6 +30,8 @@ trading:
   
   # Execution Mode
   demo-mode: ${TRADING_DEMO_MODE:true} # Set to false to place real orders
+  # LIVE safety: with demo-mode=false AND okx.paper=false (REAL funds), startup is REFUSED unless this is true.
+  confirm-live: ${TRADING_CONFIRM_LIVE:false}
 
   # Portfolio-wide risk gates (X2)
   risk:
