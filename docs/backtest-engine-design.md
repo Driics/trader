@@ -77,9 +77,16 @@ The sim synthesizes `AccountInfo` + `positions` each bar. These `Position`/`Acco
     `decision.quantity`, when set, is the coin-qty intent (skips the risk calc) but still passes through
     `OrderSizingPolicy` (affordability + lot rounding) and the gap guard.
   - **Warmup**: `decide()` is gated behind `warmupBars` so the RSI=0 cold-start can't place trades.
-- **Batch 5 — I/O**: JSONL `CandleSource` + `@Profile("backtest")` runner + report; (separate, network,
-  user-run) OKX history fetch runner.
-- **Deferred**: AI-flow-as-strategy adapter; funding model; Sharpe.
+- **Batch 5 — I/O** ✅: `JsonlCandleParser` (pure `String -> List<Bar>`, consumes OKX candle arrays
+  directly, sorts ascending); `BacktestReport.render` (pure); `BacktestRunner` (pure parse→engine glue +
+  BTC-USDT-SWAP `defaultConfig`); `BacktestHarnessTest` (env-gated runnable entrypoint, skipped unless
+  `BACKTEST_FILE` is set). See docs/backtest-howto.md. **Realized vs. plan**: the runnable path is the
+  env-gated harness + a documented OKX `curl`/`jq` fetch recipe, NOT a `@Profile("backtest")` Spring
+  runner — the app uses `@EnableScheduling`, so a backtest profile would coexist with the live scheduled
+  loop (and need network it shouldn't have), and a second `main()` risks Spring Boot's single-main-class
+  detection. The harness runs via the existing `gradlew test` loop with zero build-config changes.
+- **Deferred**: in-app Spring fetch/run beans; AI-flow-as-strategy adapter; funding model; Sharpe;
+  multi-symbol margin contention.
 
 > v1 (batches 1–3) is the **tested core, not a runnable backtest** — no equity curve until the engine
 > (4) and candle source/runner (5) land.
