@@ -133,6 +133,9 @@ class ApplicationWiring(
     )
 
     @Bean
+    fun performanceAnalytics() = ru.driics.aitrade.domain.analytics.PerformanceAnalytics()
+
+    @Bean
     fun instrumentResolver() = InstrumentResolver(
         quoteCurrency = tradingProperties.quoteCurrency,
         instrumentType = tradingProperties.instrumentType,
