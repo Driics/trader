@@ -3,6 +3,9 @@ package ru.driics.aitrade.domain.backtest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import ru.driics.aitrade.domain.backtest.analysis.WalkForward
+import ru.driics.aitrade.domain.backtest.core.Bar
+import ru.driics.aitrade.domain.backtest.io.BacktestRunner
 import ru.driics.aitrade.domain.strategy.DonchianBreakoutStrategy
 import ru.driics.aitrade.domain.strategy.RsiReversionStrategy
 import java.math.BigDecimal

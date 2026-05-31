@@ -1,5 +1,6 @@
-package ru.driics.aitrade.domain.backtest
+package ru.driics.aitrade.domain.backtest.engine
 
+import ru.driics.aitrade.domain.backtest.core.Bar
 import ru.driics.aitrade.domain.model.AccountInfo
 import ru.driics.aitrade.domain.model.CurrencyMarketData
 import ru.driics.aitrade.domain.model.MarketState

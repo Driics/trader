@@ -1,5 +1,6 @@
-package ru.driics.aitrade.domain.backtest
+package ru.driics.aitrade.domain.backtest.io
 
+import ru.driics.aitrade.domain.backtest.engine.BacktestResult
 import java.math.BigDecimal
 import java.math.RoundingMode
 

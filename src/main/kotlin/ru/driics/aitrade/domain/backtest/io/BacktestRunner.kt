@@ -1,5 +1,11 @@
-package ru.driics.aitrade.domain.backtest
+package ru.driics.aitrade.domain.backtest.io
 
+import ru.driics.aitrade.domain.backtest.ai.AiDecisionLog
+import ru.driics.aitrade.domain.backtest.ai.MatchStats
+import ru.driics.aitrade.domain.backtest.engine.BacktestConfig
+import ru.driics.aitrade.domain.backtest.engine.BacktestEngine
+import ru.driics.aitrade.domain.backtest.engine.BacktestResult
+import ru.driics.aitrade.domain.backtest.engine.InstrumentSpec
 import ru.driics.aitrade.domain.strategy.RecordedAiStrategy
 import ru.driics.aitrade.domain.strategy.RsiReversionStrategy
 import ru.driics.aitrade.domain.strategy.Strategy

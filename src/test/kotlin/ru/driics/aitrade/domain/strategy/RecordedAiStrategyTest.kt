@@ -3,11 +3,11 @@ package ru.driics.aitrade.domain.strategy
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
-import ru.driics.aitrade.domain.backtest.Bar
-import ru.driics.aitrade.domain.backtest.BacktestConfig
-import ru.driics.aitrade.domain.backtest.BacktestEngine
-import ru.driics.aitrade.domain.backtest.ExitReason
-import ru.driics.aitrade.domain.backtest.InstrumentSpec
+import ru.driics.aitrade.domain.backtest.core.Bar
+import ru.driics.aitrade.domain.backtest.core.ExitReason
+import ru.driics.aitrade.domain.backtest.engine.BacktestConfig
+import ru.driics.aitrade.domain.backtest.engine.BacktestEngine
+import ru.driics.aitrade.domain.backtest.engine.InstrumentSpec
 import ru.driics.aitrade.domain.model.AiSignal
 import ru.driics.aitrade.domain.model.AiTradeSignalArgs
 import ru.driics.aitrade.domain.model.MarketState

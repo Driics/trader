@@ -1,4 +1,4 @@
-package ru.driics.aitrade.domain.backtest
+package ru.driics.aitrade.domain.backtest.ai
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue

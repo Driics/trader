@@ -3,6 +3,8 @@ package ru.driics.aitrade.domain.backtest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import ru.driics.aitrade.domain.backtest.core.Bar
+import ru.driics.aitrade.domain.backtest.engine.MarketStateBuilder
 import ru.driics.aitrade.domain.model.AccountInfo
 import java.math.BigDecimal
 

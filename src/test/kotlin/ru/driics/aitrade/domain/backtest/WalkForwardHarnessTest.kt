@@ -3,6 +3,9 @@ package ru.driics.aitrade.domain.backtest
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
+import ru.driics.aitrade.domain.backtest.analysis.WalkForward
+import ru.driics.aitrade.domain.backtest.io.BacktestRunner
+import ru.driics.aitrade.domain.backtest.io.JsonlCandleParser
 import ru.driics.aitrade.domain.strategy.StrategyCatalog
 import java.io.File
 

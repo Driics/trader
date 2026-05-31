@@ -1,5 +1,14 @@
-package ru.driics.aitrade.domain.backtest
+package ru.driics.aitrade.domain.backtest.engine
 
+import ru.driics.aitrade.domain.backtest.core.Bar
+import ru.driics.aitrade.domain.backtest.core.ExitFill
+import ru.driics.aitrade.domain.backtest.core.ExitReason
+import ru.driics.aitrade.domain.backtest.core.PerformanceMetrics
+import ru.driics.aitrade.domain.backtest.core.PositionSide
+import ru.driics.aitrade.domain.backtest.core.SimPosition
+import ru.driics.aitrade.domain.backtest.core.SimTrade
+import ru.driics.aitrade.domain.backtest.core.realizedPnlUsd
+import ru.driics.aitrade.domain.backtest.core.resolveExit
 import ru.driics.aitrade.domain.model.AccountInfo
 import ru.driics.aitrade.domain.model.AiSignal
 import ru.driics.aitrade.domain.model.Position

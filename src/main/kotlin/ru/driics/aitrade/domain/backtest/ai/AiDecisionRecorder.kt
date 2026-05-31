@@ -1,5 +1,8 @@
-package ru.driics.aitrade.domain.backtest
+package ru.driics.aitrade.domain.backtest.ai
 
+import ru.driics.aitrade.domain.backtest.core.Bar
+import ru.driics.aitrade.domain.backtest.engine.BacktestConfig
+import ru.driics.aitrade.domain.backtest.engine.MarketStateBuilder
 import ru.driics.aitrade.domain.model.AccountInfo
 import ru.driics.aitrade.domain.model.AiAnalysisResponse
 import ru.driics.aitrade.domain.model.AiTradeDecisionMap

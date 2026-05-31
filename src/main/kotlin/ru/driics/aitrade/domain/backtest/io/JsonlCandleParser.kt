@@ -1,6 +1,7 @@
-package ru.driics.aitrade.domain.backtest
+package ru.driics.aitrade.domain.backtest.io
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import ru.driics.aitrade.domain.backtest.core.Bar
 import java.math.BigDecimal
 
 /**

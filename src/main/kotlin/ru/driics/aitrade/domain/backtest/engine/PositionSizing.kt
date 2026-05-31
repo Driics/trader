@@ -1,4 +1,4 @@
-package ru.driics.aitrade.domain.backtest
+package ru.driics.aitrade.domain.backtest.engine
 
 import ru.driics.aitrade.domain.services.OrderSizingPolicy
 import ru.driics.aitrade.domain.strategy.StrategyDecision

@@ -3,6 +3,10 @@ package ru.driics.aitrade.domain.backtest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
+import ru.driics.aitrade.domain.backtest.core.ExitReason
+import ru.driics.aitrade.domain.backtest.core.PerformanceMetrics
+import ru.driics.aitrade.domain.backtest.core.PositionSide
+import ru.driics.aitrade.domain.backtest.core.SimTrade
 import java.math.BigDecimal
 import java.math.RoundingMode
 

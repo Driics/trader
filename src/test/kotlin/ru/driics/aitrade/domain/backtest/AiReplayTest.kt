@@ -2,6 +2,9 @@ package ru.driics.aitrade.domain.backtest
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
+import ru.driics.aitrade.domain.backtest.engine.BacktestConfig
+import ru.driics.aitrade.domain.backtest.engine.InstrumentSpec
+import ru.driics.aitrade.domain.backtest.io.BacktestRunner
 import java.math.BigDecimal
 
 class AiReplayTest {

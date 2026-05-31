@@ -5,6 +5,10 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import ru.driics.aitrade.domain.backtest.engine.EntryRejection
+import ru.driics.aitrade.domain.backtest.engine.InstrumentSpec
+import ru.driics.aitrade.domain.backtest.engine.contractsToCoinQty
+import ru.driics.aitrade.domain.backtest.engine.sizeEntry
 import ru.driics.aitrade.domain.model.AiSignal
 import ru.driics.aitrade.domain.services.OrderSizingPolicy
 import ru.driics.aitrade.domain.strategy.StrategyDecision

@@ -1,4 +1,4 @@
-package ru.driics.aitrade.domain.backtest
+package ru.driics.aitrade.domain.backtest.core
 
 import java.math.BigDecimal
 

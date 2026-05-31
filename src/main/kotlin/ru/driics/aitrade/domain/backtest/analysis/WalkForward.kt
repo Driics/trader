@@ -1,5 +1,10 @@
-package ru.driics.aitrade.domain.backtest
+package ru.driics.aitrade.domain.backtest.analysis
 
+import ru.driics.aitrade.domain.backtest.core.Bar
+import ru.driics.aitrade.domain.backtest.core.PerformanceMetrics
+import ru.driics.aitrade.domain.backtest.engine.BacktestConfig
+import ru.driics.aitrade.domain.backtest.engine.BacktestEngine
+import ru.driics.aitrade.domain.backtest.engine.BacktestResult
 import ru.driics.aitrade.domain.strategy.Strategy
 import java.math.BigDecimal
 import java.math.RoundingMode

@@ -7,10 +7,10 @@ import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import ru.driics.aitrade.application.ai.AiSchemaValidator
-import ru.driics.aitrade.domain.backtest.AiDecisionLog
-import ru.driics.aitrade.domain.backtest.AiDecisionRecorder
-import ru.driics.aitrade.domain.backtest.BacktestRunner
-import ru.driics.aitrade.domain.backtest.JsonlCandleParser
+import ru.driics.aitrade.domain.backtest.ai.AiDecisionLog
+import ru.driics.aitrade.domain.backtest.ai.AiDecisionRecorder
+import ru.driics.aitrade.domain.backtest.io.BacktestRunner
+import ru.driics.aitrade.domain.backtest.io.JsonlCandleParser
 import ru.driics.aitrade.domain.ports.AiAnalysisPort
 import ru.driics.aitrade.domain.services.PromptBuilder
 import java.io.File

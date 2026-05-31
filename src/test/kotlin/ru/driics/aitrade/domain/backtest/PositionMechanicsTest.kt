@@ -3,6 +3,13 @@ package ru.driics.aitrade.domain.backtest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
+import ru.driics.aitrade.domain.backtest.core.Bar
+import ru.driics.aitrade.domain.backtest.core.ExitFill
+import ru.driics.aitrade.domain.backtest.core.ExitReason
+import ru.driics.aitrade.domain.backtest.core.PositionSide
+import ru.driics.aitrade.domain.backtest.core.SimPosition
+import ru.driics.aitrade.domain.backtest.core.realizedPnlUsd
+import ru.driics.aitrade.domain.backtest.core.resolveExit
 import java.math.BigDecimal
 
 /**

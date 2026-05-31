@@ -4,6 +4,10 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import ru.driics.aitrade.domain.backtest.ai.AiDecisionRecorder
+import ru.driics.aitrade.domain.backtest.core.Bar
+import ru.driics.aitrade.domain.backtest.engine.BacktestConfig
+import ru.driics.aitrade.domain.backtest.engine.InstrumentSpec
 import ru.driics.aitrade.domain.model.AiAnalysisResponse
 import ru.driics.aitrade.domain.model.AiSignal
 import ru.driics.aitrade.domain.model.AiTradeDecisionMap

@@ -2,6 +2,7 @@ package ru.driics.aitrade.domain.backtest
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
+import ru.driics.aitrade.domain.backtest.ai.AiDecisionLog
 import ru.driics.aitrade.domain.model.AiSignal
 import ru.driics.aitrade.domain.strategy.RecordedDecision
 import java.math.BigDecimal
