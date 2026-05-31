@@ -56,7 +56,9 @@ class PaperOrderHarnessTest {
         val tickSz = inst.tickSz?.toBigDecimalOrNull() ?: BigDecimal("0.01")
         val marginMode = tradingProperties.getMarginMode()
 
-        println("PAPER probe -> $instId  contracts=$contracts tickSz=$tickSz margin=$marginMode (ENSURE these are DEMO keys)")
+        // The x-simulated-trading header (okx.paper=true) is the actual gate that routes this to OKX's
+        // demo engine; demo keys are best practice, not the safety boundary.
+        println("PAPER probe -> $instId  contracts=$contracts tickSz=$tickSz margin=$marginMode (okx.paper=true -> OKX DEMO)")
 
         val levOk = trading.setLeverage(instId, 3, marginMode).getOrThrow()
         assertTrue(levOk, "setLeverage on OKX demo failed")

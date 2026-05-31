@@ -13,6 +13,11 @@ okx:
   secret-key: ${OKX_API_SECRET:your-okx-secret}
   passphrase: ${OKX_API_PASSPHRASE:your-okx-passphrase}
 
+  # Paper trading: true routes signed REST calls to OKX's DEMO env (x-simulated-trading header) and WS
+  # to wspap. Requires DEMO keys above + broker-id. Default false. With demo-mode=false this is PAPER mode.
+  paper: ${OKX_PAPER:false}
+  broker-id: ${OKX_BROKER_ID:}
+
 # Trading Configuration
 trading:
   currencies:
