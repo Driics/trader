@@ -2,6 +2,7 @@ package ru.driics.aitrade.application.usecase
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -182,5 +183,56 @@ class ExecuteAiDecisionsUseCaseTest {
         assertEquals(1, results.size)
         assertEquals(AIAction.PLACED, results.single().action)
         verify(exactly = 1) { confidenceCalibrator.recordTrade("BTC") }
+    }
+
+    // =========================================================================
+    // Batch B — per-instrument leverage cap (M1) and config-driven sizing clamp (M3)
+    // =========================================================================
+
+    private fun buyWithLeverage(leverage: Int) = AiTradeEnvelope(
+        AiTradeSignalArgs(
+            coin = "BTC",
+            signal = AiSignal.BUY,
+            confidence = BigDecimal("0.9"),
+            riskUsd = BigDecimal("100"),   // entry 50000, SL 40000 -> 0.01 coin -> 1 contract
+            stopLoss = BigDecimal("40000"),
+            profitTarget = BigDecimal("70000"),
+            leverage = leverage,
+        ),
+    )
+
+    @Test
+    fun `M1 - leverage over the instrument cap is rejected even when within config max`() = runBlocking {
+        // Instrument allows only 20x; config allows 40x. A 30x request is within config but over the
+        // instrument cap -> it must be rejected here, not sent to OKX only to be bounced at placement.
+        val cappedInstrument = instrument.copy(lever = "20")
+        every { riskGate.evaluate(any()) } returns RiskDecision.Allow
+        coEvery { trading.loadInstrument(any()) } returns TradeResult.Success(cappedInstrument)
+        coEvery { trading.getLastPrice(any()) } returns TradeResult.Success(BigDecimal("50000"))
+        coEvery { trading.setLeverage(any(), any(), any()) } returns TradeResult.Success(true)
+
+        val results = useCase().execute(
+            mapOf("BTC" to buyWithLeverage(30)),
+            riskContext,
+            snapshot(BigDecimal("100000")),
+        )
+
+        assertTrue(results.isEmpty(), "30x exceeds the instrument's 20x cap and must be skipped")
+    }
+
+    @Test
+    fun `M3 - sizing leverage clamp honors a configured maxLeverage above the old hardcoded 40`() = runBlocking {
+        // Config allows 60x and the instrument has no tighter cap. The leverage actually set on the
+        // exchange must be 60 -- not silently clamped to OrderSizingPolicy's old hardcoded ceiling of 40.
+        stubReadyPlacementPath() // returns the default instrument (no per-instrument lever cap)
+        val props60 = TradingProperties(currencies = listOf("BTC"), maxLeverage = 60)
+
+        useCase(props60).execute(
+            mapOf("BTC" to buyWithLeverage(60)),
+            riskContext,
+            snapshot(BigDecimal("100000")),
+        )
+
+        coVerify(exactly = 1) { trading.setLeverage(any(), 60, any()) }
     }
 }

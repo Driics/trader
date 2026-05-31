@@ -57,7 +57,10 @@ class ExecuteAiDecisionsUseCase(
 
     private val sizingPolicy = OrderSizingPolicy(
         takerFeePct = tradingProperties.takerFeePct,
-        marginBufferPct = tradingProperties.marginBufferPct
+        marginBufferPct = tradingProperties.marginBufferPct,
+        // M3: clamp to the configured leverage band, not OrderSizingPolicy's old hardcoded 5..40.
+        minLev = tradingProperties.minLeverage,
+        maxLev = tradingProperties.maxLeverage,
     )
 
     private val actionGuard = ActionGuard(tradingProperties)
@@ -166,8 +169,10 @@ class ExecuteAiDecisionsUseCase(
             return PlanResult.Skip(symbol, "Duplicate signal")
         }
 
-        // 4. Guardrails
-        val validation = actionGuard.validate(args, inst, lastPrice)
+        // 4. Guardrails. M1: feed the per-instrument leverage cap (OKX "lever") so the guard bounds
+        //    leverage by min(instrument cap, config max) — alts cap well below BTC, so a too-high
+        //    request is rejected here instead of being bounced by the exchange at placement.
+        val validation = actionGuard.validate(args, inst, lastPrice, inst.lever?.toIntOrNull())
         if (validation is ActionGuard.ValidationResult.Rejected) {
             recordGuardRejection(validation.reason)
             BusinessEventLogger.orderRejected(symbol, null, validation.reason, "GUARD_VIOLATION")
