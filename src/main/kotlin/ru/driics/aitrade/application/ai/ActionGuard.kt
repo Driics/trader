@@ -107,9 +107,10 @@ class ActionGuard(
         isTp: Boolean
     ): String? {
         if (price == null) return null // Optional TP/SL
-        
+
+        val label = if (isTp) "TP" else "SL"
+
         if (price.isZeroOrNegative()) {
-            val label = if (isTp) "TP" else "SL"
             return "$label must be positive, got: $price"
         }
 
@@ -117,19 +118,15 @@ class ActionGuard(
         val distance = (price - lastPrice).abs()
 
         if (distance < minDistance) {
-            val label = if (isTp) "TP" else "SL"
             return "$label $price too close to entry $lastPrice (min distance: $minDistance)"
         }
 
-        // Validate direction: TP should be favorable, SL should be unfavorable
+        // Validate direction: TP should be favorable, SL should be unfavorable.
         val isFavorable = when (side) {
             OrderSide.BUY -> price > lastPrice
             OrderSide.SELL -> price < lastPrice
         }
-        
-        val label = if (isTp) "TP" else "SL"
-        val expectedDirection = if (isTp) "favorable" else "unfavorable"
-        
+
         if (isTp && !isFavorable) {
             return "$label $price is not favorable for $side at entry $lastPrice"
         }

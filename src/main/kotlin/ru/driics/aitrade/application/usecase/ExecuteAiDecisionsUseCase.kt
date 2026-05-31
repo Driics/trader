@@ -138,8 +138,10 @@ class ExecuteAiDecisionsUseCase(
         if (symbol !in supported) return PlanResult.Skip(symbol, "Not in configured list")
         if (args.signal == AiSignal.HOLD) return PlanResult.Skip(symbol, "Hold signal")
 
-        val confidence = args.confidence ?: BigDecimal.ZERO
-        if (confidence < minConfidence) {
+        // Defense in depth: ConfidenceCalibrator already gates confidence upstream, but the use case
+        // enforces its own floor too (shared rule via ConfidencePolicy: an absent confidence counts as zero).
+        if (!ConfidencePolicy.meetsThreshold(args.confidence, minConfidence)) {
+            val confidence = args.confidence ?: BigDecimal.ZERO
             return PlanResult.Skip(symbol, "Confidence $confidence < $minConfidence")
         }
 

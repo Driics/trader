@@ -10,6 +10,7 @@ import ru.driics.aitrade.domain.model.AiSignal
 import ru.driics.aitrade.domain.model.AiTradeDecisionMap
 import ru.driics.aitrade.domain.model.AiTradeEnvelope
 import ru.driics.aitrade.domain.model.AiTradeSignalArgs
+import ru.driics.aitrade.domain.model.TradingLimits
 import java.math.BigDecimal
 
 /**
@@ -109,10 +110,14 @@ class AiSchemaValidator(
             }
         }
 
-        // 5. Validate leverage range [1, 125]
+        // 5. Validate leverage against the exchange ceiling. This is the loose schema-level bound; the
+        //    instrument-aware bound (min of instrument max and configured maxLeverage) is enforced later
+        //    by ActionGuard — intentional defense in depth, different bounds per stage.
         if (args.leverage != null) {
-            if (args.leverage < 1 || args.leverage > 125) {
-                return SignalValidationResult.Rejected("Leverage out of range [1, 125]: ${args.leverage}")
+            if (args.leverage < 1 || args.leverage > TradingLimits.MAX_LEVERAGE) {
+                return SignalValidationResult.Rejected(
+                    "Leverage out of range [1, ${TradingLimits.MAX_LEVERAGE}]: ${args.leverage}",
+                )
             }
         }
 
