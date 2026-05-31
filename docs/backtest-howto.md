@@ -66,7 +66,55 @@ open, pessimistic stop-first exits, every entry requires a stop, sizing through 
 `OrderSizingPolicy`. The equity curve is **gross of funding and slippage** — both are listed under
 "NOT modelled" in the report. Treat a profitable curve as necessary, not sufficient, evidence.
 
+## Comparing strategies (parameter sweep)
+
+`StrategySweepHarnessTest` runs an RSI + Donchian grid over one candle file and writes a best-first
+comparison table to `<file>.sweep.txt`:
+
+```powershell
+$env:BACKTEST_FILE = "data/btc.jsonl"
+.\gradlew.bat --no-build-cache --rerun-tasks test --tests '*StrategySweepHarnessTest*'
+```
+
+Empirical finding (6-month BTC-USDT-SWAP 1H): mean-reversion (RSI) loses across every parameterization;
+trend-following (Donchian breakout) is profitable (best `donchian 10` +23.6%, PF 1.42). **A grid winner on
+one window is the textbook overfit** — channel-period sensitivity here is high, so validate out-of-sample
+before trusting it.
+
+## Backtesting the AI (record → replay)
+
+The live AI flow is async, paid, and non-deterministic, so it can't be called inside the deterministic
+backtest loop. Instead: **record once** (network, paid), then **replay many** (offline, free).
+
+1. **Record** (calls the live LLM — costs money; loads the Spring context):
+
+   ```powershell
+   $env:AI_RECORD_FILE = "data/btc.jsonl"     # candles to record over
+   # optional: $env:AI_RECORD_CADENCE="24"  (bars between LLM calls)  $env:AI_RECORD_MAX="100"  (cost cap)
+   .\gradlew.bat --no-build-cache --rerun-tasks test --tests '*AiRecorderHarnessTest*'
+   ```
+
+   Writes `data/btc-ai.jsonl` (one decision per line). If the AI needs the templated prompt rather than the
+   pure `PromptBuilder` one, swap `PromptTemplateService` into `AiRecorderHarnessTest` (mirror
+   `BuildPromptUseCase.buildTemplatePrompt`).
+
+2. **Replay** (offline, deterministic, free — sweep `AI_MIN_CONFIDENCE` for free):
+
+   ```powershell
+   $env:BACKTEST_FILE = "data/btc.jsonl"; $env:AI_DECISIONS_FILE = "data/btc-ai.jsonl"
+   # optional: $env:AI_MIN_CONFIDENCE="0.6"
+   .\gradlew.bat --no-build-cache --rerun-tasks test --tests '*AiReplayHarnessTest*'
+   ```
+
+   The report prints the **decision↔candle match-rate** — if it's near zero, the decision log and candles
+   don't line up (wrong instrument/timeframe), which would otherwise look like "the AI never traded".
+
+**AI replay caveat (in the report):** flat-state recording validates the AI's *entry signals under fixed
+SL/TP brackets only* — not its hold/close/invalidation logic or drawdown-aware sizing. A profitable AI
+replay is necessary, not sufficient.
+
 ## Programmatic use
 
 `BacktestRunner.run(jsonl, symbol, strategy, config)` is pure (`String -> BacktestResult`) — drop in any
-`Strategy` implementation behind the seam to compare strategies on the same candles.
+`Strategy` (incl. `DonchianBreakoutStrategy`, `RecordedAiStrategy`) behind the seam. `BacktestRunner.replayAi(...)`
+and `ParameterSweep.run(...)` are likewise pure.
