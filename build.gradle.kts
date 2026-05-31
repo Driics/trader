@@ -83,10 +83,16 @@ dependencies {
     // Caffeine metrics for Micrometer
     implementation("io.micrometer:micrometer-core")
     
+    // Trade journal persistence (opt-in, default OFF — see TradeJournalPersistenceConfig)
+    implementation("org.springframework.boot:spring-boot-starter-jdbc")
+    runtimeOnly("org.postgresql:postgresql")
+    implementation("org.liquibase:liquibase-core")
+
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
     testImplementation("org.wiremock:wiremock-standalone:3.0.1")
     testImplementation("io.mockk:mockk:1.14.3")
+    testImplementation("com.h2database:h2")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

@@ -1,0 +1,131 @@
+databaseChangeLog:
+  - changeSet:
+      id: v1-trade-journal-tables
+      author: aitrader
+      changes:
+        - createTable:
+            tableName: trade_order
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: recorded_at
+                  type: TIMESTAMP
+              - column:
+                  name: mode
+                  type: VARCHAR(64)
+              - column:
+                  name: symbol
+                  type: VARCHAR(64)
+              - column:
+                  name: inst_id
+                  type: VARCHAR(64)
+              - column:
+                  name: side
+                  type: VARCHAR(64)
+              - column:
+                  name: leverage
+                  type: INT
+              - column:
+                  name: requested_contracts
+                  type: NUMERIC(38, 18)
+              - column:
+                  name: placed_contracts
+                  type: NUMERIC(38, 18)
+              - column:
+                  name: entry_px
+                  type: NUMERIC(38, 18)
+              - column:
+                  name: tp_px
+                  type: NUMERIC(38, 18)
+              - column:
+                  name: sl_px
+                  type: NUMERIC(38, 18)
+              - column:
+                  name: risk_usd
+                  type: NUMERIC(38, 18)
+              - column:
+                  name: cost_usd
+                  type: NUMERIC(38, 18)
+              - column:
+                  name: cl_ord_id
+                  type: VARCHAR(64)
+              - column:
+                  name: ord_id
+                  type: VARCHAR(64)
+              - column:
+                  name: status
+                  type: VARCHAR(64)
+              - column:
+                  name: reason
+                  type: VARCHAR(1024)
+              - column:
+                  name: demo
+                  type: BOOLEAN
+        - createTable:
+            tableName: fill
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: recorded_at
+                  type: TIMESTAMP
+              - column:
+                  name: ord_id
+                  type: VARCHAR(64)
+              - column:
+                  name: cl_ord_id
+                  type: VARCHAR(64)
+              - column:
+                  name: inst_id
+                  type: VARCHAR(64)
+              - column:
+                  name: side
+                  type: VARCHAR(64)
+              - column:
+                  name: avg_px
+                  type: NUMERIC(38, 18)
+              - column:
+                  name: state
+                  type: VARCHAR(64)
+        - createTable:
+            tableName: pnl_snapshot
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: recorded_at
+                  type: TIMESTAMP
+              - column:
+                  name: cycle
+                  type: BIGINT
+              - column:
+                  name: account_value
+                  type: NUMERIC(38, 18)
+              - column:
+                  name: available_cash
+                  type: NUMERIC(38, 18)
+              - column:
+                  name: total_return
+                  type: NUMERIC(38, 18)
+              - column:
+                  name: realized_pnl_today
+                  type: NUMERIC(38, 18)
+              - column:
+                  name: open_positions_count
+                  type: INT
