@@ -7,6 +7,7 @@ import jakarta.validation.constraints.Min
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.domain.model.MarginMode
+import ru.driics.aitrade.domain.model.TradingLimits
 import java.math.BigDecimal
 import java.time.Duration
 import java.util.*
@@ -38,7 +39,7 @@ data class TradingProperties(
     var minConfidence: BigDecimal = BigDecimal("0.60"),
 
     @field:Min(value = 1, message = "Max leverage must be at least 1")
-    @field:Max(value = 125, message = "Max leverage cannot exceed 125")
+    @field:Max(value = TradingLimits.MAX_LEVERAGE_LONG, message = "Max leverage cannot exceed 125")
     var maxLeverage: Int = 40,
 
     @field:Min(value = 1, message = "Min leverage must be at least 1")

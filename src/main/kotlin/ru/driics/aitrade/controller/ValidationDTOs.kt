@@ -1,6 +1,7 @@
 package ru.driics.aitrade.controller
 
 import jakarta.validation.constraints.*
+import ru.driics.aitrade.domain.model.TradingLimits
 import java.math.BigDecimal
 
 /**
@@ -27,7 +28,7 @@ data class SetLeverageRequest(
     val instrumentId: String,
 
     @field:Min(value = 1, message = "Leverage must be at least 1")
-    @field:Max(value = 125, message = "Leverage cannot exceed 125")
+    @field:Max(value = TradingLimits.MAX_LEVERAGE_LONG, message = "Leverage cannot exceed 125")
     val leverage: Int,
 
     @field:NotBlank(message = "Margin mode is required")

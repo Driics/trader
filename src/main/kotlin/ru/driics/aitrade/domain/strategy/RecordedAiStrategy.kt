@@ -2,6 +2,7 @@ package ru.driics.aitrade.domain.strategy
 
 import ru.driics.aitrade.domain.model.AiSignal
 import ru.driics.aitrade.domain.model.AiTradeSignalArgs
+import ru.driics.aitrade.domain.model.ConfidencePolicy
 import ru.driics.aitrade.domain.model.MarketState
 import java.math.BigDecimal
 
@@ -67,7 +68,7 @@ class RecordedAiStrategy(
 
     override fun decide(state: MarketState): List<StrategyDecision> {
         val decision = byTimestamp[state.timestamp] ?: return emptyList()
-        val confidence = decision.confidence ?: BigDecimal.ZERO
+        val confidence = ConfidencePolicy.effective(decision.confidence)
         if (confidence < minConfidence) return emptyList()
         return listOf(decision)
     }

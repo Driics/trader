@@ -87,11 +87,5 @@ value class PositionId(@get:JsonValue val value: String) {
 /**
  * Extension functions for easy conversion from String.
  */
-fun String.asInstrumentId(): InstrumentId = InstrumentId(this)
 fun String.asOrderId(): OrderId = OrderId(this)
 fun String.asPositionId(): PositionId = PositionId(this)
-
-/**
- * Extension for Symbol to InstrumentId conversion.
- */
-fun Symbol.toInstrumentId(): InstrumentId = InstrumentId.fromSymbol(this)
