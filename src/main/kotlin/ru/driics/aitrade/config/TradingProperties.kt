@@ -60,6 +60,10 @@ data class TradingProperties(
     var aiBudgetPerMinute: Long = 10, // Max AI requests per minute
     var aiCooldownMs: Duration? = Duration.ofMinutes(5), // Cooldown between trades per symbol
 
+    // When set, every cycle's AI decisions are appended as RecordedDecision JSONL to this path (an audit
+    // trail; wall-clock stamped, NOT bar-aligned). Null disables it. Use a data/ path (gitignored).
+    var decisionLogFile: String? = null,
+
     // Execution Mode
     var demoMode: Boolean = true, // If true, orders are simulated (dry-run)
 

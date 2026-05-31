@@ -23,6 +23,7 @@ import ru.driics.aitrade.application.risk.KillSwitchState
 import ru.driics.aitrade.config.RiskGateProperties
 import ru.driics.aitrade.domain.risk.RiskContext
 import ru.driics.aitrade.domain.model.*
+import ru.driics.aitrade.domain.ports.DecisionLogSink
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.TradingMetricsService
@@ -59,7 +60,8 @@ class UpdateCycleOrchestrator(
         val schemaValidator: AiSchemaValidator,
         val confidenceCalibrator: ConfidenceCalibrator,
         val tracer: Tracer,
-        val clock: Clock
+        val clock: Clock,
+        val decisionLogSink: DecisionLogSink? = null
     )
 
     // =========================================================================
@@ -154,6 +156,9 @@ class UpdateCycleOrchestrator(
 
         // 4. Parse & Validate Response
         val rawDecisions = stageParseResponse(aiResponse, cid).getOrElse { return it.toResult(prompt.length) }
+
+        // 4b. Audit: persist what the AI decided this cycle (optional sink, fail-safe, wall-clock stamped).
+        infrastructure.decisionLogSink?.record(rawDecisions, promptResult.marketState.timestamp)
 
         // 5. Apply Guardrails & Normalize
         val finalDecisions = stageGuardAndNormalize(rawDecisions, cid).getOrElse { return it.toResult(prompt.length) }

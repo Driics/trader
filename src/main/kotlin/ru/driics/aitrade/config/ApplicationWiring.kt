@@ -27,6 +27,8 @@ import ru.driics.aitrade.domain.ports.StreamingMarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.TradingMetricsService
 import ru.driics.aitrade.domain.types.InstrumentResolver
+import ru.driics.aitrade.infra.recording.JsonlDecisionLogSink
+import java.nio.file.Path
 import java.time.Clock
 
 @Configuration
@@ -183,7 +185,8 @@ class ApplicationWiring(
             schemaValidator = schemaValidator,
             confidenceCalibrator = confidenceCalibrator,
             tracer = tracer,
-            clock = clock
+            clock = clock,
+            decisionLogSink = tradingProperties.decisionLogFile?.let { JsonlDecisionLogSink(Path.of(it)) }
         )
     )
 }
