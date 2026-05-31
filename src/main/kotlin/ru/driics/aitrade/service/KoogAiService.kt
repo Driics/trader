@@ -2,6 +2,7 @@ package ru.driics.aitrade.service
 
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.llm.LLMCapability
+import ai.koog.prompt.params.LLMParams
 import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -73,7 +74,7 @@ class KoogAiService(
 
     override suspend fun analyzePrompt(prompt: String): AiAnalysisResponse {
         // 1. Prepare Request
-        val promptRequest = prompt(id = PROMPT_ID) {
+        val promptRequest = prompt(id = PROMPT_ID, params = LLMParams(temperature = tradingProperties.aiTemperature)) {
             system(systemPrompt)
             user(prompt)
         }

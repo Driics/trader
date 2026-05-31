@@ -54,6 +54,7 @@ data class TradingProperties(
 
     // AI call configuration
     var aiModel: String = "qwen/qwen3-max", // Default AI model
+    var aiTemperature: Double = 0.0, // Pinned low for run-to-run determinism (record/replay parity)
     var aiTimeoutMs: Long = 60_000, // 60 seconds default timeout
     var aiMaxRetries: Int = 2, // Retries for transient errors
     var aiBudgetPerMinute: Long = 10, // Max AI requests per minute
