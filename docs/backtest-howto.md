@@ -47,6 +47,13 @@ $env:BACKTEST_FILE = "data/btc.jsonl"
 BACKTEST_FILE=data/btc.jsonl ./gradlew test --tests '*BacktestHarnessTest*'
 ```
 
+If the run reports `SKIPPED` instead of producing a report, a warm Gradle daemon likely didn't pick up
+the freshly-set env var. Re-run with `--no-daemon` (or set `BACKTEST_FILE` persistently in your shell):
+
+```powershell
+$env:BACKTEST_FILE = "data/btc.jsonl"; .\gradlew.bat --no-daemon test --tests '*BacktestHarnessTest*'
+```
+
 Defaults (`BacktestRunner.defaultConfig`): BTC-USDT-SWAP contract specs (ctVal 0.01 BTC, lot/min 0.1),
 5 bps taker fee, 5% margin buffer, 1% equity risk/trade, 30-bar warmup, $10,000 starting equity. For a
 different instrument, the contract specs MUST be changed to match it (see `InstrumentSpec`) — the defaults

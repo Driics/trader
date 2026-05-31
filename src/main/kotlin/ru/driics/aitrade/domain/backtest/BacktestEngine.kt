@@ -203,6 +203,7 @@ class BacktestEngine(
         }
     }
 
+    // Absolute USD delta (not a ratio); surfaced on the synthesized AccountInfo. No v1 strategy reads it.
     private fun totalReturn(start: BigDecimal, equity: BigDecimal): BigDecimal =
         if (start.signum() == 0) BigDecimal.ZERO else equity - start
 
