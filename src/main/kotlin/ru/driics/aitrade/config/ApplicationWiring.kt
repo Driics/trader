@@ -11,10 +11,11 @@ import ru.driics.aitrade.application.ai.AiSchemaValidator
 import ru.driics.aitrade.application.ai.ConfidenceCalibrator
 import ru.driics.aitrade.application.ai.PromptTemplateService
 import ru.driics.aitrade.application.ai.TemplatedPromptRenderer
+import ru.driics.aitrade.application.journal.TradeCloseCollector
 import ru.driics.aitrade.application.orchestrator.UpdateCycleOrchestrator
 import ru.driics.aitrade.application.risk.KillSwitchState
-import ru.driics.aitrade.application.risk.KillSwitchStore
 import ru.driics.aitrade.application.risk.RiskGate
+import ru.driics.aitrade.domain.ports.KillSwitchStore
 import ru.driics.aitrade.infra.risk.FileKillSwitchStore
 import ru.driics.aitrade.application.usecase.AnalyzePromptUseCase
 import ru.driics.aitrade.application.usecase.BuildPromptUseCase
@@ -185,6 +186,7 @@ class ApplicationWiring(
         tracer: Tracer,
         clock: Clock,
         tradeJournal: TradeJournalPort,
+        tradeCloseCollector: TradeCloseCollector? = null,
     ) = UpdateCycleOrchestrator(
         config = UpdateCycleOrchestrator.OrchestratorConfig(
             symbols = tradingProperties.getCurrenciesList(),
@@ -207,7 +209,8 @@ class ApplicationWiring(
             tracer = tracer,
             clock = clock,
             tradeJournal = tradeJournal,
-            decisionLogSink = tradingProperties.decisionLogFile?.let { JsonlDecisionLogSink(Path.of(it)) }
+            decisionLogSink = tradingProperties.decisionLogFile?.let { JsonlDecisionLogSink(Path.of(it)) },
+            tradeCloseCollector = tradeCloseCollector,
         )
     )
 }

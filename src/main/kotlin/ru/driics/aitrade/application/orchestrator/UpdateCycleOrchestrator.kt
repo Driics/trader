@@ -11,6 +11,7 @@ import ru.driics.aitrade.application.ai.AiSchemaValidator.ValidationResult
 import ru.driics.aitrade.application.ai.ConfidenceCalibrator
 import ru.driics.aitrade.application.ai.ConfidenceCalibrator.CalibrationResult
 import ru.driics.aitrade.application.ai.SignalNormalizer
+import ru.driics.aitrade.application.journal.TradeCloseCollector
 import ru.driics.aitrade.application.usecase.AnalyzePromptUseCase
 import ru.driics.aitrade.application.usecase.BuildPromptUseCase
 import ru.driics.aitrade.application.usecase.ExecuteAiDecisionsUseCase
@@ -64,7 +65,8 @@ class UpdateCycleOrchestrator(
         val tracer: Tracer,
         val clock: Clock,
         val tradeJournal: TradeJournalPort,
-        val decisionLogSink: DecisionLogSink? = null
+        val decisionLogSink: DecisionLogSink? = null,
+        val tradeCloseCollector: TradeCloseCollector? = null,
     )
 
     // =========================================================================
@@ -328,6 +330,10 @@ class UpdateCycleOrchestrator(
                     openPositionsCount = openPositionsCount,
                 )
             )
+            infrastructure.tradeCloseCollector?.let { collector ->
+                runCatching { collector.collect() }
+                    .onFailure { log.warn(it) { "trade-close collect failed (cycle continues)" } }
+            }
 
             val results = useCases.execute.execute(decisions, riskContext, marketState)
 

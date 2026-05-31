@@ -4,13 +4,21 @@ import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import liquibase.integration.spring.SpringLiquibase
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
+import ru.driics.aitrade.application.journal.TradeCloseCollector
+import ru.driics.aitrade.domain.model.TradingMode
+import ru.driics.aitrade.domain.ports.ClosedPositionsPort
 import ru.driics.aitrade.domain.ports.TradeJournalPort
+import ru.driics.aitrade.domain.ports.TradeJournalQueryPort
 import ru.driics.aitrade.infra.persistence.JdbcTradeJournal
+import ru.driics.aitrade.infra.persistence.JdbcTradeJournalQuery
 import ru.driics.aitrade.infra.persistence.NoOpTradeJournal
+import ru.driics.aitrade.infra.persistence.NoOpTradeJournalQuery
+import java.time.Clock
 import javax.sql.DataSource
 
 /**
@@ -57,6 +65,28 @@ class TradeJournalPersistenceConfig {
     @Bean
     fun jdbcTradeJournal(tradeJournalJdbcTemplate: NamedParameterJdbcTemplate): TradeJournalPort =
         JdbcTradeJournal(tradeJournalJdbcTemplate)
+
+    @Bean
+    fun tradeJournalQuery(tradeJournalJdbcTemplate: NamedParameterJdbcTemplate): TradeJournalQueryPort =
+        JdbcTradeJournalQuery(tradeJournalJdbcTemplate)
+
+    @Bean
+    @ConditionalOnBean(ClosedPositionsPort::class)
+    fun tradeCloseCollector(
+        closedPositions: ClosedPositionsPort,
+        tradeJournal: TradeJournalPort,
+        tradeJournalQuery: TradeJournalQueryPort,
+        clock: Clock,
+        tradingProperties: TradingProperties,
+        okxProperties: OkxProperties,
+    ): TradeCloseCollector = TradeCloseCollector(
+        source = closedPositions,
+        journal = tradeJournal,
+        query = tradeJournalQuery,
+        clock = clock,
+        mode = TradingMode.resolve(tradingProperties.demoMode, okxProperties.paper),
+        demo = tradingProperties.demoMode,
+    )
 }
 
 /**
@@ -71,4 +101,8 @@ class TradeJournalDefaultConfig {
     @Bean
     @ConditionalOnProperty(prefix = "trade-journal", name = ["enabled"], havingValue = "false", matchIfMissing = true)
     fun noOpTradeJournal(): TradeJournalPort = NoOpTradeJournal()
+
+    @Bean
+    @ConditionalOnProperty(prefix = "trade-journal", name = ["enabled"], havingValue = "false", matchIfMissing = true)
+    fun noOpTradeJournalQuery(): TradeJournalQueryPort = NoOpTradeJournalQuery()
 }
