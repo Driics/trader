@@ -26,6 +26,7 @@ import ru.driics.aitrade.domain.ports.PromptOutputPort
 import ru.driics.aitrade.domain.ports.StreamingMarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.TradingMetricsService
+import ru.driics.aitrade.domain.types.InstrumentResolver
 import java.time.Clock
 
 @Configuration
@@ -114,6 +115,12 @@ class ApplicationWiring(
     )
 
     @Bean
+    fun instrumentResolver() = InstrumentResolver(
+        quoteCurrency = tradingProperties.quoteCurrency,
+        instrumentType = tradingProperties.instrumentType,
+    )
+
+    @Bean
     fun executeAiUseCase(
         trading: TradingPort,
         clock: Clock,
@@ -122,6 +129,7 @@ class ApplicationWiring(
         riskGate: RiskGate,
         riskGateProperties: RiskGateProperties,
         streaming: StreamingMarketDataPort,
+        instrumentResolver: InstrumentResolver,
     ) = ExecuteAiDecisionsUseCase(
         trading = trading,
         tradingProperties = tradingProperties,
@@ -131,6 +139,7 @@ class ApplicationWiring(
         riskGate = riskGate,
         riskGateProperties = riskGateProperties,
         streaming = streaming,
+        instrumentResolver = instrumentResolver,
     )
 
     @Bean

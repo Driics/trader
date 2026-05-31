@@ -19,6 +19,7 @@ import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.services.IdGenerator
 import ru.driics.aitrade.domain.services.OrderSizingPolicy
 import ru.driics.aitrade.domain.types.InstrumentId
+import ru.driics.aitrade.domain.types.InstrumentResolver
 import ru.driics.aitrade.domain.types.getOrNull
 import ru.driics.aitrade.domain.types.getOrThrow
 import ru.driics.aitrade.domain.util.isPositive
@@ -37,6 +38,7 @@ class ExecuteAiDecisionsUseCase(
     private val riskGate: RiskGate,
     private val riskGateProperties: RiskGateProperties,
     private val streaming: StreamingMarketDataPort,
+    private val instrumentResolver: InstrumentResolver,
 ) {
     private companion object {
         val log = logger<ExecuteAiDecisionsUseCase>()
@@ -149,7 +151,7 @@ class ExecuteAiDecisionsUseCase(
         }
 
         // 2. Load Instrument & Price
-        val instrumentId = InstrumentId.fromSymbol(symbol)
+        val instrumentId = instrumentResolver.instrumentId(symbol)
         val inst = trading.loadInstrument(instrumentId).getOrThrow()
         val restPrice = trading.getLastPrice(instrumentId).getOrNull()
             ?: return PlanResult.Skip(symbol, "No price available")

@@ -12,6 +12,7 @@ import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.MarginMode
 import ru.driics.aitrade.domain.model.OkxPlaceOrderData
 import ru.driics.aitrade.domain.types.InstrumentId
+import ru.driics.aitrade.domain.types.InstrumentResolver
 import ru.driics.aitrade.domain.types.TradeResult
 import ru.driics.aitrade.infra.cache.CachedIndicatorCalculator
 import ru.driics.aitrade.infra.cache.SmartCacheStrategy
@@ -38,6 +39,7 @@ class OkxExchangeAdapterTradingTest {
         smartCache = mockk<SmartCacheStrategy>(relaxed = true),
         indicators = mockk<CachedIndicatorCalculator>(relaxed = true),
         clock = clock,
+        instrumentResolver = InstrumentResolver("USDT", "SWAP"),
     )
 
     private val inst = InstrumentId.fromSymbol("BTC")

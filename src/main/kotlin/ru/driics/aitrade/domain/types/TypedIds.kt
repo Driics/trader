@@ -1,6 +1,7 @@
 package ru.driics.aitrade.domain.types
 
 import com.fasterxml.jackson.annotation.JsonValue
+import java.util.Locale
 
 /**
  * Instrument identifier (e.g., "BTC-USDT-SWAP").
@@ -14,17 +15,27 @@ value class InstrumentId(@get:JsonValue val value: String) {
     }
 
     companion object {
-        /**
-         * Create InstrumentId from symbol (e.g., "BTC" -> "BTC-USDT-SWAP").
-         */
-        fun fromSymbol(symbol: Symbol): InstrumentId =
-            InstrumentId("${symbol.value}-USDT-SWAP")
+        /** OKX-native default for perpetual swaps. Production builds config-driven IDs via [InstrumentResolver]. */
+        const val DEFAULT_QUOTE = "USDT"
+        const val DEFAULT_TYPE = "SWAP"
 
         /**
-         * Create InstrumentId from string symbol.
+         * Builds an instId from its parts, honoring OKX's format: SPOT is `BASE-QUOTE`; derivatives
+         * (SWAP/FUTURES) append the type as `BASE-QUOTE-TYPE`. The single source of truth for the format.
          */
-        fun fromSymbol(symbolStr: String): InstrumentId =
-            fromSymbol(Symbol.from(symbolStr))
+        fun of(symbol: Symbol, quoteCurrency: String, instrumentType: String): InstrumentId {
+            val quote = quoteCurrency.trim().uppercase(Locale.ROOT)
+            val type = instrumentType.trim().uppercase(Locale.ROOT)
+            require(quote.isNotBlank()) { "quoteCurrency must not be blank" }
+            require(type.isNotBlank()) { "instrumentType must not be blank" }
+            val raw = if (type == "SPOT") "${symbol.value}-$quote" else "${symbol.value}-$quote-$type"
+            return InstrumentId(raw)
+        }
+
+        /** Convenience default (`BASE-USDT-SWAP`) for tests/backtests; production uses [InstrumentResolver]. */
+        fun fromSymbol(symbol: Symbol): InstrumentId = of(symbol, DEFAULT_QUOTE, DEFAULT_TYPE)
+
+        fun fromSymbol(symbolStr: String): InstrumentId = fromSymbol(Symbol.from(symbolStr))
     }
 
     /**

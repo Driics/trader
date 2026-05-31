@@ -13,6 +13,7 @@ import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PlaceOrderOutcome
 import ru.driics.aitrade.domain.ports.TradingPort
 import ru.driics.aitrade.domain.types.InstrumentId
+import ru.driics.aitrade.domain.types.InstrumentResolver
 import ru.driics.aitrade.domain.types.Symbol
 import ru.driics.aitrade.domain.types.TradeResult
 import ru.driics.aitrade.domain.util.quantize
@@ -36,7 +37,8 @@ class OkxExchangeAdapter(
     private val tracer: Tracer,
     private val smartCache: SmartCacheStrategy,
     private val indicators: CachedIndicatorCalculator,
-    private val clock: Clock
+    private val clock: Clock,
+    private val instrumentResolver: InstrumentResolver,
 ) : MarketDataPort, TradingPort {
 
     private val log = KotlinLogging.logger {}
@@ -248,7 +250,7 @@ class OkxExchangeAdapter(
         }
 
     private suspend fun fetchCurrencyData(symbol: String): CurrencyMarketData = coroutineScope {
-        val instId = InstrumentId.fromSymbol(symbol).value
+        val instId = instrumentResolver.instrumentId(symbol).value
 
         // Parallel API calls
         val tickerDef = async { rest.fetchTicker(instId) }

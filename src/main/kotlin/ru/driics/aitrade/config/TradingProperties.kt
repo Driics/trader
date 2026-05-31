@@ -15,6 +15,13 @@ import java.util.*
 @ConfigurationProperties(prefix = "trading")
 data class TradingProperties(
     var currencies: List<String> = emptyList(),
+
+    // Instrument identity: `currencies` lists base assets (BTC, ETH...); these two combine with each
+    // base to form the OKX instId (e.g. BTC + USDT + SWAP -> "BTC-USDT-SWAP"). Change them to trade a
+    // different quote (USDC) or instrument type (SPOT) without touching code.
+    var quoteCurrency: String = "USDT",
+    var instrumentType: String = "SWAP",
+
     var marginMode: String = "isolated",
     var autoExecute: Boolean = false,
 

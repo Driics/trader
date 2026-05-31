@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.OkxApiResponse
 import ru.driics.aitrade.domain.model.OkxBillData
+import ru.driics.aitrade.domain.types.InstrumentResolver
 import ru.driics.aitrade.domain.types.TradeResult
 import ru.driics.aitrade.infra.cache.CachedIndicatorCalculator
 import ru.driics.aitrade.infra.cache.SmartCacheStrategy
@@ -45,6 +46,7 @@ class OkxExchangeAdapterPnlTest {
         smartCache = smartCache,
         indicators = indicators,
         clock = clock,
+        instrumentResolver = InstrumentResolver("USDT", "SWAP"),
     )
 
     private fun bill(id: String, tsMs: Long, pnl: String) =

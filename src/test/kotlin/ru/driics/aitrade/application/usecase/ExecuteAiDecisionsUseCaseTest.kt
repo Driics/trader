@@ -27,6 +27,7 @@ import ru.driics.aitrade.domain.model.OkxInstrumentInfo
 import ru.driics.aitrade.domain.ports.PlaceOrderOutcome
 import ru.driics.aitrade.domain.ports.StreamingMarketDataPort
 import ru.driics.aitrade.domain.ports.TradingPort
+import ru.driics.aitrade.domain.types.InstrumentResolver
 import ru.driics.aitrade.domain.types.TradeResult
 import java.math.BigDecimal
 import java.time.Clock
@@ -59,6 +60,7 @@ class ExecuteAiDecisionsUseCaseTest {
         riskGate = riskGate,
         riskGateProperties = RiskGateProperties(),
         streaming = streaming,
+        instrumentResolver = InstrumentResolver(tradingProperties.quoteCurrency, tradingProperties.instrumentType),
     )
 
     private fun snapshot(

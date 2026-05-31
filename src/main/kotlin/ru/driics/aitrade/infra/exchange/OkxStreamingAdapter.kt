@@ -7,6 +7,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.config.TradingProperties
+import ru.driics.aitrade.domain.types.InstrumentResolver
 import ru.driics.aitrade.domain.ports.OrderEvent
 import ru.driics.aitrade.domain.ports.PositionEvent
 import ru.driics.aitrade.domain.ports.PriceUpdate
@@ -24,7 +25,8 @@ import java.util.concurrent.ConcurrentHashMap
 class OkxStreamingAdapter(
     private val publicWs: OkxPublicWebSocketClient,
     private val privateWs: OkxPrivateWebSocketClient,
-    private val tradingProperties: TradingProperties
+    private val tradingProperties: TradingProperties,
+    private val instrumentResolver: InstrumentResolver,
 ) : StreamingMarketDataPort {
 
     private val log = KotlinLogging.logger {}
@@ -118,7 +120,7 @@ class OkxStreamingAdapter(
     private fun subscribeToInstruments(symbols: List<String>) {
         scope.launch {
             symbols.forEach { symbol ->
-                subscribeToInstrument(symbol.toInstId())
+                subscribeToInstrument(instrumentResolver.instrumentId(symbol).value)
             }
         }
     }
@@ -202,17 +204,11 @@ class OkxStreamingAdapter(
         return Instant.ofEpochMilli(millis)
     }
 
-    private fun String.toInstId(): String = "${this}${INSTRUMENT_SUFFIX}"
-
     // =========================================================================
     // Constants
     // =========================================================================
 
     private data class CachedPrice(val price: BigDecimal, val receivedAtNanos: Long)
-
-    private companion object {
-        const val INSTRUMENT_SUFFIX = "-USDT-SWAP"
-    }
 
     private object Timeframe {
         const val M1 = "1m"
