@@ -59,7 +59,7 @@ class BacktestRunnerReportTest {
             startingEquityUsd = BigDecimal("1000"),
             takerFeePct = BigDecimal.ZERO,
             marginBufferPct = BigDecimal.ZERO,
-            riskPerTradePct = BigDecimal("0.01"),
+            riskPerTradePct = BigDecimal("0.02"),   // matches defaultConfig; qty=1 stays within budget (no clamp)
             warmupBars = 0,
             intradayWindow = 1000,
             instruments = mapOf("X" to InstrumentSpec(BigDecimal("1"), "USDT", BigDecimal("1"), BigDecimal("1"))),

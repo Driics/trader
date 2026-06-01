@@ -1,6 +1,7 @@
 package ru.driics.aitrade.domain.backtest.engine
 
 import ru.driics.aitrade.domain.services.OrderSizingPolicy
+import ru.driics.aitrade.domain.services.resolveRiskCappedQuantity
 import ru.driics.aitrade.domain.strategy.StrategyDecision
 import java.math.BigDecimal
 import java.math.RoundingMode
@@ -66,11 +67,18 @@ internal fun sizeEntry(
 ): EntrySizing {
     val stop = decision.stopLoss ?: return EntrySizing(null, 0, EntryRejection.NO_STOP)
 
-    val intentCoinQty = decision.quantity ?: run {
-        val stopDistance = (fillPx - stop).abs()
-        if (stopDistance.signum() <= 0) return EntrySizing(null, 0, EntryRejection.NO_STOP)
-        (equity * riskPerTradePct).divide(stopDistance, 8, RoundingMode.HALF_UP)
-    }
+    // The SAME per-trade risk cap the live path applies (resolveRiskCappedQuantity): risk_usd is
+    // authoritative, the strategy's own quantity is advisory and clamped to riskPerTradePct of equity.
+    // This keeps backtest sizing identical to production, so a recorded AI decision can't backtest a
+    // position the live cap would have shrunk (e.g. a self-reported quantity risking 30%+ of the book).
+    val intentCoinQty = resolveRiskCappedQuantity(
+        modelQuantity = decision.quantity,
+        requestedRiskUsd = decision.riskUsd,
+        equityUsd = equity,
+        maxRiskPerTradePct = riskPerTradePct,
+        entryPrice = fillPx,
+        stopLoss = stop,
+    )
     if (intentCoinQty.signum() <= 0) return EntrySizing(null, 0, EntryRejection.UNAFFORDABLE)
 
     val sized = policy.size(

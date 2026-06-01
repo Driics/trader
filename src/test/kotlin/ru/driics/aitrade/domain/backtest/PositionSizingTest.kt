@@ -104,7 +104,8 @@ class PositionSizingTest {
     }
 
     @Test
-    fun `explicit quantity overrides the risk calc`() {
+    fun `an explicit quantity below the risk budget is kept (advisory)`() {
+        // qty=2 risks only |100-98|*2 = $4, far below the budget (10000*0.01 = $100) -> kept as-is.
         val r = sizeEntry(
             decision(stop = "98", qty = "2"), fillPx = BigDecimal("100"), equity = BigDecimal("10000"),
             availableUsd = BigDecimal("10000"), spec = usdSpec, policy = policy,
@@ -112,6 +113,20 @@ class PositionSizingTest {
         )
         assertNull(r.rejection)
         assertEquals(0, BigDecimal("2").compareTo(r.coinQty!!))
+    }
+
+    @Test
+    fun `an oversized explicit quantity is clamped to the risk budget (matches live cap)`() {
+        // qty=100 would risk |100-98|*100 = $200, far over the $100 budget (10000*0.01). It must be
+        // clamped to the budget quantity 100/2 = 50 coin — the same cap the live path applies.
+        val r = sizeEntry(
+            decision(stop = "98", qty = "100"), fillPx = BigDecimal("100"), equity = BigDecimal("10000"),
+            availableUsd = BigDecimal("10000"), spec = usdSpec, policy = policy,
+            riskPerTradePct = BigDecimal("0.01"), defaultLeverage = 5,
+        )
+        assertNull(r.rejection)
+        assertEquals(0, BigDecimal("50").compareTo(r.coinQty!!), "expected clamp to 50, got ${r.coinQty}")
+        assertTrue(r.coinQty!! < BigDecimal("100"), "must be clamped below the strategy's quantity")
     }
 
     @Test

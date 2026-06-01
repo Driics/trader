@@ -42,7 +42,11 @@ class BacktestEngineTest {
         startingEquityUsd = BigDecimal("1000"),
         takerFeePct = BigDecimal.ZERO,
         marginBufferPct = BigDecimal.ZERO,
-        riskPerTradePct = BigDecimal("0.01"),
+        // Cap disabled (0) on purpose: this suite hand-computes the curve from an EXPLICIT quantity to
+        // isolate engine mechanics (fill/exit/mark/reconcile). The per-trade risk cap is exercised in
+        // PositionSizingTest / RiskCappedQuantityTest; leaving it on here would clamp the fixed quantity
+        // and make the hand-computed ledger unverifiable.
+        riskPerTradePct = BigDecimal.ZERO,
         warmupBars = 0,
         intradayWindow = 1000,
         instruments = mapOf("X" to InstrumentSpec(BigDecimal("1"), "USDT", BigDecimal("1"), BigDecimal("1"))),

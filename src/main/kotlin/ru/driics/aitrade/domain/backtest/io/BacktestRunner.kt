@@ -28,7 +28,8 @@ object BacktestRunner {
         startingEquityUsd = startingEquityUsd,
         takerFeePct = BigDecimal("0.0005"),      // 5 bps OKX taker
         marginBufferPct = BigDecimal("0.05"),
-        riskPerTradePct = BigDecimal("0.01"),    // risk 1% of equity per trade
+        riskPerTradePct = BigDecimal("0.02"),    // 2% of equity per trade — matches the live cap default
+                                                 // (RiskGateProperties.maxRiskPerTradePct) so backtests mirror production
         warmupBars = 30,                          // enough history for RSI/MACD/EMA to be meaningful
         intradayWindow = 200,
         indicatorLookback = 300,                  // bounds per-bar indicator cost -> O(n) over the series

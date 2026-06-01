@@ -24,8 +24,11 @@ data class InstrumentSpec(
  * @property startingEquityUsd realized equity at t0.
  * @property takerFeePct taker fee as a fraction (e.g. 0.0005 = 5 bps), charged on entry and exit notional.
  * @property marginBufferPct extra margin headroom as a fraction, forwarded to the sizing policy.
- * @property riskPerTradePct fraction of equity risked per trade when a decision carries no explicit
- *   quantity: `coinQty = equity * riskPerTradePct / |fill - stop|`.
+ * @property riskPerTradePct fraction of equity risked per trade — the per-trade risk CAP applied via
+ *   [ru.driics.aitrade.domain.services.resolveRiskCappedQuantity] (mirrors the live
+ *   `RiskGateProperties.maxRiskPerTradePct`). It both clamps a decision's explicit quantity to this risk
+ *   and, when a decision carries no quantity, sizes the position: `coinQty = equity * riskPerTradePct /
+ *   |fill - stop|`. Set 0 to disable the cap (legacy: an explicit quantity is used uncapped).
  * @property warmupBars number of leading bars during which the engine builds state but does NOT call the
  *   strategy — indicators (RSI/MACD/EMA) need history, and a cold-start RSI of 0 would false-trigger.
  * @property intradayWindow cap on the length of the intraday lists exposed in [ru.driics.aitrade.domain.model.MarketState]

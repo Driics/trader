@@ -1,4 +1,4 @@
-package ru.driics.aitrade.application.usecase
+package ru.driics.aitrade.domain.services
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -7,11 +7,11 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 
 /**
- * Unit specs for the per-trade risk cap — the pure sizing decision extracted from
- * ExecuteAiDecisionsUseCase.buildPlan so it can be pinned without the full placement path.
+ * Unit specs for the per-trade risk cap [resolveRiskCappedQuantity] — the pure sizing rule shared by the
+ * live path (ExecuteAiDecisionsUseCase.buildPlan) and the offline backtest (sizeEntry).
  *
- * The gap this closes: the live path used to trust the model's self-reported `quantity` uncapped, so a
- * single AI trade could risk 30%+ of the book (observed: 34% on a $10k book). The cap makes `riskUsd`
+ * The gap this closes: the path used to trust the model's self-reported `quantity` uncapped, so a single
+ * AI trade could risk 30%+ of the book (observed: 34% on a $10k book). The cap makes `riskUsd`
  * authoritative — sized from min(model riskUsd, maxRiskPct * equity), with the model's quantity treated
  * as advisory (honoured only when MORE conservative than the budget).
  */
