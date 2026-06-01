@@ -1,5 +1,6 @@
 package ru.driics.aitrade.infra.persistence
 
+import org.springframework.dao.DuplicateKeyException
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import ru.driics.aitrade.common.logging.logger
@@ -7,6 +8,7 @@ import ru.driics.aitrade.domain.journal.JournaledClose
 import ru.driics.aitrade.domain.journal.JournaledFill
 import ru.driics.aitrade.domain.journal.JournaledOrder
 import ru.driics.aitrade.domain.journal.JournaledPnlSnapshot
+import ru.driics.aitrade.domain.ports.CloseWriteResult
 import ru.driics.aitrade.domain.ports.TradeJournalPort
 import java.sql.Timestamp
 import java.time.Instant
@@ -116,8 +118,8 @@ class JdbcTradeJournal(
         }
     }
 
-    override fun recordClose(close: JournaledClose) {
-        try {
+    override fun recordClose(close: JournaledClose): CloseWriteResult {
+        return try {
             val params = MapSqlParameterSource()
                 .addValue("recorded_at", toTimestamp(close.recordedAtMs))
                 .addValue("pos_id", close.posId)
@@ -138,10 +140,13 @@ class JdbcTradeJournal(
                 """.trimIndent(),
                 params,
             )
+            CloseWriteResult.JOURNALED
+        } catch (e: DuplicateKeyException) {
+            log.debug { "Close posId=${close.posId} already journaled (duplicate); skipping" }
+            CloseWriteResult.DUPLICATE
         } catch (e: Exception) {
-            // Idempotent + fail-safe: a UNIQUE(pos_id) violation means "already journaled"; any other error
-            // must never break a cycle. Both are logged and swallowed.
-            log.warn(e) { "Skipped journaling close posId=${close.posId} (duplicate or DB error; cycle continues)" }
+            log.warn(e) { "Failed to journal close posId=${close.posId} (cycle continues)" }
+            CloseWriteResult.FAILED
         }
     }
 

@@ -13,6 +13,7 @@ import ru.driics.aitrade.domain.journal.JournaledFill
 import ru.driics.aitrade.domain.journal.JournaledOrder
 import ru.driics.aitrade.domain.journal.JournaledPnlSnapshot
 import ru.driics.aitrade.domain.model.TradingMode
+import ru.driics.aitrade.domain.ports.CloseWriteResult
 import ru.driics.aitrade.domain.types.OrderSide
 import java.math.BigDecimal
 import javax.sql.DataSource
@@ -220,12 +221,18 @@ class JdbcTradeJournalTest {
             timestampMs = 1L, cycle = 1L, accountValue = BigDecimal.ONE, availableCash = BigDecimal.ONE,
             totalReturn = BigDecimal.ZERO, realizedPnlToday = null, openPositionsCount = 0,
         )
+        val close = JournaledClose(
+            recordedAtMs = 1L, posId = "fail-pos", instId = "BTC-USDT-SWAP", symbol = "BTC",
+            side = "long", realizedPnl = BigDecimal.ZERO, openTimeMs = 1L, closeTimeMs = 2L,
+            mode = TradingMode.LIVE, demo = false,
+        )
 
         // None of these may throw.
         journal.recordOrder(order)
         journal.recordFill(fill)
         journal.recordPnlSnapshot(snapshot)
-        assertTrue(true, "record* swallowed the DB error without rethrowing")
+        val closeResult = journal.recordClose(close)
+        assertEquals(CloseWriteResult.FAILED, closeResult, "recordClose must return FAILED (not throw) on DB error")
     }
 
     @Test
@@ -250,8 +257,10 @@ class JdbcTradeJournalTest {
             recordedAtMs = 1L, posId = "dup", instId = "ETH-USDT-SWAP", symbol = "ETH", side = "short",
             realizedPnl = BigDecimal("-5"), openTimeMs = 1L, closeTimeMs = 2L, mode = TradingMode.PAPER, demo = false,
         )
-        journal.recordClose(close)
-        journal.recordClose(close) // must not throw despite the UNIQUE(pos_id) violation
+        val firstResult = journal.recordClose(close)
+        val secondResult = journal.recordClose(close) // must not throw despite the UNIQUE(pos_id) violation
+        assertEquals(CloseWriteResult.JOURNALED, firstResult, "first write must return JOURNALED")
+        assertEquals(CloseWriteResult.DUPLICATE, secondResult, "duplicate write must return DUPLICATE")
         val count = jdbc.queryForObject(
             "SELECT COUNT(*) FROM trade_close WHERE pos_id = :p", MapSqlParameterSource("p", "dup"), Int::class.java)
         assertEquals(1, count)

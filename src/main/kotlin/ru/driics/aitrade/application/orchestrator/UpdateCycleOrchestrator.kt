@@ -332,7 +332,10 @@ class UpdateCycleOrchestrator(
             )
             infrastructure.tradeCloseCollector?.let { collector ->
                 runCatching { collector.collect() }
-                    .onFailure { log.warn(it) { "trade-close collect failed (cycle continues)" } }
+                    .onFailure {
+                        if (it is kotlinx.coroutines.CancellationException) throw it
+                        log.warn(it) { "trade-close collect failed (cycle continues)" }
+                    }
             }
 
             val results = useCases.execute.execute(decisions, riskContext, marketState)

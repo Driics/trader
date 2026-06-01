@@ -5,6 +5,9 @@ import ru.driics.aitrade.domain.journal.JournaledFill
 import ru.driics.aitrade.domain.journal.JournaledOrder
 import ru.driics.aitrade.domain.journal.JournaledPnlSnapshot
 
+/** Outcome of a [TradeJournalPort.recordClose] write — lets the collector advance its high-water mark only over confirmed writes. */
+enum class CloseWriteResult { JOURNALED, DUPLICATE, FAILED }
+
 /**
  * Persists trade-journal rows (orders, fills, PnL snapshots) for audit/history.
  *
@@ -16,5 +19,5 @@ interface TradeJournalPort {
     fun recordOrder(order: JournaledOrder)
     fun recordFill(fill: JournaledFill)
     fun recordPnlSnapshot(snapshot: JournaledPnlSnapshot)
-    fun recordClose(close: JournaledClose)
+    fun recordClose(close: JournaledClose): CloseWriteResult
 }
