@@ -25,7 +25,9 @@ import java.io.File
  *   BACKTEST_SYMBOL    default BTC-USDT-SWAP
  *   AI_RECORD_CADENCE  bars between invocations (default 24 — ~daily on 1H bars; keeps cost/cadence sane)
  *   AI_RECORD_MAX      hard cap on LLM calls (default 100) — bounds cost
- * Writes `<candle>-ai.jsonl` next to the input; replay it with AiReplayHarnessTest.
+ *   AI_RECORD_LABEL    optional — names the output `<candle>-<label>-ai.jsonl` so several models can be
+ *                      recorded side by side without overwriting (compare them with ModelComparisonHarnessTest)
+ * Writes `<candle>-ai.jsonl` (or `<candle>-<label>-ai.jsonl`) next to the input; replay it with AiReplayHarnessTest.
  *
  * Run (PowerShell):
  *   $env:AI_RECORD_FILE="data/btc.jsonl"
@@ -80,7 +82,12 @@ class AiRecorderHarnessTest {
         val decisions = recorder.record(bars) { i, reason ->
             println("skip bar $i (${bars[i].timestampMs}): $reason")
         }
-        val out = File(candleFile.absoluteFile.parentFile, candleFile.nameWithoutExtension + "-ai.jsonl")
+        // Optional AI_RECORD_LABEL keeps each model's log in its own file (e.g. <candle>-qwen3max-ai.jsonl)
+        // so several models can be recorded without overwriting — then compared via ModelComparisonHarnessTest.
+        val label = System.getenv("AI_RECORD_LABEL")?.takeIf { it.isNotBlank() }
+            ?.replace(Regex("[^A-Za-z0-9._-]"), "-")
+        val suffix = if (label != null) "-$label-ai.jsonl" else "-ai.jsonl"
+        val out = File(candleFile.absoluteFile.parentFile, candleFile.nameWithoutExtension + suffix)
         out.writeText(AiDecisionLog.serialize(decisions))
         println("Recorded ${decisions.size} AI decisions (cap $maxCalls, cadence $cadence) -> ${out.absolutePath}")
 
