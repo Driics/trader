@@ -1,6 +1,36 @@
 # Architecture Refactoring Roadmap — aiTrader
 
-> Status: proposed for team review · Scope: confirmed/verified findings only · Branch: `feature/mr-29`
+> Status: **✅ EXECUTED — superseded by the verification update below** · Original scope: confirmed/verified findings only · Branch: `feature/mr-29`
+
+---
+
+## 0. Verification Update — 2026-05-31 (code-verified)
+
+**This roadmap is historical.** Every finding below was implemented and verified against current source on
+2026-05-31. **All 13 findings are now resolved or formally closed** (D1 and D2 completed 2026-05-31, tests
+green — see their rows). Do **not** read the sections below as a live to-do list — they describe work that is
+already done. The per-finding prose is retained as a record of *what* was fixed and *why*.
+
+| # | Finding | Status | Evidence (file:line) |
+|---|---------|--------|----------------------|
+| S1 | EXECUTE risk inputs fail open + PnL stub | ✅ Fixed | Fails **closed** `UpdateCycleOrchestrator.kt:299-309`; PnL reads `/account/bills` `OkxExchangeAdapter.kt:182` |
+| S2 | KillSwitchState in-memory only | ✅ Fixed | `application/risk/KillSwitchStore.kt` persistence port |
+| S3 | RiskContext snapshot → batch exceeds cap | ✅ Fixed | `ConcurrentSlotLimiter` per-order atomic reserve `ExecuteAiDecisionsUseCase.kt:100,256,344` (+ test) |
+| S4 | OKX wrapper swallows failures to `null` | ✅ Fixed | Sealed `OkxCallOutcome` `OkxTradingClient.kt:161-218` |
+| S5 | dedup hash advances on build success | ✅ Fixed | Hash set only after full-cycle success `UpdateCycleOrchestrator.kt:179,417` |
+| P1 | whole cycle `runBlocking` on scheduler thread | ✅ Fixed | Dedicated dispatcher + single-flight guard `PromptSchedulerService.kt:31-37` |
+| P2 | redundant market loads 3+× | ✅ Fixed | Single snapshot threaded `:312`, `ExecuteAiDecisionsUseCase.kt:92-95` |
+| S6 | DEMO mutates calibration + emits order_placed | ✅ Fixed | Demo skips calibration/idempotency, event carries `demo` flag `:355-374` |
+| S7 | retry classification brittle substring | ✅ Fixed | Word-boundary regex `RetryClassification` `AnalyzePromptUseCase.kt:152-164` |
+| S8 | idempotency window vs TTL mismatch | ✅ Fixed | `signalKey` no longer windows time `IdempotencyService.kt:106-130` |
+| S9 | validation reason → high-cardinality tag | ✅ Fixed | Collapsed via `classifyValidationRejection` `:419-424` |
+| D3 | dead `getKillSwitchState()` getter | ✅ Fixed | Zero `.kt` references remain |
+| D2 | stubbed adapters (PnL, Redis) | ✅ Resolved | PnL stub gone; misleading `SpringRedisCacheAdapter` deleted, `RedisDisabledGuard` fail-fast added; distributed Redis formally out-of-scope (single-instance) `RedisCacheAdapter.kt` |
+| D1 | risk policy in `application/risk` not `domain` | ✅ Resolved | Driven port `KillSwitchStore` moved to `domain/ports/`; `RiskGate`/`KillSwitchState` kept in `application/risk` by design (impure / stateful Spring `@Component`) |
+
+**One item survives — but it is not a code finding.** S1's fix exposed an *empirical* gap: `realizedPnlContribution()`
+interprets OKX's `bills.pnl` field, and that interpretation has never been reconciled against live OKX. The cap is
+built, tested, and fail-closed — resting on one unverified input. See `docs/pnl-reconciliation.md`.
 
 ## 1. Executive Summary
 
@@ -15,6 +45,8 @@ aiTrader is a Kotlin + Spring Boot AI futures-trading system (`ru.driics.aitrade
 > **Note on this list:** the source findings contained three near-duplicate entries (the `runBlocking`/scheduler finding appeared twice; the redundant-market-load finding appeared three times). They are merged below into single canonical entries, leaving **11 distinct findings**.
 
 ## 2. Prioritized Findings
+
+> ⚠️ **Historical.** All rows in the table below are ✅ resolved or formally closed as of 2026-05-31 — see §0.
 
 Priority uses the **verifier's `adjustedRisk`** (not the headline severity), since several items were downgraded on verification (noted inline). Only items with `safeToAutoApply: true` are eligible for Phase A.
 

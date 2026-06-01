@@ -1,77 +1,121 @@
 # aiTrader — Prioritized Roadmap
 
-_Generated 2026-05-25 from a read-only audit. Branch: `feature/mr-29`._
+_Originally generated 2026-05-25. **Refreshed 2026-05-31** after a code-verified state audit — the original
+snapshot was stale (it claimed empty tests, a PnL stub, and no journal/CI; all four are now false). Branch:
+`feature/mr-29`._
 
 ## 1. Current-State Snapshot
 
-**Stack:** Kotlin 2.2 / JDK 21 / Spring Boot 3.5.7 / Ktor 3.3 client, coroutines, Koog AI starter (OpenRouter), Resilience4j, Micrometer + OTel + Prometheus, Caffeine cache, Loki/Logback JSON logging.
+**Stack:** Kotlin 2.2 / JDK 21 / Spring Boot 3.5.7 / Ktor 3.3 client, coroutines, Koog AI starter 0.5.1
+(OpenRouter), Resilience4j, Micrometer + OTel + Prometheus, Caffeine cache, Loki/Logback JSON logging,
+Liquibase + Postgres (opt-in trade journal).
 
-**Architecture (hexagonal-ish layering):**
-- `domain/` — pure model + ports (`MarketDataPort`, `StreamingMarketDataPort`, `TradingPort`, `AiAnalysisPort`, `PromptOutputPort`) and policies (`OrderSizingPolicy`, `IndicatorCalculator`, `PromptBuilder/Formatter`, `TradingMetricsService`).
-- `application/` — `UpdateCycleOrchestrator` (main loop) + use-cases + AI glue.
-- `infra/` — OKX REST + WS adapters, Caffeine cache, prompt output, AI adapter.
-- `service/okx/` + `config/` — REST/Ktor wiring, auth, properties.
-- `controller/` — Spring MVC surface + validation + global exception handler.
+**Architecture (hexagonal / ports-and-adapters):**
+- `domain/` — pure model, ports (`MarketDataPort`, `StreamingMarketDataPort`, `TradingPort`, `AiAnalysisPort`,
+  `PromptOutputPort`, `TradeJournalPort`, `DecisionLogSink`), policies (`OrderSizingPolicy`,
+  `IndicatorCalculator`, `PromptBuilder/Formatter`), and sub-domains `risk/`, `strategy/`, `backtest/`,
+  `journal/`, `types/`.
+- `application/` — `UpdateCycleOrchestrator` (7-stage cycle) + use-cases (`BuildPrompt`, `AnalyzePrompt`,
+  `ExecuteAiDecisions`) + AI glue (`AiSchemaValidator`, `IdempotencyService`, `ConfidenceCalibrator`,
+  `ActionGuard`, `AiBudgetLimiter`) + risk (`RiskGate`, `KillSwitchState`, `KillSwitchStore`).
+- `infra/` — OKX REST + WS adapters, Koog/OpenRouter AI adapter, Caffeine cache (+ opt-in Redis no-op),
+  JDBC trade journal, prompt output, WS frame recording.
+- `service/okx/` + `config/` — REST/Ktor wiring, auth, properties, `ApplicationWiring`, `TradingModeGuard`.
+- `controller/` — Spring MVC surface (`TradingSystemController`, `RiskController`) + validation + global handler.
 
-**Working:** Spring boot app builds, Dockerfile multi-stage, docker-compose stack (otel-collector, jaeger, prometheus, grafana, loki, app), Resilience4j tuned per OKX endpoint class, structured logging documented.
+**Working / shipped (verified 2026-05-31, all on `feature/mr-29`):**
+- **Test suite is real and green.** 58 test files; `gradlew test` passes locally.
+- **Architecture hardening complete (13/13).** All findings in `architecture-refactor-roadmap.md` are resolved
+  or formally closed (D1: the `KillSwitchStore` port moved to `domain/ports`; D2: distributed Redis scoped out
+  with a fail-fast guard). Risk reads fail **closed**; OKX calls return a typed `OkxCallOutcome`; the position
+  cap is enforced per-order atomically; the dedup hash advances only on full-cycle success; the cycle runs off
+  the Spring scheduler thread on a dedicated dispatcher.
+- **Risk gates (X2).** Kill-switch (persisted via `KillSwitchStore`), daily-loss cap (fail-closed),
+  per-order concurrent-position cap.
+- **Trade journal (X1).** Opt-in Postgres (Supabase) + Liquibase persistence of orders/fills/PnL snapshots.
+  Default OFF, fail-safe (a DB outage never blocks a trading cycle).
+- **Daily-PnL gate reads real data.** `getTodaysRealizedPnlUsd` sums `/account/bills` (no longer a ZERO stub);
+  read logic (UTC window, pagination, loss-sign, fail-closed) is locked by `OkxExchangeAdapterPnlTest`.
+- **Backtest engine.** Strategy seam, deterministic no-look-ahead engine, walk-forward / OOS validation,
+  param sweep, AI record→replay (`RecordedAiStrategy`).
+- **Phase-3 streaming entry price.** Prefer fresh WS price over REST for sizing, with REST fallback on
+  stale/divergent ticks. Default OFF; parity probe + runbook (`docs/phase3-streaming-runbook.md`).
+- **AI multi-pair hardening.** Per-instrument leverage cap enforced; instruments config-driven via
+  `InstrumentResolver`; `OrderSide` typed end-to-end.
+- **CI/CD.** `.github/workflows/ci-cd.yml` — build + test + bootJar + Docker build on push/PR to master.
+- **Safety defaults.** `auto-execute` OFF, `demo-mode` ON; LIVE (real funds) startup refused unless
+  `demo-mode=false` AND `paper=false` AND `confirm-live=true`.
 
-**In flight (uncommitted on `feature/mr-29`):** refactors to `OkxExchangeAdapter`, `OkxStreamingAdapter`, `OkxClientBase`, `UpdateCycleOrchestrator`, `TradingMetricsService`, edits to `prompt.txt`, and a new `logback-spring.xml`. Pattern (per recent commits "WS optimization", "metrics/logging", "dynamic tags") = a streaming + observability hardening pass.
-
-**Notable gaps:** `src/test/kotlin/ru` is effectively empty; no `ROADMAP.md`/`TODO`; no CI workflows visible at repo root (`.github/` is untracked); `auto-execute: true` in `application.yml` but compose sets `TRADING_AUTO_EXECUTE=false` (drift); Redis L2 stubbed but disabled; no persistence layer for trades/PnL.
+**Remaining gaps (the path to 1.0 — see §2):**
+- `feature/mr-29` is **85 commits ahead of `master`**, whose tip is **7 months old** → essentially all work
+  is unmerged. Cannot tag a release from this state.
+- The daily-loss cap's `bills.pnl`-field interpretation has **never been reconciled against live OKX**
+  (`docs/pnl-reconciliation.md`). The cap is built and fail-closed but rests on this one unverified input.
+- No multi-day **real-conditions paper soak** — the 15-min autonomous loop is unproven over time.
+- No `README.md`; version still `0.0.1-SNAPSHOT`; secrets in `.env` (no Vault/Doppler); no Grafana
+  dashboards-as-code under `infra/monitoring/`.
 
 ---
 
 ## 2. Roadmap
 
-### Recently shipped on `feature/mr-29`
-| # | Goal | Status |
-|---|---|---|
-| N1 | WS/metrics refactor split into 3 commits | ✅ shipped (`250faa7`, `3063b41`, `0054ca8`) |
-| N2 | `auto-execute` default off + env-overridable | ✅ shipped (`0054ca8`) |
-| N3 | Smoke tests for `OrderSizingPolicy` + existing `IndicatorCalculatorTest` | ✅ shipped (`0054ca8`) |
-| N4 | `logback-spring.xml` committed (dev pretty + prod JSON+Loki) | ✅ shipped (`3063b41`) |
-| X2 | Risk-management hard gates (kill-switch endpoint + auto-trip + position cap) | ✅ shipped (commits `2904eb8`–`47fadae`); user-side verification pending (`gradlew test`) |
+### ✅ Shipped on `feature/mr-29`
+| Goal | Status |
+|------|--------|
+| X1 — Trade-journal persistence (orders/fills/PnL, opt-in) | ✅ shipped |
+| X2 — Risk hard gates (kill-switch + persistence, daily-loss, per-order position cap) | ✅ shipped |
+| X2.a — Real daily-PnL read via `/account/bills` (replaces ZERO stub) | ✅ shipped (semantics unverified — see B0) |
+| X2.b — De-duplicate per-cycle market load (P2) | ✅ shipped |
+| X5 — Backtest / replay harness | ✅ shipped |
+| Phase 3 — Streaming entry price (flag, parity probe, runbook) | ✅ shipped (default OFF) |
+| Architecture hardening (S1–S9, P1, P2, D1, D2, D3) | ✅ 13/13 resolved or formally closed |
+| D1 — `KillSwitchStore` driven port relocated to `domain/ports` | ✅ shipped (tests green) |
+| D2 — misleading Redis stub removed; distributed cache scoped out (fail-fast guard) | ✅ shipped (tests green) |
+| CI/CD pipeline (build + test + jar + docker) | ✅ shipped |
 
-### Now — this week
-| # | Goal | Why | Effort | Owner |
-|---|---|---|---|---|
-| N5 | Run `gradlew test` locally to verify X2 implementation, then open the `feature/mr-29` PR | Sandbox could not execute the test suite; verification has to happen on a developer machine | S | qa |
-| N6 | Smoke test for `OkxExchangeAdapter` against WireMock | N3 covered pure domain only; the OKX adapter is still un-tested | M | qa |
+### 🎯 Now — gates to 1.0.0 (production = trustworthy with live funds)
+| # | Goal | Why | Effort |
+|---|------|-----|--------|
+| R0 | **Confirm the branch strategy + land `feature/mr-29` on `master`** | A 1.0 tag must point at master; master is 7 months stale. Confirm the branch isn't unmerged for a reason. | S |
+| R1 | **Multi-day OKX-demo paper soak** | One action, two payoffs: proves the autonomous loop survives real conditions (WS reconnects, scheduler, AI cost/latency drift, journal under load) — which no unit test covers — **and** generates the real `bills` the PnL reconciliation needs. | M |
+| B0 | **Close the realized-PnL reconciliation loop** (`docs/pnl-reconciliation.md`) | Confirm `bills.pnl − oracle ≈ 0` across ≥2 flat-to-flat days, then lock a tolerance. Until green, the daily-loss cap cannot be trusted with live funds. | M |
+| R2 | **Write `README.md`** | Operator quickstart + the SIMULATION/PAPER/LIVE safety matrix. Table stakes for any 1.0. | S |
+| R3 | **Bump version off `0.0.1-SNAPSHOT`** on release | — | S |
 
-### Next — 2–4 weeks
-| # | Goal | Why | Effort | Owner |
-|---|---|---|---|---|
-| X1 | Persistence for orders, fills, PnL snapshots (Postgres + Flyway, behind a `TradeJournalPort`) | Currently no audit trail; can't compute true return | L | backend-architect |
-| X2.a | Wire OKX `/account/bills` for real daily-PnL gate (currently `getTodaysRealizedPnlUsd` is stubbed to ZERO → daily-loss gate fails open) | Without this, the daily-loss auto-trip is inert; only kill-switch + position-count gates are live | M | backend-architect |
-| X2.b | Eliminate the double `loadMarketState` per cycle introduced by Task 8 (orchestrator now fetches positions for `RiskContext`, then use-case re-fetches for execution) | Wasted OKX API quota; risks rate-limit churn | S | executor |
-| X2.c | End-to-end integration test: POST `/api/trading/kill-switch`, run a cycle, assert zero orders placed and `risk.gate.blocked{source=MANUAL_KILL}` counter increments | Locks in the full chain; current tests only cover units in isolation | S | qa |
-| X3 | AI cost/latency budget enforcement via `ai-budget-per-minute` + circuit breaker on OpenRouter | Multi-key rotation exists but no spend cap visible | M | executor |
-| X4 | Grafana dashboards + alerts (cycle duration, WS disconnects, order reject rate, AI failure rate) committed under `infra/monitoring/` | Prometheus is scraping but no dashboards-as-code | M | devops |
-| X5 | Backtest/replay harness using recorded WS frames + `IndicatorCalculator` | Enables strategy iteration without burning real capital | L | backend-architect |
+### 📦 Next — release polish (1.0 or fast-follow 1.1)
+- Grafana dashboards-as-code + alerts (cycle duration, WS disconnects, order-reject rate, AI failure rate)
+  under `infra/monitoring/` (X4). **M**
+- Secret management: move OKX/OpenRouter keys to Vault/Doppler out of `.env` (L6). **S**
+- AI cost/latency budget hardening: circuit breaker on OpenRouter spend (X3). `ai-budget-per-minute` exists. **M**
 
-### Later — backlog
-- L1 Enable Redis L2 cache for instrument metadata (toggle already exists). **S**, devops.
-- L2 Multi-exchange abstraction (Binance/Bybit adapters behind existing ports). **L**, backend-architect.
-- L3 Strategy plug-in API: swap `PromptBuilder` for non-AI rule engines / ensemble. **M**, architect.
-- L4 Web UI / control panel beyond `TradingSystemController` (positions, manual override). **M**, executor + designer.
-- L5 GitHub Actions: build + test + container publish + Trivy scan. **M**, devops.
-- L6 Secret management: move OKX/OpenRouter keys to Vault/Doppler instead of `.env`. **S**, devops.
+### 🗄️ Later — backlog
+- L1 Distributed Redis L2 cache for instrument metadata — only if multi-instance becomes a requirement.
+  Currently scoped out (D2): the `RedisCacheAdapter` port exists with a `NoOp` default, and `redis.enabled=true`
+  fails fast until a real adapter (`spring-boot-starter-data-redis`) is implemented. **M**
+- L2 Multi-exchange abstraction (Binance/Bybit behind existing ports). **L**
+- L3 Strategy plug-in API: swap `PromptBuilder` for non-AI rule engines / ensemble. **M**
+- L4 Web UI / control panel beyond the controllers (positions, manual override). **M**
 
 ---
 
 ## 3. Top 3 Risks / Tech-Debt Hot Spots
 
-1. **Zero test coverage on a money-moving system.** Test scaffold is in place (MockK, WireMock, JUnit5) but `src/test/kotlin/ru` is empty. Every refactor is a blind change. **Fix before N1 merges.**
-2. **Config drift between local YAML and container env.** `auto-execute: true` (yml) vs `TRADING_AUTO_EXECUTE=false` (compose), `demo-mode` defaulted true but easy to flip; no startup assertion logs the *effective* mode. One bad env var = live orders.
-3. **No durable trade journal.** Account state, PnL, and orders only live in OKX + in-memory; restarts lose context, and the "Current Total Return" metric in `prompt.txt` cannot be trusted across restarts.
+1. **The daily-loss cap rests on an unverified money-measurement assumption.** The cap is built, tested, and
+   fail-closed, but `realizedPnlContribution()`'s reading of OKX `bills.pnl` has never been confirmed against
+   live OKX. A wrong sign or omitted-fee gap means it could fail to halt on a real losing day. **Resolve via
+   R1 + B0 before any live funds.**
+2. **All work is on an unmerged 85-commit branch; `master` is 7 months stale.** Every "shipped" item above is
+   invisible from master. Confirm whether this is deliberate, then land it — a release can't be cut otherwise.
+3. **No sustained real-conditions run.** Unit tests are green, but the multi-hour/multi-day autonomous loop
+   (WS reconnect behaviour, scheduler under load, AI cost drift, journal write volume) has not been observed
+   end-to-end. The paper soak (R1) is the cheapest way to surface what tests can't.
 
 ---
 
 ## 4. Suggested Immediate Next Action (today)
 
-Open the `feature/mr-29` PR cleanly:
-1. `git diff --stat` to confirm the 6 modified files are the WS/metrics pass.
-2. Stage `src/main/resources/logback-spring.xml` (currently untracked) with the rest of the logging changes.
-3. Split into two commits — `refactor(okx-ws): …` and `chore(observability): logback + metrics tags` — push, and open the PR with a checklist that includes **N3 (add smoke tests)** as a blocker for merge.
-
-This unblocks Now-bucket items N1, N3, N4 in one motion and protects against Risk #1 before the diff grows further.
+Kick off a **multi-day OKX-demo paper soak** (R1). It is the single highest-leverage move: it exercises the
+full autonomous loop under real conditions *and* produces the `/account/bills` data that unblocks the PnL
+reconciliation (B0) — the one verification gate standing between "feature-complete on paper" and
+"trustworthy with live funds." In parallel, confirm the branch strategy and prepare to land `feature/mr-29`
+on `master` (R0) so the soak's outcome can be released.
