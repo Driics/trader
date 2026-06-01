@@ -3,6 +3,7 @@ package ru.driics.aitrade.application.risk
 import jakarta.annotation.PostConstruct
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.common.logging.logger
+import ru.driics.aitrade.domain.ports.KillSwitchStore
 import ru.driics.aitrade.domain.risk.KillSwitchSnapshot
 import java.time.Clock
 import java.time.LocalDate

@@ -1,4 +1,4 @@
-package ru.driics.aitrade.application.risk
+package ru.driics.aitrade.domain.ports
 
 import ru.driics.aitrade.domain.risk.KillSwitchSnapshot
 
@@ -7,6 +7,10 @@ import ru.driics.aitrade.domain.risk.KillSwitchSnapshot
  *
  * Survives process restarts so an operator pause (MANUAL) or an automatic daily-loss trip
  * (AUTO_DAILY_LOSS) is not silently lost on redeploy and we don't resume trading blind.
+ *
+ * D1: this is a driven (outbound) port, so it lives in `domain/ports` alongside the other
+ * outbound ports ([MarketDataPort], [TradingPort], [TradeJournalPort], …). The file adapter
+ * ([ru.driics.aitrade.infra.risk.FileKillSwitchStore]) implements it from the infra layer.
  */
 interface KillSwitchStore {
 

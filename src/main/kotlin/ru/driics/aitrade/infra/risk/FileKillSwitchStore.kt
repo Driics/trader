@@ -2,7 +2,7 @@ package ru.driics.aitrade.infra.risk
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
-import ru.driics.aitrade.application.risk.KillSwitchStore
+import ru.driics.aitrade.domain.ports.KillSwitchStore
 import ru.driics.aitrade.domain.risk.KillSwitchSnapshot
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
