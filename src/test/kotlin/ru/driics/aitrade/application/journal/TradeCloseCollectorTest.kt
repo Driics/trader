@@ -98,6 +98,26 @@ class TradeCloseCollectorTest {
     }
 
     @Test
+    fun `same-millisecond sibling of a confirmed close is not gapped when it fails`() = runBlocking {
+        every { query.latestCloseTimeMs() } returns 0L
+        // Two closes at the SAME closeTimeMs=100: A journaled, B fails.
+        val a = ClosedPosition("A", "BTC-USDT-SWAP", "long", BigDecimal("5"), 1L, 100L)
+        val b = ClosedPosition("B", "ETH-USDT-SWAP", "short", BigDecimal("-3"), 1L, 100L)
+        coEvery { source.closedSince(0L) } returns listOf(a, b)
+        every { journal.recordClose(match { it.posId == "A" }) } returns CloseWriteResult.JOURNALED
+        every { journal.recordClose(match { it.posId == "B" }) } returns CloseWriteResult.FAILED
+        val c = collector()
+
+        c.collect()
+
+        // Mark must be < 100 so B is re-fetched next cycle (NOT advanced to 100, which would gap B).
+        coEvery { source.closedSince(99L) } returns emptyList()
+        c.collect()
+        coVerify { source.closedSince(99L) }       // proves the mark was capped to 99, not 100
+        coVerify(exactly = 0) { source.closedSince(100L) }
+    }
+
+    @Test
     fun `rethrows CancellationException`() = runBlocking {
         every { query.latestCloseTimeMs() } returns 0L
         coEvery { source.closedSince(any()) } throws CancellationException("cancelled")

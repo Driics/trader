@@ -46,8 +46,10 @@ class TradeCloseCollector(
             for (cp in closes) {
                 val result = journal.recordClose(cp.toJournaled(now))
                 if (result == CloseWriteResult.FAILED) {
-                    // Do NOT advance past an unconfirmed close — keeps MAX(close_time) == confirmed prefix,
-                    // so neither this run nor a restart reseed can gap it. Retried next cycle.
+                    // Cap the mark strictly below the failed close so a same-millisecond sibling that already
+                    // advanced the mark gets re-fetched next cycle (idempotent on re-journal). Keeps capture
+                    // genuinely gap-proof even under exact-ms ties across instruments.
+                    maxConfirmed = minOf(maxConfirmed, cp.closeTimeMs - 1)
                     log.warn { "Stopping close capture at posId=${cp.posId} (write failed); will retry next cycle" }
                     break
                 }
