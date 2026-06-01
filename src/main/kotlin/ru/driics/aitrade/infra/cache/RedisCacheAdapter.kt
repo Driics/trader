@@ -1,16 +1,22 @@
 package ru.driics.aitrade.infra.cache
 
-import com.fasterxml.jackson.databind.ObjectMapper
-import io.github.oshai.kotlinlogging.KotlinLogging
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import java.time.Duration
 
 /**
- * Optional Redis adapter for distributed caching.
- * Only enabled when redis.enabled=true in configuration.
+ * Optional distributed (L2) cache port.
+ *
+ * **D2 scope decision (2026-05-31).** Distributed Redis caching is **out of scope** for the current
+ * single-instance, single-`@Scheduled` deployment — local Caffeine (L1) is sufficient and there is no
+ * cross-instance state to share. The default binding is therefore [NoOpRedisCacheAdapter], an honest
+ * null-object: callers depend on the port and L2 simply does nothing.
+ *
+ * There is deliberately **no half-built implementation**. A previous placeholder reported itself as
+ * "enabled" (it was not a `NoOp`) while silently dropping every read/write — the worst kind of
+ * unauditable stub. If multi-instance ever lands (backlog L1/L2), implement a real adapter behind
+ * `redis.enabled=true` using `spring-boot-starter-data-redis`. Until then, setting `redis.enabled=true`
+ * fails fast at startup via [RedisDisabledGuard] rather than pretending to work.
  */
 interface RedisCacheAdapter {
     suspend fun get(key: String): String?
@@ -20,7 +26,8 @@ interface RedisCacheAdapter {
 }
 
 /**
- * No-op implementation when Redis is not available.
+ * Default L2 binding: a no-op null-object, present unless `redis.enabled=true`.
+ * [SmartCacheStrategy] depends on this type and reads "is `NoOp`" as "L2 disabled".
  */
 @Component
 @ConditionalOnProperty(name = ["redis.enabled"], havingValue = "false", matchIfMissing = true)
@@ -32,34 +39,24 @@ class NoOpRedisCacheAdapter : RedisCacheAdapter {
 }
 
 /**
- * Redis implementation using Spring Data Redis (when available).
- * To enable, add spring-boot-starter-data-redis dependency and set redis.enabled=true
+ * D2 fail-fast guard. If an operator sets `redis.enabled=true` there is no real adapter to bind, so we
+ * refuse to start with a clear message instead of silently no-op'ing (or worse, reporting L2 as
+ * "enabled" while doing nothing). It implements the port so it is the bean Spring resolves for that
+ * condition; construction throws, surfacing the reason in the startup failure.
  */
 @Component
 @ConditionalOnProperty(name = ["redis.enabled"], havingValue = "true")
-class SpringRedisCacheAdapter(
-    private val objectMapper: ObjectMapper
-) : RedisCacheAdapter {
-    private val log = KotlinLogging.logger {}
-    
-    // Note: This would require spring-boot-starter-data-redis dependency
-    // For now, this is a placeholder that can be implemented when Redis is added
-    override suspend fun get(key: String): String? = withContext(Dispatchers.IO) {
-        log.debug { "Redis GET: $key (not implemented - add spring-boot-starter-data-redis)" }
-        null
+class RedisDisabledGuard : RedisCacheAdapter {
+    init {
+        error(
+            "redis.enabled=true but no Redis adapter is implemented. Distributed L2 cache is out of " +
+                "scope for the single-instance deployment (backlog L1/L2). Either unset redis.enabled " +
+                "or implement a real RedisCacheAdapter with spring-boot-starter-data-redis."
+        )
     }
 
-    override suspend fun set(key: String, value: String, ttl: Duration) = withContext(Dispatchers.IO) {
-        log.debug { "Redis SET: $key (not implemented - add spring-boot-starter-data-redis)" }
-    }
-
-    override suspend fun delete(key: String) = withContext(Dispatchers.IO) {
-        log.debug { "Redis DELETE: $key (not implemented - add spring-boot-starter-data-redis)" }
-    }
-
-    override suspend fun exists(key: String): Boolean = withContext(Dispatchers.IO) {
-        log.debug { "Redis EXISTS: $key (not implemented - add spring-boot-starter-data-redis)" }
-        false
-    }
+    override suspend fun get(key: String): String? = error("unreachable")
+    override suspend fun set(key: String, value: String, ttl: Duration) = error("unreachable")
+    override suspend fun delete(key: String) = error("unreachable")
+    override suspend fun exists(key: String): Boolean = error("unreachable")
 }
-
