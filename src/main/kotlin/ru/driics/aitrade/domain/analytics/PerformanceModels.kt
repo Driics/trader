@@ -24,3 +24,8 @@ data class PerformanceSummary(
 data class SymbolPerformance(val symbol: String, val summary: PerformanceSummary)
 
 data class EquityPoint(val timestampMs: Long, val accountValue: BigDecimal, val drawdownPct: BigDecimal)
+
+data class TradeWithR(
+    val posId: String, val instId: String, val symbol: String, val side: String?,
+    val realizedPnl: BigDecimal, val openTimeMs: Long, val closeTimeMs: Long, val r: BigDecimal?,
+)

@@ -10,11 +10,21 @@ import java.math.RoundingMode
 /**
  * Pure realized-performance metrics over journal rows. No DB, no Spring. R links each close to the most
  * recent PLACED entry for the same instId at/before its close (one-position-per-symbol assumption).
+ *
+ * Max-drawdown is defined as the single worst peak-to-trough by percentage; the reported USD amount
+ * corresponds to that same trough (not independently tracked).
  */
 class PerformanceAnalytics {
 
     private val mc = MathContext(20, RoundingMode.HALF_UP)
     private val ratioScale = 4
+
+    /** Returns the most-recent prior entry risk for [close], or null when none is usable. */
+    private fun riskFor(close: ClosedTradeRow, entries: List<EntryRiskRow>): BigDecimal? =
+        entries
+            .filter { it.instId == close.instId && it.recordedAtMs <= close.closeTimeMs && it.riskUsd != null && it.riskUsd.signum() > 0 }
+            .maxByOrNull { it.recordedAtMs }
+            ?.riskUsd
 
     fun summary(
         closes: List<ClosedTradeRow>,
@@ -36,13 +46,7 @@ class PerformanceAnalytics {
         val avgLoss = if (losses.isEmpty()) null else grossLoss.divide(BigDecimal(losses.size), mc)
         val expectancy = if (closes.isEmpty()) null else net.divide(BigDecimal(closes.size), mc)
 
-        val rValues = closes.mapNotNull { c ->
-            val risk = entries
-                .filter { it.instId == c.instId && it.recordedAtMs <= c.closeTimeMs && it.riskUsd != null && it.riskUsd.signum() > 0 }
-                .maxByOrNull { it.recordedAtMs }
-                ?.riskUsd
-            risk?.let { c.realizedPnl.divide(it, mc) }
-        }
+        val rValues = closes.mapNotNull { c -> riskFor(c, entries)?.let { c.realizedPnl.divide(it, mc) } }
         val avgR = if (rValues.isEmpty()) null
             else rValues.fold(BigDecimal.ZERO, BigDecimal::add).divide(BigDecimal(rValues.size), ratioScale, RoundingMode.HALF_UP)
 
@@ -74,19 +78,31 @@ class PerformanceAnalytics {
         }
     }
 
+    /**
+     * Maps each close to a [TradeWithR], computing R = realizedPnl / riskUsd for the most-recent
+     * prior entry of the same instId. R is null when no usable entry risk is found.
+     */
+    fun closedTradesWithR(closes: List<ClosedTradeRow>, entries: List<EntryRiskRow>): List<TradeWithR> =
+        closes.map { c ->
+            val r = riskFor(c, entries)?.let { c.realizedPnl.divide(it, ratioScale, RoundingMode.HALF_UP) }
+            TradeWithR(c.posId, c.instId, c.symbol, c.side, c.realizedPnl, c.openTimeMs, c.closeTimeMs, r)
+        }
+
+    /**
+     * Single worst peak-to-trough by percentage; reports USD of that same trough (not independently tracked).
+     */
     private fun maxDrawdown(snapshots: List<PnlSnapshotRow>): Pair<BigDecimal, BigDecimal> {
         var peak = BigDecimal.ZERO
-        var maxUsd = BigDecimal.ZERO
-        var maxPct = BigDecimal.ZERO
+        var worstUsd = BigDecimal.ZERO
+        var worstPct = BigDecimal.ZERO
         for (s in snapshots.sortedBy { it.timestampMs }) {
             if (s.accountValue > peak) peak = s.accountValue
-            val ddUsd = peak - s.accountValue
-            if (ddUsd > maxUsd) maxUsd = ddUsd
             if (peak.signum() > 0) {
+                val ddUsd = peak - s.accountValue
                 val ddPct = ddUsd.divide(peak, ratioScale, RoundingMode.HALF_UP)
-                if (ddPct > maxPct) maxPct = ddPct
+                if (ddPct > worstPct) { worstPct = ddPct; worstUsd = ddUsd } // same event
             }
         }
-        return maxUsd to maxPct
+        return worstUsd to worstPct
     }
 }

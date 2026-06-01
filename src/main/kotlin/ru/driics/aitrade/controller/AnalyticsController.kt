@@ -9,8 +9,8 @@ import ru.driics.aitrade.domain.analytics.EquityPoint
 import ru.driics.aitrade.domain.analytics.PerformanceAnalytics
 import ru.driics.aitrade.domain.analytics.PerformanceSummary
 import ru.driics.aitrade.domain.analytics.SymbolPerformance
+import ru.driics.aitrade.domain.analytics.TradeWithR
 import ru.driics.aitrade.domain.ports.AnalyticsFilter
-import ru.driics.aitrade.domain.ports.ClosedTradeRow
 import ru.driics.aitrade.domain.ports.TradeJournalQueryPort
 
 /** Read-only realized-performance API over the trade journal. Empty enabled:false envelope when off. */
@@ -32,7 +32,14 @@ class AnalyticsController(
         @RequestParam(required = false) mode: String?, @RequestParam(required = false) symbol: String?,
     ): Envelope<PerformanceSummary> {
         val f = filter(from, to, mode, symbol)
-        return Envelope(journalEnabled, analytics.summary(query.closedTrades(f), query.entryRisks(f), query.pnlSnapshots(f)))
+        return Envelope(
+            journalEnabled,
+            analytics.summary(
+                query.closedTrades(f),
+                query.entryRisks(f.copy(fromMs = null, toMs = null)),
+                query.pnlSnapshots(f)
+            )
+        )
     }
 
     @GetMapping("/by-symbol")
@@ -41,7 +48,14 @@ class AnalyticsController(
         @RequestParam(required = false) mode: String?,
     ): Envelope<List<SymbolPerformance>> {
         val f = filter(from, to, mode, null)
-        return Envelope(journalEnabled, analytics.bySymbol(query.closedTrades(f), query.entryRisks(f), query.pnlSnapshots(f)))
+        return Envelope(
+            journalEnabled,
+            analytics.bySymbol(
+                query.closedTrades(f),
+                query.entryRisks(f.copy(fromMs = null, toMs = null)),
+                query.pnlSnapshots(f)
+            )
+        )
     }
 
     @GetMapping("/equity-curve")
@@ -59,8 +73,10 @@ class AnalyticsController(
         @RequestParam(required = false) mode: String?, @RequestParam(required = false) symbol: String?,
         @RequestParam(required = false, defaultValue = "100") limit: Int,
         @RequestParam(required = false, defaultValue = "0") offset: Int,
-    ): Envelope<List<ClosedTradeRow>> {
-        val all = query.closedTrades(filter(from, to, mode, symbol)).sortedByDescending { it.closeTimeMs }
-        return Envelope(journalEnabled, all.drop(offset).take(limit))
+    ): Envelope<List<TradeWithR>> {
+        val f = filter(from, to, mode, symbol)
+        val withR =
+            analytics.closedTradesWithR(query.closedTrades(f), query.entryRisks(f.copy(fromMs = null, toMs = null)))
+        return Envelope(journalEnabled, withR.sortedByDescending { it.closeTimeMs }.drop(offset).take(limit))
     }
 }
