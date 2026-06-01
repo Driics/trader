@@ -156,6 +156,16 @@ class UpdateCycleOrchestrator(
             return UpdateCycleResult.skipped(prompt.length)
         }
 
+        // 2b. Empty-data guard: if every symbol's fetch failed/timed out, the snapshot carries no usable
+        // data (all prices 0 — see OkxExchangeAdapter.emptyCurrencyData). Calling the AI would just yield
+        // "{}" and a misleading schema rejection, so skip the cycle (no AI spend) WITHOUT advancing the
+        // dedup hash — the next cycle retries on (hopefully warm) data.
+        if (promptResult.marketState.hasNoUsableMarketData()) {
+            infrastructure.meterRegistry.counter(Metrics.MARKET_DATA_EMPTY).increment()
+            log.warn { "Market data empty for all symbols (fetch failed/timed out); skipping AI analysis, will retry next cycle" }
+            return UpdateCycleResult.skipped(prompt.length, "no market data")
+        }
+
         // 3. AI Analysis
         val aiResponse = stageAiAnalysis(prompt, cid).getOrElse { return it.toResult(prompt.length) }
 
@@ -535,6 +545,7 @@ class UpdateCycleOrchestrator(
         const val CYCLE_PREFIX = "update.cycle"
         const val VALIDATION_REJECTED = "ai.response.validation.rejected"
         const val PNL_READ_FAILED = "risk.pnl.read_failed"
+        const val MARKET_DATA_EMPTY = "market.data.empty"
     }
 
     private object Attrs {
@@ -608,8 +619,17 @@ data class UpdateCycleResult(
     val positionsPlaced: Int = 0
 ) {
     companion object {
-        fun skipped(promptSize: Int) = UpdateCycleResult(
-            success = true, message = "Skipped (unchanged)", executionTimeMs = 0, promptSize = promptSize
+        fun skipped(promptSize: Int, reason: String = "unchanged") = UpdateCycleResult(
+            success = true, message = "Skipped ($reason)", executionTimeMs = 0, promptSize = promptSize
         )
     }
 }
+
+/**
+ * True when the cycle's market snapshot carries no usable data — either no currencies at all, or EVERY
+ * currency came back as the empty placeholder ([ru.driics.aitrade.infra.exchange.OkxExchangeAdapter]'s
+ * `emptyCurrencyData`, which sets `currentPrice = 0`; a real market price is never 0). Used to skip the
+ * AI call when every per-symbol fetch failed/timed out, rather than send an empty prompt and get "{}".
+ */
+internal fun ru.driics.aitrade.domain.model.MarketState.hasNoUsableMarketData(): Boolean =
+    currencies.isEmpty() || currencies.values.all { it.currentPrice.signum() == 0 }

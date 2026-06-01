@@ -279,7 +279,7 @@ class OkxExchangeAdapter(
 
     private suspend fun fetchCurrencyDataSafe(symbol: String): CurrencyMarketData =
         runCatching {
-            withTimeout(Timeouts.CURRENCY_FETCH_MS) { fetchCurrencyData(symbol) }
+            withTimeout(tradingProperties.okxTimeouts.currencyFetch.toMillis()) { fetchCurrencyData(symbol) }
         }.getOrElse { e ->
             log.error(e) { "Failed to fetch data for $symbol" }
             emptyCurrencyData(symbol)
@@ -589,10 +589,6 @@ class OkxExchangeAdapter(
         const val ATR_3 = 3
         const val ATR_14 = 14
         const val AVG_VOLUME = 20
-    }
-
-    private object Timeouts {
-        const val CURRENCY_FETCH_MS = 5_000L
     }
 
     private object CacheKeys {

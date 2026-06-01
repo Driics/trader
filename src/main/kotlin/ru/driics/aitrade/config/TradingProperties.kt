@@ -95,5 +95,10 @@ data class OkxTimeouts(
     var bills: Duration = Duration.ofSeconds(10),
     var instruments: Duration = Duration.ofSeconds(10),
     var setLeverage: Duration = Duration.ofSeconds(10),
-    var placeOrder: Duration = Duration.ofSeconds(15)
+    var placeOrder: Duration = Duration.ofSeconds(15),
+    // Overall per-symbol budget for loadMarketState's parallel fetch (ticker + candles + funding + OI).
+    // MUST exceed the slowest inner call ([candles], 10s) — the old hardcoded 5s was TIGHTER than that,
+    // so on a cold/slow first cycle it cancelled the candle fetch before its own timeout fired and the
+    // whole symbol came back empty (empty prompt -> AI returns "{}"). 15s gives the inner timeouts room.
+    var currencyFetch: Duration = Duration.ofSeconds(15)
 )

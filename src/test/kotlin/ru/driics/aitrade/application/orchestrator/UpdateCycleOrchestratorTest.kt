@@ -22,6 +22,7 @@ import ru.driics.aitrade.application.usecase.ExecuteAiDecisionsUseCase
 import ru.driics.aitrade.application.usecase.PromptResult
 import ru.driics.aitrade.config.RiskGateProperties
 import ru.driics.aitrade.domain.model.AccountInfo
+import ru.driics.aitrade.domain.model.CurrencyMarketData
 import ru.driics.aitrade.domain.model.AiAnalysisResponse
 import ru.driics.aitrade.domain.model.AiSignal
 import ru.driics.aitrade.domain.model.AiTradeDecisionMap
@@ -67,7 +68,13 @@ class UpdateCycleOrchestratorTest {
         timestamp = 0L,
         minutesSinceStart = 0L,
         invocationCount = 1L,
-        currencies = emptyMap(),
+        currencies = mapOf(
+            // A real price so the empty-data guard does NOT trip — these tests exercise the AI/execute path.
+            "BTC" to CurrencyMarketData(
+                symbol = "BTC", currentPrice = BigDecimal("65000"),
+                currentEma20 = BigDecimal.ZERO, currentMacd = BigDecimal.ZERO, currentRsi7 = BigDecimal.ZERO,
+            ),
+        ),
         account = AccountInfo(
             totalReturn = BigDecimal.ZERO,
             availableCash = BigDecimal("1000"),
@@ -118,6 +125,24 @@ class UpdateCycleOrchestratorTest {
         every { confidenceCalibrator.shouldAccept(any()) } returns
             ConfidenceCalibrator.CalibrationResult.Accepted
         every { killSwitchState.snapshot() } returns KillSwitchSnapshot.disabled()
+    }
+
+    @Test
+    fun `empty market data skips the AI call entirely (no analyze)`() = runBlocking {
+        // Realistic failure shape: every per-symbol fetch timed out, so the snapshot is a NON-empty map of
+        // zero-price empty placeholders (what OkxExchangeAdapter.emptyCurrencyData produces). The cycle must
+        // skip BEFORE the AI call (no wasted spend, no misleading "{}" schema rejection), reported as a skip.
+        val zero = BigDecimal.ZERO
+        val allFailed = listOf("BTC", "ETH").associateWith {
+            CurrencyMarketData(symbol = it, currentPrice = zero, currentEma20 = zero, currentMacd = zero, currentRsi7 = zero)
+        }
+        coEvery { build.execute(any(), any(), any()) } returns
+            PromptResult("PROMPT-TEXT", marketState.copy(currencies = allFailed))
+
+        val result = orchestrator(autoExecute = true, riskEnabled = true).runOnce()
+
+        assertEquals("Skipped (no market data)", result.message)
+        coVerify(exactly = 0) { analyze.execute(any()) }
     }
 
     @Test
