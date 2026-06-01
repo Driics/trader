@@ -49,6 +49,9 @@ trading:
     enabled: ${TRADING_RISK_ENABLED:true}
     max-daily-loss-usd: 50
     max-concurrent-positions: 5
+    # Per-trade risk ceiling as a fraction of account equity (0.02 = 2%). Caps a single trade's loss-to-stop
+    # so the model can't self-size into an account-blowing position. Set 0 to disable (legacy behaviour).
+    max-risk-per-trade-pct: ${TRADING_MAX_RISK_PER_TRADE_PCT:0.02}
 
   # AI Configuration
   ai-model: ${TRADING_AI_MODEL:qwen/qwen3-max}
