@@ -22,5 +22,19 @@ abstract class OkxClientBase(
     protected val log: Logger
 ) {
     protected val baseUrl: String get() = okxProperties.baseUrl
+
+    protected fun mapHttpStatus(statusCode: Int): String = when {
+        statusCode in 400..499 -> "http_4xx"
+        statusCode >= 500 -> "http_5xx"
+        else -> "http_error"
+    }
+
+    protected fun recordHttpError(operation: String, statusCode: Int) {
+        meterRegistry.counter(
+            "okx.api.error",
+            "operation", operation,
+            "status", mapHttpStatus(statusCode)
+        ).increment()
+    }
 }
 

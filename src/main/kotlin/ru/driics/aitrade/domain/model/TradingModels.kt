@@ -66,7 +66,9 @@ data class OkxInstrumentInfo(
     @JsonProperty("ctValCcy") val ctValCcy: String?,
     @JsonProperty("lotSz") val lotSz: String?,
     @JsonProperty("minSz") val minSz: String?,
-    @JsonProperty("tickSz") val tickSz: String?
+    @JsonProperty("tickSz") val tickSz: String?,
+    /** Max leverage OKX allows for this instrument (e.g. "100" for BTC-USDT-SWAP, lower for alts). */
+    @JsonProperty("lever") val lever: String? = null,
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)

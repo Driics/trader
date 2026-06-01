@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+    <!-- 1. Local/Dev Profile: Standard Colored Console -->
+    <springProfile name="!prod">
+        <appender name="CONSOLE_PRETTY" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(${LOG_LEVEL_PATTERN:-%5p}) %clr(${PID:- }){magenta} %clr(---){faint} %clr([%15.15t]){faint} %clr(%-40.40logger{39}){cyan} %clr(:){faint} %m%n${LOG_EXCEPTION_CONVERSION_WORD:-%wEx}</pattern>
+                <charset>utf8</charset>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_PRETTY"/>
+        </root>
+    </springProfile>
+
+    <!-- 2. Prod Profile (Docker): JSON Console + Loki Push -->
+    <springProfile name="prod">
+        <!-- JSON Output to Console (fallback/docker logs) -->
+        <appender name="CONSOLE_JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <includeContext>false</includeContext>
+                <customFields>{"app_name":"aiTrader", "env":"prod"}</customFields>
+            </encoder>
+        </appender>
+
+        <!-- Direct Push to Loki -->
+        <appender name="LOKI" class="com.github.loki4j.logback.Loki4jAppender">
+            <http>
+                <url>http://loki:3100/loki/api/v1/push</url>
+            </http>
+            <format>
+                <label>
+                    <pattern>app=aiTrader,host=${HOSTNAME},level=%level</pattern>
+                </label>
+                <message>
+                    <pattern>l=%level c=%logger{20} t=%thread | %msg %ex</pattern>
+                </message>
+                <sortByTime>true</sortByTime>
+            </format>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE_JSON"/>
+            <appender-ref ref="LOKI"/>
+        </root>
+    </springProfile>
+
+</configuration>

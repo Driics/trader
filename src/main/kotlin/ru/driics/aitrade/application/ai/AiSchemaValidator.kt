@@ -10,6 +10,7 @@ import ru.driics.aitrade.domain.model.AiSignal
 import ru.driics.aitrade.domain.model.AiTradeDecisionMap
 import ru.driics.aitrade.domain.model.AiTradeEnvelope
 import ru.driics.aitrade.domain.model.AiTradeSignalArgs
+import ru.driics.aitrade.domain.model.TradingLimits
 import java.math.BigDecimal
 
 /**
@@ -93,13 +94,8 @@ class AiSchemaValidator(
         }
 
         // 2. Validate coin matches symbol key
-        if (args.coin.uppercase() != symbol.uppercase()) {
+        if (!args.coin.equals(symbol, ignoreCase = true)) {
             return SignalValidationResult.Rejected("Coin mismatch: key=$symbol, coin=${args.coin}")
-        }
-
-        // 3. Validate signal enum
-        if (args.signal !in AiSignal.values()) {
-            return SignalValidationResult.Rejected("Invalid signal: ${args.signal}")
         }
 
         // 4. Validate confidence range [0, 1]
@@ -109,31 +105,22 @@ class AiSchemaValidator(
             }
         }
 
-        // 5. Validate leverage range [1, 125]
+        // 5. Validate leverage against the exchange ceiling. This is the loose schema-level bound; the
+        //    instrument-aware bound (min of instrument max and configured maxLeverage) is enforced later
+        //    by ActionGuard — intentional defense in depth, different bounds per stage.
         if (args.leverage != null) {
-            if (args.leverage < 1 || args.leverage > 125) {
-                return SignalValidationResult.Rejected("Leverage out of range [1, 125]: ${args.leverage}")
+            if (args.leverage < 1 || args.leverage > TradingLimits.MAX_LEVERAGE) {
+                return SignalValidationResult.Rejected(
+                    "Leverage out of range [1, ${TradingLimits.MAX_LEVERAGE}]: ${args.leverage}",
+                )
             }
         }
 
-        // 6. Validate prices are positive (if provided)
-        if (args.profitTarget != null && args.profitTarget <= BigDecimal.ZERO) {
-            return SignalValidationResult.Rejected("Profit target must be positive: ${args.profitTarget}")
-        }
-
-        if (args.stopLoss != null && args.stopLoss <= BigDecimal.ZERO) {
-            return SignalValidationResult.Rejected("Stop loss must be positive: ${args.stopLoss}")
-        }
-
-        // 7. Validate quantity is positive (if provided)
-        if (args.quantity != null && args.quantity <= BigDecimal.ZERO) {
-            return SignalValidationResult.Rejected("Quantity must be positive: ${args.quantity}")
-        }
-
-        // 8. Validate riskUsd is positive (if provided)
-        if (args.riskUsd != null && args.riskUsd <= BigDecimal.ZERO) {
-            return SignalValidationResult.Rejected("Risk USD must be positive: ${args.riskUsd}")
-        }
+        // 6-8. Optional numeric fields, when present, must be strictly positive.
+        rejectIfNotPositive(args.profitTarget, "Profit target")?.let { return it }
+        rejectIfNotPositive(args.stopLoss, "Stop loss")?.let { return it }
+        rejectIfNotPositive(args.quantity, "Quantity")?.let { return it }
+        rejectIfNotPositive(args.riskUsd, "Risk USD")?.let { return it }
 
         // 9. For BUY/SELL signals, require either quantity or riskUsd
         if (args.signal != AiSignal.HOLD) {
@@ -144,6 +131,14 @@ class AiSchemaValidator(
 
         return SignalValidationResult.Valid
     }
+
+    /** Rejects when [value] is present and not strictly positive; null means the field is fine. */
+    private fun rejectIfNotPositive(value: BigDecimal?, label: String): SignalValidationResult.Rejected? =
+        if (value != null && value <= BigDecimal.ZERO) {
+            SignalValidationResult.Rejected("$label must be positive: $value")
+        } else {
+            null
+        }
 
     sealed class ValidationResult {
         data class Valid(val decisions: AiTradeDecisionMap) : ValidationResult()

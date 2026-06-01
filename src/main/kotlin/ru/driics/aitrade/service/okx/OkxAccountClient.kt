@@ -42,6 +42,8 @@ class OkxAccountClient(
         const val METRIC_NAME = "okxAccount"
         const val PATH_BALANCE = "/api/v5/account/balance"
         const val PATH_POSITIONS = "/api/v5/account/positions"
+        const val PATH_POSITIONS_HISTORY = "/api/v5/account/positions-history"
+        const val PATH_BILLS = "/api/v5/account/bills"
         const val INST_TYPE_SWAP = "SWAP"
 
         val EMPTY_ACCOUNT = OkxAccountResponse("0", "0", "0", "0")
@@ -90,6 +92,68 @@ class OkxAccountClient(
                 }
                 response.data
             }
+        }
+    }
+
+    /**
+     * Fetches account bills (last 7 days), newest-first, one page at a time.
+     *
+     * Returns the parsed [OkxApiResponse] on a successful HTTP read (the caller must still
+     * check `isSuccess()` for an API-level error), or `null` when the read itself failed
+     * (timeout / transport / HTTP error). A `null` lets callers fail CLOSED — see
+     * [ru.driics.aitrade.infra.exchange.OkxExchangeAdapter.getTodaysRealizedPnlUsd].
+     *
+     * @param after pagination cursor: returns records strictly older than this billId.
+     * @param limit page size (OKX max 100).
+     */
+    @Retry(name = METRIC_NAME)
+    @RateLimiter(name = METRIC_NAME)
+    @CircuitBreaker(name = METRIC_NAME)
+    suspend fun fetchBills(after: String? = null, limit: Int = 100): OkxApiResponse<OkxBillData>? {
+        val path = buildString {
+            append(PATH_BILLS)
+            append("?instType=").append(INST_TYPE_SWAP)
+            append("&limit=").append(limit)
+            if (!after.isNullOrBlank()) append("&after=").append(after)
+        }
+        return executeSignedRequest<OkxApiResponse<OkxBillData>?>(
+            operation = "fetchBills",
+            path = path,
+            timeoutMs = tradingProperties.okxTimeouts.bills.toMillis(),
+            defaultResult = null
+        ) { body ->
+            objectMapper.readValue<OkxApiResponse<OkxBillData>>(body)
+        }
+    }
+
+    /**
+     * Fetches closed-position history (newest-first), one page at a time. Serves as the independent
+     * realized-PnL oracle for reconciling the bills-based daily-loss accounting (B0): per OKX,
+     * `realizedPnl = pnl + fee + fundingFee + liqPenalty`.
+     *
+     * Returns the parsed [OkxApiResponse] on a successful HTTP read (caller still checks `isSuccess()`),
+     * or `null` when the read itself failed (timeout / transport / HTTP error).
+     *
+     * @param after pagination cursor: returns records strictly older than this `posId`.
+     * @param limit page size (OKX max 100).
+     */
+    @Retry(name = METRIC_NAME)
+    @RateLimiter(name = METRIC_NAME)
+    @CircuitBreaker(name = METRIC_NAME)
+    suspend fun fetchPositionsHistory(after: String? = null, limit: Int = 100): OkxApiResponse<OkxPositionHistoryData>? {
+        val path = buildString {
+            append(PATH_POSITIONS_HISTORY)
+            append("?instType=").append(INST_TYPE_SWAP)
+            append("&limit=").append(limit)
+            if (!after.isNullOrBlank()) append("&after=").append(after)
+        }
+        return executeSignedRequest<OkxApiResponse<OkxPositionHistoryData>?>(
+            operation = "fetchPositionsHistory",
+            path = path,
+            timeoutMs = tradingProperties.okxTimeouts.positions.toMillis(),
+            defaultResult = null
+        ) { body ->
+            objectMapper.readValue<OkxApiResponse<OkxPositionHistoryData>>(body)
         }
     }
 
@@ -169,10 +233,5 @@ class OkxAccountClient(
     private fun logApiError(context: String, response: OkxApiResponse<*>) {
         log.warn("OKX API Error [$context]: code=${response.code}, msg=${response.message}")
     }
-
-    private fun mapHttpStatus(code: Int): String = when {
-        code in 400..499 -> "http_4xx"
-        code >= 500 -> "http_5xx"
-        else -> "http_error"
-    }
+    // mapHttpStatus is inherited from OkxClientBase (was a duplicate private copy here).
 }

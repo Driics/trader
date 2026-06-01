@@ -1,0 +1,21 @@
+# build tools
+.gradle/
+build/
+bin/
+out/
+**/node_modules/
+# VCS and IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+# OS
+.DS_Store
+# Docker
+docker-compose.override.yml
+# CI
+.github/
+# Secrets and Configs
+*.env
+config/
+secrets/

@@ -58,10 +58,16 @@ object PromptBuilder {
     private fun StringBuilder.appendMarketData(marketState: MarketState) {
         appendLine("CURRENT MARKET STATE FOR ALL COINS")
 
-        marketState.currencies.forEach { (symbol, data) ->
-            appendCurrencyData(symbol, data)
-            appendLine()
-        }
+        // Skip symbols whose fetch failed — they arrive as the empty placeholder with price 0 (see
+        // OkxExchangeAdapter.emptyCurrencyData). Feeding all-zero price/indicators to the model invites
+        // a bogus signal for a coin we have no data on. (The whole-snapshot-empty case is skipped earlier
+        // by the orchestrator's market-data guard; this handles a PARTIAL failure.)
+        marketState.currencies
+            .filter { (_, data) -> data.currentPrice.signum() > 0 }
+            .forEach { (symbol, data) ->
+                appendCurrencyData(symbol, data)
+                appendLine()
+            }
     }
 
     private fun StringBuilder.appendCurrencyData(symbol: String, data: CurrencyMarketData) = with(data) {

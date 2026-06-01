@@ -5,6 +5,7 @@ import ru.driics.aitrade.common.logging.logger
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.AiSignal
 import ru.driics.aitrade.domain.model.AiTradeSignalArgs
+import ru.driics.aitrade.domain.model.ConfidencePolicy
 import java.math.BigDecimal
 import java.time.Clock
 import java.time.Duration
@@ -40,9 +41,9 @@ class ConfidenceCalibrator(
     fun shouldAccept(signal: AiTradeSignalArgs): CalibrationResult {
         val symbol = signal.coin.uppercase()
 
-        // 1. Check minimum confidence threshold
-        val confidence = signal.confidence ?: BigDecimal.ZERO
-        if (confidence < minConfidence) {
+        // 1. Check minimum confidence threshold (shared rule: an absent confidence counts as zero).
+        if (!ConfidencePolicy.meetsThreshold(signal.confidence, minConfidence)) {
+            val confidence = ConfidencePolicy.effective(signal.confidence)
             val reason = "Confidence $confidence below minimum $minConfidence"
             log.debug { "Signal rejected for $symbol: $reason" }
             return CalibrationResult.Rejected(reason)

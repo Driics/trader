@@ -41,6 +41,9 @@ class OkxAuthService(
             put("OK-ACCESS-TIMESTAMP", timestamp)
             put("OK-ACCESS-PASSPHRASE", okxProperties.passphrase)
             put("Content-Type", "application/json")
+            // Paper mode: route every authenticated REST call to OKX's demo environment. Without this,
+            // demo-mode=false would place LIVE orders even when okx.paper=true.
+            if (okxProperties.paper) put("x-simulated-trading", "1")
         }
     }
 

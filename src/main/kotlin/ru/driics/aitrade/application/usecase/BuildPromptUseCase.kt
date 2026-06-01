@@ -2,11 +2,11 @@ package ru.driics.aitrade.application.usecase
 
 import io.github.oshai.kotlinlogging.KotlinLogging
 import ru.driics.aitrade.application.ai.PromptTemplateService
-import ru.driics.aitrade.config.TradingProperties
+import ru.driics.aitrade.application.ai.TemplatedPromptRenderer
+import ru.driics.aitrade.domain.model.MarketState
 import ru.driics.aitrade.domain.ports.MarketDataPort
 import ru.driics.aitrade.domain.ports.PromptOutputPort
 import ru.driics.aitrade.domain.services.PromptBuilder
-import ru.driics.aitrade.domain.services.PromptFormatter
 import ru.driics.aitrade.domain.types.asSymbol
 import java.time.Clock
 import java.util.concurrent.TimeUnit
@@ -15,7 +15,7 @@ class BuildPromptUseCase(
     private val market: MarketDataPort,
     private val outputPort: PromptOutputPort,
     private val templateService: PromptTemplateService,
-    private val tradingProperties: TradingProperties,
+    private val promptRenderer: TemplatedPromptRenderer,
     private val clock: Clock
 ) {
     companion object {
@@ -26,11 +26,11 @@ class BuildPromptUseCase(
         symbols: List<String>,
         sessionStartMs: Long,
         invocation: Long
-    ): String {
+    ): PromptResult {
         log.info { "Building prompt for ${symbols.size} symbols (invocation #$invocation)" }
 
         val state = market.loadMarketState(symbols.map { it.asSymbol() })
-        
+
         // Use template-based prompt if available, fallback to legacy builder
         val prompt = try {
             buildTemplatePrompt(state, sessionStartMs, invocation)
@@ -46,7 +46,9 @@ class BuildPromptUseCase(
             log.warn { "Failed to write prompt to output" }
         }
 
-        return prompt
+        // P2: return the snapshot alongside the prompt so the orchestrator can thread it
+        // into execution instead of re-loading market state 2 more times per cycle.
+        return PromptResult(prompt = prompt, marketState = state)
     }
 
     private fun buildTemplatePrompt(
@@ -57,22 +59,16 @@ class BuildPromptUseCase(
         val minutesSinceStart = TimeUnit.MILLISECONDS.toMinutes(
             clock.instant().toEpochMilli() - sessionStartMs
         )
-
-        val marketDataSection = PromptBuilder.buildMarketDataSection(marketState)
-        val accountInfoSection = PromptBuilder.buildAccountInfoSection(marketState)
-
-        val availableCashUsd = PromptFormatter.formatMoneyUsd(marketState.account.availableCash)
-        val minConfidence = "${tradingProperties.minConfidence.setScale(2, java.math.RoundingMode.HALF_UP)}"
-
-        return templateService.renderUserPrompt(
-            marketData = marketDataSection,
-            accountInfo = accountInfoSection,
-            minutesSinceStart = minutesSinceStart,
-            invocationCount = invocation,
-            maxLeverage = tradingProperties.maxLeverage,
-            minLeverage = tradingProperties.minLeverage,
-            minConfidence = minConfidence,
-            availableCashUsd = availableCashUsd
-        )
+        return promptRenderer.render(marketState, minutesSinceStart, invocation)
     }
 }
+
+/**
+ * Result of a prompt build: the rendered [prompt] plus the [marketState] snapshot it was built
+ * from. The orchestrator threads [marketState] into the execute stage so a single market load
+ * serves prompt-building, risk-context construction, and order execution within one cycle (P2).
+ */
+data class PromptResult(
+    val prompt: String,
+    val marketState: MarketState,
+)

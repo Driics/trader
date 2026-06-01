@@ -3,6 +3,7 @@ package ru.driics.aitrade.application.ai
 import ru.driics.aitrade.common.logging.logger
 import ru.driics.aitrade.domain.model.AiSignal
 import ru.driics.aitrade.domain.model.AiTradeSignalArgs
+import ru.driics.aitrade.domain.model.TradingLimits
 import ru.driics.aitrade.domain.types.Symbol
 import ru.driics.aitrade.domain.util.isNegative
 import java.math.BigDecimal
@@ -21,7 +22,6 @@ class SignalNormalizer {
         // Default scale for monetary values
         private const val DEFAULT_SCALE = 8
         private const val CONFIDENCE_SCALE = 4
-        private const val MAX_LEVERAGE = 125
     }
 
     /**
@@ -34,9 +34,8 @@ class SignalNormalizer {
             val normalizedCoin = normalizeSymbol(signal.coin)
                 ?: return null
 
-            // 2. Normalize signal enum
-            val normalizedSignal = normalizeSignal(signal.signal)
-                ?: return null
+            // 2. Signal enum is already a non-null AiSignal — no normalization needed.
+            val normalizedSignal = signal.signal
 
             // 3. Normalize quantities and prices
             val normalizedQuantity = normalizeBigDecimal(signal.quantity, "quantity")
@@ -75,8 +74,6 @@ class SignalNormalizer {
             null
         }
     }
-
-    private fun normalizeSignal(signal: AiSignal?): AiSignal? = signal
 
     private fun normalizeBigDecimal(value: BigDecimal?, fieldName: String): BigDecimal? {
         if (value == null) return null
@@ -124,9 +121,9 @@ class SignalNormalizer {
                 log.warn { "Leverage < 1: $leverage, setting to null" }
                 null
             }
-            leverage > MAX_LEVERAGE -> {
-                log.warn { "Leverage > $MAX_LEVERAGE: $leverage, capping to $MAX_LEVERAGE" }
-                MAX_LEVERAGE
+            leverage > TradingLimits.MAX_LEVERAGE -> {
+                log.warn { "Leverage > ${TradingLimits.MAX_LEVERAGE}: $leverage, capping to ${TradingLimits.MAX_LEVERAGE}" }
+                TradingLimits.MAX_LEVERAGE
             }
             else -> leverage
         }

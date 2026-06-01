@@ -67,6 +67,27 @@ data class OkxWsCandleUpdate(
     fun isConfirmed(): Boolean = confirm == "1"
     fun tsMillisOrZero(): Long = ts.toLongOrNull() ?: 0L
     fun closeOrZero(): BigDecimal = c.toBigDecimalOrNull() ?: BigDecimal.ZERO
+
+    companion object {
+        /**
+         * OKX pushes WS candle rows as ARRAYS, not objects:
+         * [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm] — `confirm` is the LAST element.
+         * The object @JsonProperty mapping above never matched the wire format, so candles never
+         * parsed; bind rows through this instead.
+         *
+         * !! UNVERIFIED against a live OKX candle frame — confirm the index layout (especially the
+         * position of `confirm`) against a captured payload before relying on candle data. !!
+         */
+        fun fromArray(row: List<String>): OkxWsCandleUpdate? {
+            if (row.size < 5) return null
+            return OkxWsCandleUpdate(
+                ts = row[0], o = row[1], h = row[2], l = row[3], c = row[4],
+                vol = row.getOrElse(5) { "0" },
+                volCcy = row.getOrNull(6),
+                confirm = row.lastOrNull(),
+            )
+        }
+    }
 }
 
 // ----- Private: orders -----

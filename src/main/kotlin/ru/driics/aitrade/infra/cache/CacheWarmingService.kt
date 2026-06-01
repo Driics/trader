@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.*
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.config.TradingProperties
-import ru.driics.aitrade.domain.types.asInstrumentId
+import ru.driics.aitrade.domain.types.InstrumentResolver
 import ru.driics.aitrade.infra.exchange.OkxExchangeAdapter
 import kotlin.time.measureTime
 
@@ -20,11 +20,11 @@ import kotlin.time.measureTime
 @ConditionalOnProperty(name = ["cache.warming.enabled"], havingValue = "true", matchIfMissing = true)
 class CacheWarmingService(
     private val exchangeAdapter: OkxExchangeAdapter,
-    private val tradingProperties: TradingProperties
+    private val tradingProperties: TradingProperties,
+    private val instrumentResolver: InstrumentResolver,
 ) {
     private companion object {
         val log = KotlinLogging.logger {}
-        const val INSTRUMENT_SUFFIX = "-USDT-SWAP"
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -74,14 +74,14 @@ class CacheWarmingService(
     }
 
     private suspend fun loadInstrumentSafe(symbol: String) {
-        val instIdString = "$symbol$INSTRUMENT_SUFFIX"
+        val instId = instrumentResolver.instrumentId(symbol)
         try {
             // Read-through pattern: calling load will fetch from API and put into SmartCache
-            exchangeAdapter.loadInstrument(instIdString.asInstrumentId())
-            log.debug { "Warmed: $instIdString" }
+            exchangeAdapter.loadInstrument(instId)
+            log.debug { "Warmed: ${instId.value}" }
         } catch (e: Exception) {
             // Log warning but don't stop the warming process for other symbols
-            log.warn { "Failed to warm cache for $instIdString: ${e.message}" }
+            log.warn { "Failed to warm cache for ${instId.value}: ${e.message}" }
         }
     }
 }

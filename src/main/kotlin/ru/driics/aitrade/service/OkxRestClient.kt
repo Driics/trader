@@ -29,6 +29,8 @@ class OkxRestClient(
     // Account Operations
     suspend fun fetchAccount() = accountClient.fetchAccount()
     suspend fun fetchOpenPositions() = accountClient.fetchOpenPositions()
+    suspend fun fetchBills(after: String? = null, limit: Int = 100) = accountClient.fetchBills(after, limit)
+    suspend fun fetchPositionsHistory(after: String? = null, limit: Int = 100) = accountClient.fetchPositionsHistory(after, limit)
 
     // Trading Operations
     suspend fun setLeverage(instId: String, leverage: Int, marginMode: MarginMode, posSide: String? = null) =

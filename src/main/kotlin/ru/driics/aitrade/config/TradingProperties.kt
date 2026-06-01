@@ -7,6 +7,7 @@ import jakarta.validation.constraints.Min
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.stereotype.Component
 import ru.driics.aitrade.domain.model.MarginMode
+import ru.driics.aitrade.domain.model.TradingLimits
 import java.math.BigDecimal
 import java.time.Duration
 import java.util.*
@@ -15,6 +16,13 @@ import java.util.*
 @ConfigurationProperties(prefix = "trading")
 data class TradingProperties(
     var currencies: List<String> = emptyList(),
+
+    // Instrument identity: `currencies` lists base assets (BTC, ETH...); these two combine with each
+    // base to form the OKX instId (e.g. BTC + USDT + SWAP -> "BTC-USDT-SWAP"). Change them to trade a
+    // different quote (USDC) or instrument type (SPOT) without touching code.
+    var quoteCurrency: String = "USDT",
+    var instrumentType: String = "SWAP",
+
     var marginMode: String = "isolated",
     var autoExecute: Boolean = false,
 
@@ -31,7 +39,7 @@ data class TradingProperties(
     var minConfidence: BigDecimal = BigDecimal("0.60"),
 
     @field:Min(value = 1, message = "Max leverage must be at least 1")
-    @field:Max(value = 125, message = "Max leverage cannot exceed 125")
+    @field:Max(value = TradingLimits.MAX_LEVERAGE_LONG, message = "Max leverage cannot exceed 125")
     var maxLeverage: Int = 40,
 
     @field:Min(value = 1, message = "Min leverage must be at least 1")
@@ -45,10 +53,30 @@ data class TradingProperties(
     var okxTimeouts: OkxTimeouts = OkxTimeouts(),
 
     // AI call configuration
+    var aiModel: String = "qwen/qwen3-max", // Default AI model
+    var aiTemperature: Double = 0.0, // Pinned low for run-to-run determinism (record/replay parity)
     var aiTimeoutMs: Long = 60_000, // 60 seconds default timeout
     var aiMaxRetries: Int = 2, // Retries for transient errors
     var aiBudgetPerMinute: Long = 10, // Max AI requests per minute
-    var aiCooldownMs: Duration? = Duration.ofMinutes(5) // Cooldown between trades per symbol
+    var aiCooldownMs: Duration? = Duration.ofMinutes(5), // Cooldown between trades per symbol
+
+    // When set, every cycle's AI decisions are appended as RecordedDecision JSONL to this path (an audit
+    // trail; wall-clock stamped, NOT bar-aligned). Null disables it. Use a data/ path (gitignored).
+    var decisionLogFile: String? = null,
+
+    // Execution Mode
+    var demoMode: Boolean = true, // If true, orders are simulated (dry-run)
+
+    // Hard safety gate: LIVE mode (demoMode=false AND okx.paper=false → real funds) refuses to start
+    // unless this is explicitly true. Stops a single flipped flag from trading real funds. No effect in
+    // SIMULATION or PAPER mode.
+    var confirmLive: Boolean = false,
+
+    // Phase 3 step 3 (default OFF): when true, entry sizing in buildPlan prefers the fresh real-time
+    // WS price over the REST price, falling back to REST whenever the socket is stale/disconnected or
+    // the WS price diverges too far from REST. Flip on only after the parity observer shows a small,
+    // stable WS-vs-REST delta over a real run.
+    var useStreamingEntryPrice: Boolean = false
 ) {
     fun getCurrenciesList(): List<String> =
         currencies.map { it.trim().uppercase(Locale.ROOT) }
@@ -58,13 +86,19 @@ data class TradingProperties(
 }
 
 data class OkxTimeouts(
-    var ticker: Duration = Duration.ofSeconds(2),
-    var candles: Duration = Duration.ofSeconds(6),
-    var funding: Duration = Duration.ofSeconds(3),
-    var openInterest: Duration = Duration.ofSeconds(3),
-    var account: Duration = Duration.ofSeconds(4),
-    var positions: Duration = Duration.ofSeconds(4),
-    var instruments: Duration = Duration.ofSeconds(4),
-    var setLeverage: Duration = Duration.ofSeconds(6),
-    var placeOrder: Duration = Duration.ofSeconds(8)
+    var ticker: Duration = Duration.ofSeconds(5),
+    var candles: Duration = Duration.ofSeconds(10),
+    var funding: Duration = Duration.ofSeconds(5),
+    var openInterest: Duration = Duration.ofSeconds(5),
+    var account: Duration = Duration.ofSeconds(10),
+    var positions: Duration = Duration.ofSeconds(10),
+    var bills: Duration = Duration.ofSeconds(10),
+    var instruments: Duration = Duration.ofSeconds(10),
+    var setLeverage: Duration = Duration.ofSeconds(10),
+    var placeOrder: Duration = Duration.ofSeconds(15),
+    // Overall per-symbol budget for loadMarketState's parallel fetch (ticker + candles + funding + OI).
+    // MUST exceed the slowest inner call ([candles], 10s) — the old hardcoded 5s was TIGHTER than that,
+    // so on a cold/slow first cycle it cancelled the candle fetch before its own timeout fired and the
+    // whole symbol came back empty (empty prompt -> AI returns "{}"). 15s gives the inner timeouts room.
+    var currencyFetch: Duration = Duration.ofSeconds(15)
 )

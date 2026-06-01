@@ -4,6 +4,7 @@ import ru.driics.aitrade.common.logging.logger
 import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.AiSignal
 import ru.driics.aitrade.domain.model.AiTradeSignalArgs
+import ru.driics.aitrade.domain.model.InstrumentDefaults
 import ru.driics.aitrade.domain.model.OkxInstrumentInfo
 import ru.driics.aitrade.domain.types.OrderSide
 import ru.driics.aitrade.domain.util.isPositive
@@ -25,8 +26,6 @@ class ActionGuard(
         private val log = logger<ActionGuard>()
         
         private const val MIN_TP_SL_TICKS = 5
-        private val DEFAULT_TICK_SIZE = BigDecimal("0.01")
-        private val DEFAULT_LOT_SIZE = BigDecimal.ONE
     }
 
     /**
@@ -57,8 +56,8 @@ class ActionGuard(
         }
 
         // 3. Extract and validate instrument parameters
-        val tickSz = extractInstrumentValue(instrumentInfo.tickSz, DEFAULT_TICK_SIZE)
-        val lotSz = extractInstrumentValue(instrumentInfo.lotSz, DEFAULT_LOT_SIZE)
+        val tickSz = extractInstrumentValue(instrumentInfo.tickSz, InstrumentDefaults.TICK_SIZE)
+        val lotSz = extractInstrumentValue(instrumentInfo.lotSz, InstrumentDefaults.LOT_SIZE)
         
         // 4. Quantize and validate prices
         val quantizedEntry = lastPrice.quantize(tickSz)
@@ -85,7 +84,7 @@ class ActionGuard(
             ?.let { return ValidationResult.Rejected("Risk USD must be positive, got: $it") }
 
         return ValidationResult.Valid(
-            normalizedSignal = normalizedSignal.value,
+            normalizedSignal = normalizedSignal,
             leverage = requestedLeverage.coerceIn(1, maxLeverage),
             quantizedEntry = quantizedEntry,
             quantizedTp = quantizedTp,
@@ -107,9 +106,10 @@ class ActionGuard(
         isTp: Boolean
     ): String? {
         if (price == null) return null // Optional TP/SL
-        
+
+        val label = if (isTp) "TP" else "SL"
+
         if (price.isZeroOrNegative()) {
-            val label = if (isTp) "TP" else "SL"
             return "$label must be positive, got: $price"
         }
 
@@ -117,19 +117,15 @@ class ActionGuard(
         val distance = (price - lastPrice).abs()
 
         if (distance < minDistance) {
-            val label = if (isTp) "TP" else "SL"
             return "$label $price too close to entry $lastPrice (min distance: $minDistance)"
         }
 
-        // Validate direction: TP should be favorable, SL should be unfavorable
+        // Validate direction: TP should be favorable, SL should be unfavorable.
         val isFavorable = when (side) {
             OrderSide.BUY -> price > lastPrice
             OrderSide.SELL -> price < lastPrice
         }
-        
-        val label = if (isTp) "TP" else "SL"
-        val expectedDirection = if (isTp) "favorable" else "unfavorable"
-        
+
         if (isTp && !isFavorable) {
             return "$label $price is not favorable for $side at entry $lastPrice"
         }
@@ -143,7 +139,7 @@ class ActionGuard(
 
     sealed class ValidationResult {
         data class Valid(
-            val normalizedSignal: String,
+            val normalizedSignal: OrderSide,
             val leverage: Int,
             val quantizedEntry: BigDecimal,
             val quantizedTp: BigDecimal?,

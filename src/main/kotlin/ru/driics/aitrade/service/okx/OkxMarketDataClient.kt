@@ -218,10 +218,5 @@ class OkxMarketDataClient(
     private fun logApiError(instId: String, type: String, response: OkxApiResponse<*>) {
         log.warn("OKX API error for $type $instId - Code: ${response.code}, Message: ${response.message}" )
     }
-
-    private fun mapHttpStatus(code: Int): String = when {
-        code in 400..499 -> "http_4xx"
-        code >= 500 -> "http_5xx"
-        else -> "http_error"
-    }
+    // mapHttpStatus is inherited from OkxClientBase (was a duplicate private copy here).
 }

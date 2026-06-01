@@ -23,13 +23,6 @@ class PromptTemplateService(
     }
 
     /**
-     * Loads system prompt template for the specified version.
-     */
-    fun loadSystemPrompt(): String {
-        return loadTemplate("prompts/$version/system.txt")
-    }
-
-    /**
      * Loads user prompt template for the specified version.
      */
     fun loadUserPrompt(): String {
@@ -84,10 +77,6 @@ class PromptTemplateService(
 
     private fun getFallbackTemplate(path: String): String {
         return when {
-            path.contains("system") -> """
-                You are an expert cryptocurrency trading analyst. 
-                Analyze the provided market data and generate clear, actionable trading signals in JSON format.
-            """.trimIndent()
             path.contains("user") -> """
                 Analyze the market data and generate trading signals in JSON format.
             """.trimIndent()

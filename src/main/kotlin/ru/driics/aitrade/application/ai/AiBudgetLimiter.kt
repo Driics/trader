@@ -21,7 +21,7 @@ class AiBudgetLimiter(
         private val log = logger<AiBudgetLimiter>()
     }
 
-    private val tokens = AtomicLong(budgetPerMinute.toLong())
+    private val tokens = AtomicLong(budgetPerMinute)
     private val lastRefill = AtomicReference(clock.instant())
     private val refillInterval = Duration.ofMinutes(1)
 

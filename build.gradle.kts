@@ -40,6 +40,7 @@ dependencies {
     implementation("io.ktor:ktor-client-websockets")
     implementation("io.ktor:ktor-client-core")
     implementation("io.ktor:ktor-client-cio")
+    implementation("io.ktor:ktor-client-encoding")
     implementation("io.ktor:ktor-client-content-negotiation")
     implementation("io.ktor:ktor-serialization-jackson")
 
@@ -62,6 +63,7 @@ dependencies {
     implementation("io.github.resilience4j:resilience4j-kotlin:2.3.0")
 
     implementation("io.micrometer:micrometer-core")
+    implementation("io.micrometer:micrometer-registry-prometheus")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
@@ -74,16 +76,23 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-logging")
     implementation("io.github.oshai:kotlin-logging-jvm:7.0.3")
     implementation("net.logstash.logback:logstash-logback-encoder:7.4") // JSON logging for ELK/Loki
+    implementation("com.github.loki4j:loki-logback-appender:1.5.1") // Direct push to Loki
 
     // Cache
     implementation("com.github.ben-manes.caffeine:caffeine:3.2.2")
     // Caffeine metrics for Micrometer
     implementation("io.micrometer:micrometer-core")
     
+    // Trade journal persistence (opt-in, default OFF — see TradeJournalPersistenceConfig)
+    implementation("org.springframework.boot:spring-boot-starter-jdbc")
+    runtimeOnly("org.postgresql:postgresql")
+    implementation("org.liquibase:liquibase-core")
+
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
     testImplementation("org.wiremock:wiremock-standalone:3.0.1")
     testImplementation("io.mockk:mockk:1.14.3")
+    testImplementation("com.h2database:h2")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
@@ -109,4 +118,7 @@ configurations.all {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+    testLogging {
+        events("passed", "skipped", "failed")
+    }
 }

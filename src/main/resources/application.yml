@@ -13,6 +13,11 @@ okx:
   secret-key: ${OKX_API_SECRET:your-okx-secret}
   passphrase: ${OKX_API_PASSPHRASE:your-okx-passphrase}
 
+  # Paper trading: true routes signed REST calls to OKX's DEMO env (x-simulated-trading header) and WS
+  # to wspap. Requires DEMO keys above + broker-id. Default false. With demo-mode=false this is PAPER mode.
+  paper: ${OKX_PAPER:false}
+  broker-id: ${OKX_BROKER_ID:}
+
 # Trading Configuration
 trading:
   currencies:
@@ -23,9 +28,37 @@ trading:
     - XRP
     - DOGE
   time-zone: UTC
-  auto-execute: true
+  # Safety: default OFF. Must be explicitly enabled via TRADING_AUTO_EXECUTE=true.
+  auto-execute: ${TRADING_AUTO_EXECUTE:false}
   max-concurrent-symbols: 10
   instrument-cache-ttl: 1h  # Aggressive caching: 1 hour TTL
+  
+  # Execution Mode
+  demo-mode: ${TRADING_DEMO_MODE:true} # Set to false to place real orders
+  # LIVE safety: with demo-mode=false AND okx.paper=false (REAL funds), startup is REFUSED unless this is true.
+  confirm-live: ${TRADING_CONFIRM_LIVE:false}
+
+  # Phase 3: prefer the fresh real-time WS price over REST for entry sizing (falls back to REST whenever
+  # the socket is stale/disconnected or the WS price diverges >0.5% from REST, so it is never worse than
+  # today). Default OFF — enable per-environment only after the public-WS parity probe shows a small,
+  # stable WS-vs-REST delta over a real run. See docs/phase3-streaming-runbook.md.
+  use-streaming-entry-price: ${TRADING_USE_STREAMING_ENTRY_PRICE:false}
+
+  # Portfolio-wide risk gates (X2)
+  risk:
+    enabled: ${TRADING_RISK_ENABLED:true}
+    max-daily-loss-usd: 50
+    max-concurrent-positions: 5
+    # Per-trade risk ceiling as a fraction of account equity (0.02 = 2%). Caps a single trade's loss-to-stop
+    # so the model can't self-size into an account-blowing position. Set 0 to disable (legacy behaviour).
+    max-risk-per-trade-pct: ${TRADING_MAX_RISK_PER_TRADE_PCT:0.02}
+
+  # AI Configuration
+  ai-model: ${TRADING_AI_MODEL:qwen/qwen3-max}
+  ai-timeout-ms: 60000
+  ai-max-retries: 2
+  ai-budget-per-minute: 10
+
 
 # Cache Configuration
 cache:
@@ -71,15 +104,22 @@ ai:
   custom:
     # Custom System Prompt
     system-prompt: |
-      You are an expert cryptocurrency trading analyst. 
+      You are an expert cryptocurrency trading analyst.
       Analyze the provided market data and generate clear, actionable trading signals in JSON format.
+
+      Instrument & sides (IMPORTANT):
+      - You trade PERPETUAL FUTURES, not spot. A position can be flat, LONG, or SHORT.
+      - "buy"  = open/hold a LONG  — profits when price RISES.
+      - "sell" = open/hold a SHORT — profits when price FALLS. You do NOT need to already hold anything to "sell"; "sell" OPENS a short.
+      - "hold" = keep an EXISTING position unchanged; use it only when a position is already open.
+      - Pick direction from the data, not by default: bullish trend/indicators -> prefer "buy"; bearish trend/indicators -> prefer "sell" (short). Do NOT default to "buy" in a downtrend.
 
       Output Structure:
       - Single JSON object with coin symbols as keys (e.g., {"ETH": {...}, "SOL": {...}})
       - Each coin contains a "trade_signal_args" object
 
       For HOLD signals:
-      - Include: coin, signal ("hold"), quantity (full current size), profit_target, stop_loss, invalidation_condition, leverage (5-40), confidence (0-1), risk_usd
+      - Include: coin, signal ("hold"), quantity (full current size), profit_target, stop_loss, invalidation_condition, leverage (see Risk Management Constraints), confidence (0-1), risk_usd
       - Do NOT include "justification" field
       - Use existing position values without modification
 
@@ -99,7 +139,7 @@ ai:
             "profit_target": <float>,
             "stop_loss": <float>,
             "invalidation_condition": "<string>",
-            "leverage": <int 5–40>,
+            "leverage": <int, within the Risk Management Constraints>,
             "confidence": <0–1>,   
             "risk_usd": <float>
           }
@@ -185,3 +225,16 @@ management:
       enabled: true
     ratelimiters:
       enabled: true
+
+# Trade journal (X1): durable, queryable orders / fills / PnL snapshots. OFF by default. When enabled,
+# point spring.datasource at a Postgres datasource (e.g. Supabase) via the env vars below — Liquibase
+# creates the schema on startup. Writes are fail-safe, so a DB outage never blocks a trading cycle.
+trade-journal:
+  enabled: ${TRADE_JOURNAL_ENABLED:false}
+
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:}
+    username: ${SPRING_DATASOURCE_USERNAME:}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    driver-class-name: ${SPRING_DATASOURCE_DRIVER:org.postgresql.Driver}

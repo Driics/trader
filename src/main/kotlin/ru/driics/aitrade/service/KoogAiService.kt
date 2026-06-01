@@ -2,6 +2,7 @@ package ru.driics.aitrade.service
 
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.llm.LLMCapability
+import ai.koog.prompt.params.LLMParams
 import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
 import io.github.oshai.kotlinlogging.KotlinLogging
@@ -9,11 +10,10 @@ import io.micrometer.core.instrument.MeterRegistry
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import ru.driics.aitrade.common.measureSuspend
-import ru.driics.aitrade.config.OpenRouterProperties
+import ru.driics.aitrade.config.TradingProperties
 import ru.driics.aitrade.domain.model.AiAnalysisResponse
 import ru.driics.aitrade.domain.model.AiService
 import ru.driics.aitrade.domain.model.LastAiAnalysis
-import ru.driics.aitrade.domain.services.ApiKeyRotationPolicy
 import ru.driics.aitrade.infra.ai.RotatingOpenRouterClient
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
@@ -21,8 +21,9 @@ import kotlin.time.measureTimedValue
 
 @Service
 class KoogAiService(
-    openRouterProperties: OpenRouterProperties,
+    private val rotatingClient: RotatingOpenRouterClient,
     private val meterRegistry: MeterRegistry,
+    private val tradingProperties: TradingProperties,
     @Value("\${ai.custom.system-prompt:You are an expert crypto trading analyst.}")
     private val systemPrompt: String
 ) : AiService {
@@ -31,49 +32,37 @@ class KoogAiService(
         val log = KotlinLogging.logger {}
 
         const val PROVIDER_NAME = "koog-openrouter"
-        const val MODEL_ID = "qwen/qwen3-max"
         const val PROMPT_ID = "signal-gen"
         const val METRIC_NAME = "ai.analyze"
         const val CONTEXT_LENGTH = 131_072L
     }
 
-    private val rotatingClient: RotatingOpenRouterClient
     private val lastAnalysis = AtomicReference<LastAiAnalysis?>(null)
 
     // Define model configuration once
-    private val llmModel = LLModel(
-        provider = LLMProvider.OpenRouter,
-        id = MODEL_ID,
-        contextLength = CONTEXT_LENGTH,
-        capabilities = listOf(LLMCapability.Temperature, LLMCapability.Completion)
-    )
-
-    init {
-        val apiKeys = openRouterProperties.getApiKeysList()
-        require(apiKeys.isNotEmpty()) { "At least one OpenRouter API key must be configured" }
-
-        val policy = ApiKeyRotationPolicy(apiKeys)
-        rotatingClient = RotatingOpenRouterClient(
-            rotationPolicy = policy,
-            maxRetries = openRouterProperties.maxRetries,
-            retryDelayMs = openRouterProperties.retryDelayMs
+    private val llmModel by lazy {
+        LLModel(
+            provider = LLMProvider.OpenRouter,
+            id = tradingProperties.aiModel,
+            contextLength = CONTEXT_LENGTH,
+            capabilities = listOf(LLMCapability.Temperature, LLMCapability.Completion)
         )
-
-        log.info { "Initialized KoogAiService with ${apiKeys.size} API key(s)" }
     }
 
     override fun getProviderName(): String = PROVIDER_NAME
 
-    override fun getModel(): String = MODEL_ID
+    override fun getModel(): String = tradingProperties.aiModel
 
     override fun getLastAnalysis(): LastAiAnalysis? = lastAnalysis.get()
 
     override suspend fun analyzePrompt(prompt: String): AiAnalysisResponse {
         // 1. Prepare Request
-        val promptRequest = prompt(id = PROMPT_ID) {
+        val promptRequest = prompt(id = PROMPT_ID, params = LLMParams(temperature = tradingProperties.aiTemperature)) {
             system(systemPrompt)
             user(prompt)
         }
+
+        val modelId = tradingProperties.aiModel
 
         // 2. Execute with Timing & Error Handling
         // measureTimedValue is idiomatic Kotlin for capturing duration + result
@@ -83,7 +72,7 @@ class KoogAiService(
                 // passing 'this' as TimerScope to potentially set dynamic tags if needed
                 meterRegistry.measureSuspend(
                     metricName = METRIC_NAME,
-                    staticTags = arrayOf("provider", "koog", "model", MODEL_ID)
+                    staticTags = arrayOf("provider", "koog", "model", modelId)
                 ) {
                     rotatingClient.execute(promptRequest, llmModel)
                 }
@@ -103,7 +92,7 @@ class KoogAiService(
 
                 val snapshot = LastAiAnalysis(
                     provider = PROVIDER_NAME,
-                    model = MODEL_ID,
+                    model = modelId,
                     timestamp = timestamp,
                     executionTimeMs = durationMs,
                     success = true,
@@ -114,7 +103,7 @@ class KoogAiService(
 
                 AiAnalysisResponse(
                     provider = PROVIDER_NAME,
-                    model = MODEL_ID,
+                    model = modelId,
                     response = content,
                     executionTimeMs = durationMs,
                     isSuccess = true
@@ -125,7 +114,7 @@ class KoogAiService(
 
                 val snapshot = LastAiAnalysis(
                     provider = PROVIDER_NAME,
-                    model = MODEL_ID,
+                    model = modelId,
                     timestamp = timestamp,
                     executionTimeMs = durationMs,
                     success = false,
@@ -136,7 +125,7 @@ class KoogAiService(
 
                 AiAnalysisResponse(
                     provider = PROVIDER_NAME,
-                    model = MODEL_ID,
+                    model = modelId,
                     response = "",
                     executionTimeMs = durationMs,
                     isSuccess = false,
