@@ -32,6 +32,16 @@ data class OkxProperties(
         } else {
             "${wsBaseUrl()}/ws/v5/private"
         }
+
+    // OKX serves candlestick channels (candle1m, candle4H, …) ONLY on the "business" endpoint — they
+    // are rejected with error 60018 ("channel doesn't exist") on /ws/v5/public. See OkxBusinessWebSocketClient.
+    fun businessWsUrl(): String =
+        if (paper) {
+            val id = requireNotNull(brokerId) { "okx.broker-id must be set for paper WS" }
+            "${wsBaseUrl()}/ws/v5/business?brokerId=$id"
+        } else {
+            "${wsBaseUrl()}/ws/v5/business"
+        }
 }
 @Component
 @ConfigurationProperties(prefix = "prompt")

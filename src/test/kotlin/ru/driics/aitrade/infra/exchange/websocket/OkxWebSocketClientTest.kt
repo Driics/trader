@@ -32,6 +32,9 @@ class OkxWebSocketClientTest {
     private fun publicClient() =
         OkxPublicWebSocketClient(mockk<HttpClient>(relaxed = true), mapper, OkxProperties())
 
+    private fun businessClient() =
+        OkxBusinessWebSocketClient(mockk<HttpClient>(relaxed = true), mapper, OkxProperties())
+
     private fun privateClient() = OkxPrivateWebSocketClient(
         mockk<HttpClient>(relaxed = true), mapper, OkxProperties(),
         mockk<OkxAuthService>(relaxed = true), Clock.systemUTC(),
@@ -115,10 +118,12 @@ class OkxWebSocketClientTest {
         assertEquals(0, BigDecimal("1000.5").compareTo(acct.totalEqOrZero()))
     }
 
+    // ---- business dispatch (candles live on the OKX /ws/v5/business endpoint) ----
+
     @Test
     fun `candle array message routes to candleFlow`() = runBlocking {
-        val client = publicClient()
-        val got = CompletableDeferred<OkxPublicWebSocketClient.CandleEvent>()
+        val client = businessClient()
+        val got = CompletableDeferred<OkxBusinessWebSocketClient.CandleEvent>()
         val subscribed = CompletableDeferred<Unit>()
         val job = launch {
             client.candleFlow

@@ -12,6 +12,7 @@ import ru.driics.aitrade.domain.ports.OrderEvent
 import ru.driics.aitrade.domain.ports.PositionEvent
 import ru.driics.aitrade.domain.ports.PriceUpdate
 import ru.driics.aitrade.domain.ports.StreamingMarketDataPort
+import ru.driics.aitrade.infra.exchange.websocket.OkxBusinessWebSocketClient
 import ru.driics.aitrade.infra.exchange.websocket.OkxPrivateWebSocketClient
 import ru.driics.aitrade.infra.exchange.websocket.OkxPublicWebSocketClient
 import ru.driics.aitrade.infra.exchange.websocket.dto.OkxWsOrderUpdate
@@ -24,6 +25,7 @@ import java.util.concurrent.ConcurrentHashMap
 @Component
 class OkxStreamingAdapter(
     private val publicWs: OkxPublicWebSocketClient,
+    private val businessWs: OkxBusinessWebSocketClient,
     private val privateWs: OkxPrivateWebSocketClient,
     private val tradingProperties: TradingProperties,
     private val instrumentResolver: InstrumentResolver,
@@ -128,8 +130,9 @@ class OkxStreamingAdapter(
     private suspend fun subscribeToInstrument(instId: String) {
         runCatching {
             publicWs.subscribeTicker(instId)
+            // Candle channels live on the OKX "business" endpoint, not public (see OkxBusinessWebSocketClient).
             Timeframe.ALL.forEach { tf ->
-                publicWs.subscribeCandles(instId, tf)
+                businessWs.subscribeCandles(instId, tf)
             }
         }.onSuccess {
             log.debug { "Subscribed to $instId" }
